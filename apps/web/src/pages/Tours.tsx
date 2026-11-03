@@ -17,7 +17,7 @@ export default function Tours() {
 
   return (
     <>
-      <PageHead title="Private tours from town">Your own car and driver for the morning, the afternoon or sunset. One price per car, for up to four people.</PageHead>
+      <PageHead tone="gap" title="Private tours from town">Your own car and driver for the morning, the afternoon or sunset. One price per car, for up to four people.</PageHead>
       <section className="section">
         <div className="wrap">
           {err && <p className="dg-error">Tours couldn't load. Call us to book.</p>}

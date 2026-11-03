@@ -13,13 +13,13 @@ export default function Rewards() {
   useEffect(() => { get<{ partners: Partner[] }>('/public/partners').then((r) => setPartners(r.partners)).catch(() => setPartners([])); }, []);
   return (
     <>
-      <PageHead title="Rides that end in coffee">Every trip earns Dingo Points. Spend them at local cafés or take money off your next ride.</PageHead>
+      <PageHead tone="dawn" title="Rides that end in coffee">Every trip earns Dingo Points. Spend them at local cafés or take money off your next ride.</PageHead>
       <section className="section">
         <div className="wrap split">
           <div><h2>How points work</h2></div>
           <div>
             <ul className="checks">
-              <li><div><b>Earn 10 points for every $1</b><span>On rides, deliveries and tours, paid by card, credit, cash or account.</span></div></li>
+              <li><div><b>Earn 10 points for every $1</b><span>On rides, deliveries and tours, paid by card, credit or account.</span></div></li>
               <li><div><b>Free coffee from 800 points</b><span>Pick a reward in the app and show the code at the counter. Codes last 30 days.</span></div></li>
               <li><div><b>Or take money off a trip</b><span>100 points is $1 off, up to half the fare.</span></div></li>
               <li><div><b>Bring a friend, get 500 points each</b><span>Share your code. You both get points after their first trip.</span></div></li>

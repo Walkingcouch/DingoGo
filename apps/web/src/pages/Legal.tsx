@@ -82,7 +82,7 @@ export default function Legal() {
   if (!d) return <NotFound />;
   return (
     <>
-      <PageHead title={d.title} draft>This page is a draft and hasn't yet been reviewed by a lawyer. It will be finalised before DingoGo launches.</PageHead>
+      <PageHead tone="night" title={d.title} draft>This page is a draft and hasn't yet been reviewed by a lawyer. It will be finalised before DingoGo launches.</PageHead>
       <section className="section"><div className="wrap prose">{d.body}</div></section>
     </>
   );

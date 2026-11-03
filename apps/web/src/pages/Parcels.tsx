@@ -20,7 +20,7 @@ export default function Parcels() {
   const cfg = useConfig();
   return (
     <>
-      <PageHead title="Send a parcel across town today">From a pharmacy bag to a 25 kg box. Collected by a local driver and handed over in person, usually within the hour.</PageHead>
+      <PageHead tone="dawn" title="Send a parcel across town today">From a pharmacy bag to a 25 kg box. Collected by a local driver and handed over in person, usually within the hour.</PageHead>
       <section className="section">
         <div className="wrap split">
           <div className="prose">

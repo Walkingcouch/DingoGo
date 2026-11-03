@@ -17,7 +17,7 @@ export default function Safety() {
   ];
   return (
     <>
-      <PageHead title="Safety on every trip">What we do before you get in, while you're on the way and after you arrive. In an emergency, always call 000 first.</PageHead>
+      <PageHead tone="night" title="Safety on every trip">What we do before you get in, while you're on the way and after you arrive. In an emergency, always call 000 first.</PageHead>
       <section className="section">
         <div className="wrap">
           <div className="why">

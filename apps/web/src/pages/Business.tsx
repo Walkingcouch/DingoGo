@@ -11,7 +11,7 @@ export default function Business() {
   const f = useSubmit('/public/hire-requests');
   return (
     <>
-      <PageHead title="Business accounts and event transport">One monthly invoice for staff and clients, and cars on call for conferences, weddings and festivals.</PageHead>
+      <PageHead tone="night" title="Business accounts and event transport">One monthly invoice for staff and clients, and cars on call for conferences, weddings and festivals.</PageHead>
       <section className="section">
         <div className="wrap why">
           <div>

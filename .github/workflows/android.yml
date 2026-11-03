@@ -6,13 +6,16 @@ on:
   workflow_dispatch:
 permissions:
   contents: write
-concurrency: { group: android-${{ github.ref }}, cancel-in-progress: true }
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   build:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      matrix: { app: [rider, driver] }
+      matrix:
+        app: [rider, driver]
     env:
       VITE_API_URL: https://dingogo-steel.vercel.app/api
       VITE_WEB_URL: https://dingogo-steel.vercel.app
@@ -20,9 +23,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
-        with: { node-version: 22, cache: npm }
+        with:
+          node-version: 22
+          cache: npm
       - uses: actions/setup-java@v4
-        with: { distribution: temurin, java-version: 17 }
+        with:
+          distribution: temurin
+          java-version: 17
       - run: npm ci --include=dev
       - name: Build web bundle
         working-directory: apps/${{ matrix.app }}
@@ -36,9 +43,12 @@ jobs:
       - name: Rename APK
         run: cp apps/${{ matrix.app }}/android/app/build/outputs/apk/debug/app-debug.apk dingogo-${{ matrix.app }}.apk
       - uses: actions/upload-artifact@v4
-        with: { name: dingogo-${{ matrix.app }}-apk, path: dingogo-${{ matrix.app }}.apk }
+        with:
+          name: dingogo-${{ matrix.app }}-apk
+          path: dingogo-${{ matrix.app }}.apk
       - name: Publish to the "android-latest" release
-        env: { GH_TOKEN: '${{ github.token }}' }
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           gh release view android-latest >/dev/null 2>&1 || gh release create android-latest --prerelease --target ${{ github.sha }} --title "DingoGo Android test builds" --notes "Debug APKs for testing. Install on Android by allowing installs from this source. Store releases need a signing key."
           gh release upload android-latest dingogo-${{ matrix.app }}.apk --clobber

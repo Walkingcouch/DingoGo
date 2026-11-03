@@ -32,7 +32,7 @@ export default function Rides() {
   const plan = cfg?.plans.find((p) => p.code === 'pass');
   return (
     <>
-      <PageHead title="Rides around Alice Springs">You see the full price before you book, and that's the price you pay unless you change the trip on the way.</PageHead>
+      <PageHead tone="noon" title="Rides around Alice Springs">You see the full price before you book, and that's the price you pay unless you change the trip on the way.</PageHead>
       <section className="section">
         <div className="wrap split">
           <div className="prose">
@@ -41,7 +41,7 @@ export default function Rides() {
               <li><div><b>Choose where you're going</b><span>Pick a place from the list or drop a pin. Book now or up to 60 days ahead.</span></div></li>
               <li><div><b>Check the fixed price</b><span>Every fee is listed, including GST and the $1 NT passenger levy.</span></div></li>
               <li><div><b>Meet your driver</b><span>You'll see their name, photo, car and rego. Tell them your 4-digit trip PIN before you set off, so you both know it's the right car.</span></div></li>
-              <li><div><b>Pay and rate</b><span>Card, DingoGo credit, account or cash. A tax invoice lands in the app straight away.</span></div></li>
+              <li><div><b>Pay and rate</b><span>Card, DingoGo credit, a prepaid DingoGo card or a business account. A tax invoice lands in the app straight away.</span></div></li>
             </ol>
           </div>
           <div>
@@ -59,9 +59,9 @@ export default function Rides() {
           <div className="prose" style={{ marginTop: 24 }}>
             <ul>
               <li>Late-night trips between 10pm and 5am cost {ride?.night_pct ?? 20}% more. Public holidays cost 15% more.</li>
-              <li>Cancelling is free within 2 minutes of a driver accepting. After that, or once your driver has waited {ride?.free_wait_min ?? 3} minutes, a {money(ride?.cancel_fee_cents ?? 600)} fee applies, and most of it goes to the driver.</li>
+              <li>Cancelling is free within 2 minutes of a driver accepting. After that, or once your driver has waited {ride?.free_wait_min ?? 3} minutes, a {money(ride?.cancel_fee_cents ?? 300)} fee applies, and most of it goes to the driver.</li>
               <li>If you add a stop or the route grows by more than a quarter, the price is adjusted, but never by more than 20%.</li>
-              <li>Prices are rounded to the nearest 5 cents so cash works without small change.</li>
+              <li>Prices are rounded to the nearest 5 cents.</li>
             </ul>
           </div>
         </div>
