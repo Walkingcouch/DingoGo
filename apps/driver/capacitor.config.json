@@ -1,0 +1,21 @@
+{
+  "appId": "au.com.dingogo.driver",
+  "appName": "DingoGo Driver",
+  "webDir": "dist",
+  "backgroundColor": "#14213D",
+  "server": {
+    "androidScheme": "https"
+  },
+  "android": {
+    "allowMixedContent": false
+  },
+  "plugins": {
+    "PushNotifications": {
+      "presentationOptions": [
+        "badge",
+        "sound",
+        "alert"
+      ]
+    }
+  }
+}

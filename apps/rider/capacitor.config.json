@@ -1,0 +1,21 @@
+{
+  "appId": "au.com.dingogo.rider",
+  "appName": "DingoGo",
+  "webDir": "dist",
+  "backgroundColor": "#FBFAF7",
+  "server": {
+    "androidScheme": "https"
+  },
+  "android": {
+    "allowMixedContent": false
+  },
+  "plugins": {
+    "PushNotifications": {
+      "presentationOptions": [
+        "badge",
+        "sound",
+        "alert"
+      ]
+    }
+  }
+}
