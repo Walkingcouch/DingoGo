@@ -1,0 +1,98 @@
+/* DingoGo design tokens — shared by every app. Import once per app: import '@dingogo/shared/brand.css' */
+@import url('https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:ital,wght@0,400;0,700;1,400&family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,600;12..96,800&display=swap');
+
+:root {
+  --night: #14213D;        /* desert-night indigo: text, dark surfaces */
+  --night-2: #22325A;
+  --ochre: #E8912D;        /* dingo ochre: primary actions */
+  --ochre-deep: #B86A12;   /* ochre text on light bg (AA) */
+  --ochre-soft: #FCEBD5;
+  --gum: #FBFAF7;          /* ghost-gum white: base */
+  --paper: #FFFFFF;
+  --line: #E4E1DA;
+  --muted: #5D6478;
+  --saltbush: #4E7D5B;     /* EV / eco / success */
+  --saltbush-soft: #E3EFE6;
+  --earth: #A63D2A;        /* safety, alerts, destructive */
+  --earth-soft: #F7E3DE;
+  --dusk: #7B5C8F;         /* quiet secondary */
+  --dusk-soft: #EEE7F3;
+
+  --bg: var(--gum);
+  --surface: var(--paper);
+  --text: var(--night);
+
+  --font-display: 'Bricolage Grotesque', 'Atkinson Hyperlegible', system-ui, sans-serif;
+  --font-body: 'Atkinson Hyperlegible', system-ui, -apple-system, 'Segoe UI', sans-serif;
+
+  /* type scale (1.25) */
+  --fs-xs: 0.8rem; --fs-sm: 0.9rem; --fs-md: 1rem; --fs-lg: 1.25rem; --fs-xl: 1.563rem; --fs-2xl: 1.953rem; --fs-3xl: 2.441rem; --fs-4xl: 3.815rem;
+
+  --r-sm: 6px; --r-md: 12px; --r-lg: 22px; --r-pill: 999px;
+  --shadow-sheet: 0 -8px 30px rgba(20, 33, 61, 0.16);
+  --shadow-pop: 0 10px 30px rgba(20, 33, 61, 0.18);
+  --focus: 0 0 0 3px rgba(232, 145, 45, 0.55);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0F1830; --surface: #18233F; --text: #F3EFE6; --line: #2C3A5E; --muted: #A9B0C3;
+    --ochre-deep: #F2A541; --ochre-soft: #3A2C17; --saltbush-soft: #1D3326; --earth-soft: #3A1E19; --dusk-soft: #2A2238;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0F1830; --surface: #18233F; --text: #F3EFE6; --line: #2C3A5E; --muted: #A9B0C3;
+  --ochre-deep: #F2A541; --ochre-soft: #3A2C17; --saltbush-soft: #1D3326; --earth-soft: #3A1E19; --dusk-soft: #2A2238;
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body { margin: 0; background: var(--bg); color: var(--text); font-family: var(--font-body); font-size: var(--fs-md); line-height: 1.5; }
+h1, h2, h3, h4 { font-family: var(--font-display); line-height: 1.12; margin: 0 0 .4em; letter-spacing: -0.01em; }
+h1 { font-weight: 800; } h2, h3 { font-weight: 600; }
+a { color: var(--ochre-deep); }
+:focus-visible { outline: none; box-shadow: var(--focus); border-radius: var(--r-sm); }
+img { max-width: 100%; }
+button, input, select, textarea { font: inherit; color: inherit; }
+
+/* Primitive components (class-based so every app can share them) */
+.dg-btn { display: inline-flex; align-items: center; justify-content: center; gap: .5em; min-height: 48px; padding: 0 1.25rem; border-radius: var(--r-pill);
+  border: 2px solid transparent; background: var(--ochre); color: var(--night); font-weight: 700; cursor: pointer; text-decoration: none; font-size: var(--fs-md); }
+.dg-btn:hover { background: #F09C3C; }
+.dg-btn:disabled { opacity: .5; cursor: not-allowed; }
+.dg-btn--dark { background: var(--night); color: var(--gum); }
+.dg-btn--dark:hover { background: var(--night-2); }
+.dg-btn--ghost { background: transparent; border-color: var(--line); color: var(--text); }
+.dg-btn--ghost:hover { background: var(--ochre-soft); }
+.dg-btn--danger { background: var(--earth); color: #fff; }
+.dg-btn--green { background: var(--saltbush); color: #fff; }
+.dg-btn--block { width: 100%; }
+.dg-btn--sm { min-height: 36px; padding: 0 .9rem; font-size: var(--fs-sm); }
+
+.dg-field { display: grid; gap: .35rem; margin-bottom: .9rem; }
+.dg-field > span { font-weight: 700; font-size: var(--fs-sm); }
+.dg-input, .dg-select, .dg-textarea { width: 100%; min-height: 48px; padding: .65rem .85rem; border: 2px solid var(--line); border-radius: var(--r-md);
+  background: var(--surface); }
+.dg-input:focus, .dg-select:focus, .dg-textarea:focus { border-color: var(--ochre); outline: none; }
+.dg-textarea { min-height: 96px; resize: vertical; }
+.dg-check { display: flex; gap: .6rem; align-items: flex-start; padding: .5rem 0; cursor: pointer; }
+.dg-check input { width: 22px; height: 22px; accent-color: var(--ochre); margin-top: 2px; flex: none; }
+
+.dg-chip { display: inline-flex; align-items: center; gap: .35em; padding: .2rem .65rem; border-radius: var(--r-pill); font-size: var(--fs-xs); font-weight: 700;
+  background: var(--dusk-soft); color: var(--dusk); white-space: nowrap; }
+.dg-chip--green { background: var(--saltbush-soft); color: var(--saltbush); }
+.dg-chip--ochre { background: var(--ochre-soft); color: var(--ochre-deep); }
+.dg-chip--red { background: var(--earth-soft); color: var(--earth); }
+.dg-chip--night { background: var(--night); color: var(--gum); }
+
+.dg-error { background: var(--earth-soft); color: var(--earth); padding: .75rem 1rem; border-radius: var(--r-md); font-weight: 700; }
+.dg-note { background: var(--ochre-soft); color: var(--text); padding: .75rem 1rem; border-radius: var(--r-md); }
+.dg-muted { color: var(--muted); }
+.dg-money { font-variant-numeric: tabular-nums; font-weight: 700; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
+
+/* Leaflet tweaks */
+.leaflet-container { font-family: var(--font-body); background: #EDE6DA; }
+.dg-pin { border-radius: 50%; border: 3px solid #fff; box-shadow: 0 2px 6px rgba(0,0,0,.35); }

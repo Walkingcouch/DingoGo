@@ -1,0 +1,12 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "paths": {
+      "@dingogo/shared": ["../../packages/shared/src/index.ts"],
+      "@dingogo/shared/map": ["../../packages/shared/src/Map.tsx"],
+      "@dingogo/shared/brand.css": ["../../packages/shared/src/brand.css"],
+      "@dingogo/shared/assets/*": ["../../packages/shared/assets/*"]
+    }
+  },
+  "include": ["src", "../../packages/shared/src"]
+}

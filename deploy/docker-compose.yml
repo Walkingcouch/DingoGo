@@ -1,0 +1,31 @@
+# Local/full-stack deployment: Postgres + API + static apps behind Caddy.
+# Usage: cd deploy && docker compose up --build   (then: docker compose exec api npx tsx scripts/seed.ts for demo data)
+services:
+  db:
+    image: postgres:16-alpine
+    environment: { POSTGRES_USER: dingogo, POSTGRES_PASSWORD: dingogo, POSTGRES_DB: dingogo }
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck: { test: ["CMD-SHELL", "pg_isready -U dingogo"], interval: 5s, retries: 10 }
+  api:
+    build: ../services/api
+    env_file: ../services/api/.env.example
+    environment:
+      DATABASE_URL: postgres://dingogo:dingogo@db:5432/dingogo
+      OTP_DEV_MODE: "true"
+      PUBLIC_WEB_URL: http://localhost:8080
+    depends_on: { db: { condition: service_healthy } }
+    volumes: [uploads:/app/uploads]
+    ports: ["4000:4000"]
+  web:
+    image: caddy:2-alpine
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - ../apps/web/dist:/srv/web
+      - ../apps/rider/dist:/srv/rider
+      - ../apps/driver/dist:/srv/driver
+      - ../apps/admin/dist:/srv/admin
+      - ../apps/partner/dist:/srv/partner
+      - ../apps/roof-display/dist:/srv/roof
+    ports: ["8080:8080", "8081:8081", "8082:8082", "8083:8083", "8084:8084", "8085:8085"]
+    depends_on: [api]
+volumes: { pgdata: {}, uploads: {} }

@@ -1,0 +1,26 @@
+.p-wrap { max-width: 480px; margin: 0 auto; min-height: 100dvh; display: flex; flex-direction: column; }
+.p-head { background: var(--night); color: var(--gum); padding: 18px 20px 0; }
+.p-head__row { display: flex; align-items: center; gap: 12px; }
+.p-head img { width: 44px; height: 44px; border-radius: 50%; background: var(--ochre); object-fit: contain; }
+.p-head h1 { font-size: 1.35rem; margin: 0; color: #fff; }
+.p-head small { color: #AAB2C8; }
+.p-head button { margin-left: auto; white-space: nowrap; flex: none; background: none; border: 1px solid #36456E; color: #D9DCE6; border-radius: 999px; padding: 4px 12px; cursor: pointer; }
+.p-main { padding: 20px; flex: 1; }
+.p-code { font-size: 2rem !important; letter-spacing: .14em; text-transform: uppercase; text-align: center; font-weight: 700; min-height: 68px !important; }
+.p-result { border-radius: var(--r-lg); padding: 22px 20px; margin: 16px 0; text-align: center; }
+.p-result h2 { font-size: var(--fs-2xl); margin: 6px 0; }
+.p-result--ok { background: var(--saltbush); color: #fff; }
+.p-result--bad { background: var(--earth); color: #fff; }
+.p-result--check { background: var(--surface); border: 2px solid var(--ochre); }
+.p-result .big { font-size: 3rem; line-height: 1; }
+.p-stats { display: grid; grid-template-columns: 1fr 1fr; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface); margin: 18px 0; }
+.p-stats div { padding: 14px 16px; }
+.p-stats div + div { border-left: 1px solid var(--line); }
+.p-stats b { display: block; font-family: var(--font-display); font-size: var(--fs-2xl); font-variant-numeric: tabular-nums; }
+.p-stats span { color: var(--muted); font-size: .88rem; }
+.p-list { list-style: none; padding: 0; margin: 0; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-md); }
+.p-list li { display: flex; justify-content: space-between; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--line); font-size: .93rem; }
+.p-list li:last-child { border-bottom: none; }
+.p-tabs { display: flex; gap: 4px; margin-top: 14px; }
+.p-tabs button { flex: 1; background: transparent; border: none; color: #AAB2C8; padding: 10px 6px 12px; font-weight: 700; cursor: pointer; border-bottom: 3px solid transparent; }
+.p-tabs button.on { color: #fff; border-bottom-color: var(--ochre); }

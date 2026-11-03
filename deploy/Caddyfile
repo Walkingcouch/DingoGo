@@ -1,0 +1,31 @@
+# Each app is a single-page app: unknown paths fall back to index.html
+:8080 {
+	root * /srv/web
+	try_files {path} /index.html
+	file_server
+}
+:8081 {
+	root * /srv/rider
+	try_files {path} /index.html
+	file_server
+}
+:8082 {
+	root * /srv/driver
+	try_files {path} /index.html
+	file_server
+}
+:8083 {
+	root * /srv/admin
+	try_files {path} /index.html
+	file_server
+}
+:8084 {
+	root * /srv/partner
+	try_files {path} /index.html
+	file_server
+}
+:8085 {
+	root * /srv/roof
+	try_files {path} /index.html
+	file_server
+}

@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en-AU">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="robots" content="noindex" />
+  <title>DingoGo roof display</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,700;12..96,800&family=Atkinson+Hyperlegible:wght@700&display=swap" rel="stylesheet" />
+  <style>
+    html, body, #root { margin: 0; height: 100%; background: #000; overflow: hidden; cursor: none; }
+    .slide { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center;
+      padding: 2vh 4vw; box-sizing: border-box; transition: opacity .6s ease; }
+    .slide b { font-family: 'Bricolage Grotesque', system-ui, sans-serif; font-weight: 800; line-height: 1; letter-spacing: -0.01em;
+      font-size: min(36vh, 8.5vw); white-space: nowrap; max-width: 100%; }
+    .slide span { font-family: 'Atkinson Hyperlegible', system-ui, sans-serif; font-weight: 700; font-size: min(17vh, 4.2vw); margin-top: 3vh; line-height: 1.05; }
+    .slide.house b { font-size: min(44vh, 11vw); }
+    .setup { color: #ccc; font: 700 min(8vh, 3vw)/1.3 'Atkinson Hyperlegible', sans-serif; padding: 4vh 4vw; cursor: default; }
+    @media (prefers-reduced-motion: reduce) { .slide { transition: none; } }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="module" src="/src/main.tsx"></script>
+</body>
+</html>

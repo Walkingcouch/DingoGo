@@ -1,0 +1,30 @@
+{
+  "name": "dingogo",
+  "private": true,
+  "version": "1.0.0",
+  "description": "DingoGo Rideshare & Courier platform — API, rider app, driver app, admin console, website, roof LED player",
+  "workspaces": [
+    "packages/*",
+    "services/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "setup": "npm install && npm run db:setup",
+    "db:setup": "npm run db:migrate -w services/api && npm run db:seed -w services/api",
+    "db:reset": "npm run db:reset -w services/api",
+    "dev:api": "npm run dev -w services/api",
+    "dev:web": "npm run dev -w apps/web",
+    "dev:rider": "npm run dev -w apps/rider",
+    "dev:driver": "npm run dev -w apps/driver",
+    "dev:admin": "npm run dev -w apps/admin",
+    "dev:partner": "npm run dev -w apps/partner",
+    "dev:roof": "npm run dev -w apps/roof-display",
+    "build": "npm run build --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "npm test -w services/api",
+    "build:vercel": "node scripts/build-vercel.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

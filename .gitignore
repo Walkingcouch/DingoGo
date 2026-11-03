@@ -1,0 +1,9 @@
+node_modules
+dist
+.env
+uploads
+*.log
+apps/*/android
+apps/*/ios
+.vercel
+apps/*/screenshots
