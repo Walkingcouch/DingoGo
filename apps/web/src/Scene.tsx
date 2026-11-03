@@ -29,8 +29,10 @@ const NEAR = 'M0 330 C70 322 120 306 190 302 C250 298 290 318 350 320 C420 322 4
 // A gap version of the near ridge (for Simpsons / Emily Gap tours): a notch cut in the middle.
 const NEAR_GAP = 'M0 320 C90 312 170 290 260 282 C350 274 420 280 520 268 C590 260 640 250 680 252 L700 320 L740 320 L760 250 C800 246 860 258 940 266 C1040 276 1120 272 1220 284 C1320 296 1400 304 1440 306 L1440 400 L0 400 Z';
 
+const STARS = [[90, 40, 1.4], [210, 92, 1], [330, 28, 1.2], [470, 70, .9], [610, 34, 1.5], [800, 88, 1], [880, 22, 1.1], [1010, 64, 1.4], [1150, 30, .9], [1290, 78, 1.2], [1390, 40, 1], [940, 120, .8], [1240, 140, .8], [1100, 150, .7], [860, 160, .9], [1370, 110, .8]];
+
 export function Scene({ tone = 'dusk', height, className, stars, sun = true, gap = false, ground = 'var(--bg)', style }: {
-  tone?: SceneTone; height?: number | string; className?: string; stars?: boolean; sun?: boolean; gap?: boolean; ground?: string; style?: React.CSSProperties;
+  tone?: SceneTone; height?: number | string; className?: string; stars?: boolean | 'right'; sun?: boolean; gap?: boolean; ground?: string; style?: React.CSSProperties;
 }) {
   const id = useId().replace(/:/g, '');
   const [s0, s1, s2, s3] = SKIES[tone];
@@ -50,7 +52,7 @@ export function Scene({ tone = 'dusk', height, className, stars, sun = true, gap
       {sun && <rect width="1440" height="400" fill={`url(#sun${id})`} />}
       {stars && (
         <g fill="#fff">
-          {[[90, 40, 1.4], [210, 92, 1], [330, 28, 1.2], [470, 70, .9], [610, 34, 1.5], [760, 88, 1], [880, 22, 1.1], [1010, 64, 1.4], [1150, 30, .9], [1290, 78, 1.2], [1390, 40, 1], [540, 120, .8], [980, 130, .8], [160, 150, .7]].map(([x, y, r], i) => (
+          {STARS.filter(([x]) => stars === 'right' ? x > 780 : true).map(([x, y, r], i) => (
             <circle key={i} cx={x} cy={y} r={r} opacity={i % 3 ? .55 : .85} />
           ))}
         </g>

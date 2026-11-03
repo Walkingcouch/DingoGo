@@ -11,10 +11,11 @@ import { Scene, type SceneTone } from '../Scene';
 const P = (name: string, lat: number, lng: number): Place => ({ name, address: name, lat, lng });
 const ROUTES: { from: Place; to: Place; note: string }[] = [
   { from: TODD_MALL, to: AIRPORT, note: 'Most flights' },
-  { from: P('Gillen', -23.709, 133.86), to: P('Alice Springs Hospital', -23.7076, 133.877), note: 'Appointments' },
+  { from: P('Larapinta', -23.695, 133.835), to: P('Alice Springs Hospital', -23.7076, 133.877), note: 'Appointments' },
   { from: P('Braitling', -23.683, 133.868), to: P('Yeperenye Shopping Centre', -23.7008, 133.8818), note: 'Groceries' },
+  { from: P('Eastside', -23.695, 133.896), to: P('Alice Springs Telegraph Station', -23.6676, 133.8853), note: 'Weekend walk' },
   { from: P('Alice Springs Desert Park', -23.7076, 133.8205), to: TODD_MALL, note: 'After a visit' },
-  { from: P('Lasseters Hotel Casino', -23.7178, 133.8869), to: P('Alice Springs Railway Station', -23.7069, 133.8701), note: 'The Ghan' },
+  { from: P('Alice Springs Railway Station', -23.7069, 133.8701), to: P('Lasseters Hotel Casino', -23.7178, 133.8869), note: 'Off The Ghan' },
 ];
 
 type Tour = { id: string; slug: string; name: string; summary: string; duration_min: number; price_cents: number };
@@ -35,7 +36,7 @@ export default function Home() {
     <>
       {/* ── Hero: the booking surface over the ranges at dusk ── */}
       <section className="hero">
-        <Scene tone="dusk" stars className="hero-scene" />
+        <Scene tone="dusk" stars="right" className="hero-scene" />
         <div className="wrap hero-grid">
           <div className="hero-copy">
             <p className="hero-kicker">Rides and deliveries in Mparntwe, Alice Springs</p>
@@ -61,7 +62,7 @@ export default function Home() {
       </section>
 
       {/* ── Services: one lead, four supporting ── */}
-      <section className="section">
+      <section className="section section--flush">
         <div className="wrap services">
           <Link to="/rides" className="svc-lead">
             <div className="svc-lead-copy">
@@ -105,6 +106,8 @@ export default function Home() {
             <p>See your driver's name, car and rego before they arrive, watch them on the map, and send your trip to family. Earn Dingo Points on every dollar and swap them for a coffee in town.</p>
             <div className="app-actions">
               <a className="dg-btn" href={RIDER_URL}>Open the web app</a>
+            </div>
+            <div className="app-stores">
               <span className="store" aria-disabled="true"><small>Coming soon to the</small><b>App Store</b></span>
               <span className="store" aria-disabled="true"><small>Coming soon on</small><b>Google Play</b></span>
             </div>

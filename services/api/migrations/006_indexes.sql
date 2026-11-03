@@ -1,0 +1,24 @@
+-- Indexes on hot foreign keys (Supabase performance advisor) + primary key for trip_track.
+CREATE INDEX IF NOT EXISTS driver_documents_driver_idx ON driver_documents (driver_id);
+CREATE INDEX IF NOT EXISTS loyalty_ledger_user_idx ON loyalty_ledger (user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS payments_trip_idx ON payments (trip_id);
+CREATE INDEX IF NOT EXISTS payments_user_idx ON payments (user_id);
+CREATE INDEX IF NOT EXISTS reward_redemptions_user_idx ON reward_redemptions (user_id);
+CREATE INDEX IF NOT EXISTS reward_redemptions_reward_idx ON reward_redemptions (reward_id);
+CREATE INDEX IF NOT EXISTS rewards_partner_idx ON rewards (partner_id);
+CREATE INDEX IF NOT EXISTS trip_offers_driver_idx ON trip_offers (driver_id, status);
+CREATE INDEX IF NOT EXISTS sos_alerts_trip_idx ON sos_alerts (trip_id);
+CREATE INDEX IF NOT EXISTS support_tickets_user_idx ON support_tickets (user_id);
+CREATE INDEX IF NOT EXISTS payment_methods_user_idx ON payment_methods (user_id);
+CREATE INDEX IF NOT EXISTS drivers_vehicle_idx ON drivers (vehicle_id);
+CREATE INDEX IF NOT EXISTS charging_sessions_driver_idx ON charging_sessions (driver_id, started_at DESC);
+CREATE INDEX IF NOT EXISTS charging_sessions_vehicle_idx ON charging_sessions (vehicle_id);
+CREATE INDEX IF NOT EXISTS driver_ledger_trip_idx ON driver_ledger (trip_id);
+CREATE INDEX IF NOT EXISTS trips_vehicle_idx ON trips (vehicle_id);
+CREATE INDEX IF NOT EXISTS trips_corporate_idx ON trips (corporate_account_id);
+CREATE INDEX IF NOT EXISTS referrals_referrer_idx ON referrals (referrer_id);
+CREATE INDEX IF NOT EXISTS corporate_members_user_idx ON corporate_members (user_id);
+CREATE INDEX IF NOT EXISTS battery_logs_vehicle_idx ON battery_logs (vehicle_id, at DESC);
+CREATE INDEX IF NOT EXISTS compliance_flags_driver_idx ON compliance_flags (driver_id);
+CREATE INDEX IF NOT EXISTS ad_plays_vehicle_idx ON ad_plays (vehicle_id);
+ALTER TABLE trip_track ADD COLUMN IF NOT EXISTS id bigserial PRIMARY KEY;

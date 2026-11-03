@@ -75,9 +75,11 @@ p { text-wrap: pretty; }
 }
 @keyframes rise { from { opacity: 0; transform: translateY(18px); } to { opacity: 1; transform: none; } }
 @media (max-width: 900px) {
-  .hero-grid { grid-template-columns: 1fr; gap: 0; padding-bottom: 150px; }
-  .hero-mascot { position: absolute; right: 4%; bottom: 46px; margin: 0; }
-  .hero-mascot img { width: 118px; }
+  .hero-grid { grid-template-columns: 1fr; gap: 0; padding-bottom: 96px; }
+  .hero-copy { position: relative; }
+  .hero h1, .hero-kicker { padding-right: 96px; }
+  .hero-mascot { position: absolute; right: var(--gutter); top: clamp(30px, 6vw, 60px); margin: 0; }
+  .hero-mascot img { width: 84px; }
 }
 
 /* ── Estimator (booking card) ─────────────── */
@@ -205,7 +207,8 @@ p { text-wrap: pretty; }
 .app-grid { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); gap: 56px; align-items: center; }
 .app-copy h2 { font-size: clamp(1.9rem, 3.6vw, 2.8rem); letter-spacing: -0.03em; line-height: 1.04; color: #fff; }
 .app-copy > p { color: #C9CFDD; font-size: 1.1rem; max-width: 46ch; }
-.app-actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 26px 0 18px; }
+.app-actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 26px 0 12px; }
+.app-stores { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 18px; }
 .store { display: inline-flex; flex-direction: column; justify-content: center; min-height: 52px; padding: 0 16px; border-radius: var(--r-md); border: 1.5px solid rgba(255,255,255,.25); color: var(--gum); }
 .store small { color: #AAB2C5; font-size: .74rem; } .store b { font-size: 1rem; }
 .app-note { color: #AAB2C5; font-size: .96rem; max-width: 52ch; }
@@ -249,7 +252,7 @@ p { text-wrap: pretty; }
 .ph-code { font-family: var(--font-display); font-weight: 800; letter-spacing: .08em; }
 @media (max-width: 960px) { .phones { max-width: 640px; } }
 @media (max-width: 560px) {
-  .phones { grid-template-columns: repeat(3, 72%); overflow-x: auto; scroll-snap-type: x mandatory; padding-bottom: 12px; margin-right: calc(-1 * var(--gutter)); padding-right: var(--gutter); }
+  .phones { grid-template-columns: repeat(3, 58%); overflow-x: auto; scroll-snap-type: x mandatory; padding-bottom: 12px; margin-right: calc(-1 * var(--gutter)); padding-right: var(--gutter); }
   .phone { scroll-snap-align: start; } .phone--b, .phone--c { margin-top: 0; }
 }
 
