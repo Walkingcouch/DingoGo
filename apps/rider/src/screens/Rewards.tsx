@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import QRCode from 'qrcode';
-import { ApiError, date, del, get, money, post, useLoad } from '@dingogo/shared';
+import { ApiError, Icon, date, del, get, money, post, useLoad } from '@dingogo/shared';
 import { Dialog, Page, Spinner, shareOrCopy, useCopy } from '../components/ui';
 import { useMe } from '../ctx';
 
@@ -60,7 +60,7 @@ export function RewardsScreen() {
             {vouchers.map((v) => (
               <li key={v.id}>
                 <button className="row" onClick={() => setVoucher(v)}>
-                  <span className="row__icon" aria-hidden="true">☕</span>
+                  <span className="row__icon"><Icon name="coffee" size={20} /></span>
                   <span className="row__main"><strong>{v.title}</strong><span className="dg-muted">{v.partner_name}, use by {date(v.expires_at)}</span></span>
                   <span className="row__end"><span className="dg-chip dg-chip--ochre">Show code</span></span>
                 </button>

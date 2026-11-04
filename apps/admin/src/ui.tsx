@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
-import { ApiError, del, get, money, patch, post, date, dateTime, useLoad } from '@dingogo/shared';
+import { ApiError, del, get, money, patch, post, date, dateTime, useLoad, Icon } from '@dingogo/shared';
 
 // ───────────── Toasts ─────────────
 const ToastCtx = createContext<(msg: string, err?: boolean) => void>(() => {});
@@ -42,7 +42,7 @@ export function Drawer({ title, onClose, children, actions }: { title: ReactNode
   return (<>
     <div className="scrim" onClick={onClose} />
     <aside className="drawer" role="dialog" aria-modal="true">
-      <div className="drawer__head"><h2>{title}</h2>{actions}<button className="x" onClick={onClose} aria-label="Close">×</button></div>
+      <div className="drawer__head"><h2>{title}</h2>{actions}<button className="x" onClick={onClose} aria-label="Close"><Icon name="x" size={22} /></button></div>
       <div className="drawer__body">{children}</div>
     </aside>
   </>);
@@ -53,7 +53,7 @@ export function Modal({ title, onClose, children }: { title: string; onClose: ()
   return (<>
     <div className="scrim" onClick={onClose} />
     <div className="modal" role="dialog" aria-modal="true">
-      <div style={{ display: 'flex', alignItems: 'center' }}><h2 style={{ flex: 1, margin: 0, fontSize: 'var(--fs-xl)' }}>{title}</h2><button className="x" onClick={onClose} aria-label="Close">×</button></div>
+      <div style={{ display: 'flex', alignItems: 'center' }}><h2 style={{ flex: 1, margin: 0, fontSize: 'var(--fs-xl)' }}>{title}</h2><button className="x" onClick={onClose} aria-label="Close"><Icon name="x" size={22} /></button></div>
       <div style={{ marginTop: 12 }}>{children}</div>
     </div>
   </>);
@@ -66,8 +66,13 @@ export function Chip({ tone, children }: { tone?: string; children: ReactNode })
   return <span className={'dg-chip' + (tone ? ` dg-chip--${tone}` : '')}>{children}</span>;
 }
 
+/** Empty state for panels and lists: a sentence, not a blank. */
+export function Empty({ children, icon = 'info' }: { children: ReactNode; icon?: string }) {
+  return <p className="empty-note"><Icon name={icon} size={18} /> {children}</p>;
+}
+
 // ───────────── Table ─────────────
-export type Col<T> = { key: string; label: string; num?: boolean; render?: (r: T) => ReactNode; csv?: (r: T) => unknown; nowrap?: boolean };
+export type Col<T> = { key: string; label: string; num?: boolean; render?: (r: T) => ReactNode; csv?: (r: T) => unknown; nowrap?: boolean; truncate?: number; width?: number | string };
 
 export function Table<T extends Record<string, any>>({ rows, cols, onRow, empty = 'Nothing here yet.', rowKey }: {
   rows: T[] | null | undefined; cols: Col<T>[]; onRow?: (r: T) => void; empty?: string; rowKey?: (r: T) => string;
@@ -75,13 +80,18 @@ export function Table<T extends Record<string, any>>({ rows, cols, onRow, empty 
   return (
     <div className="tbl-wrap">
       <table className="tbl">
-        <thead><tr>{cols.map((c) => <th key={c.key} className={c.num ? 'num' : ''} scope="col">{c.label}</th>)}</tr></thead>
+        <thead><tr>{cols.map((c) => <th key={c.key} className={c.num ? 'num' : ''} scope="col" style={c.width ? { width: c.width } : undefined}>{c.label}</th>)}</tr></thead>
         <tbody>
           {!rows?.length && <tr><td className="empty" colSpan={cols.length}>{rows ? empty : 'Loading…'}</td></tr>}
           {rows?.map((r, i) => (
             <tr key={rowKey ? rowKey(r) : r.id ?? i} className={onRow ? 'click' : ''} onClick={onRow ? () => onRow(r) : undefined}
               tabIndex={onRow ? 0 : undefined} onKeyDown={onRow ? (e) => e.key === 'Enter' && onRow(r) : undefined}>
-              {cols.map((c) => <td key={c.key} className={(c.num ? 'num' : '') + (c.nowrap ? ' nowrap' : '')}>{c.render ? c.render(r) : fmt(r[c.key])}</td>)}
+              {cols.map((c) => {
+                const v = c.render ? c.render(r) : fmt(r[c.key]);
+                const plain = typeof r[c.key] === 'string' ? r[c.key] : undefined;
+                return <td key={c.key} className={(c.num ? 'num' : '') + (c.nowrap ? ' nowrap' : '')}>
+                  {c.truncate ? <span className="trunc" style={{ maxWidth: c.truncate }} title={plain}>{v}</span> : v}</td>;
+              })}
             </tr>
           ))}
         </tbody>
@@ -231,26 +241,43 @@ export function CrudSection<T extends Record<string, any>>({ title, path, cols, 
 }
 
 // ───────────── Charts ─────────────
-export function Bars({ data, value, label, format = (v) => String(v), color = 'var(--ochre)' }: {
-  data: any[]; value: (d: any) => number; label: (d: any) => string; format?: (v: number) => string; color?: string;
+/** Bar chart with a labelled value axis (0, half, peak) and dated x axis. */
+export function Bars({ data, value, label, format = (v) => String(v), color = 'var(--ochre)', unit, empty }: {
+  data: any[]; value: (d: any) => number; label: (d: any) => string; format?: (v: number) => string; color?: string; unit?: string; empty?: string;
 }) {
-  const max = Math.max(1, ...data.map(value));
+  const raw = Math.max(0, ...data.map(value));
+  const max = raw > 0 ? niceMax(raw) : 1;
   const w = 100 / Math.max(1, data.length);
+  const ticks = [max, max / 2, 0];
+  const step = data.length > 10 ? 3 : 1;
   return (
-    <figure style={{ margin: 0 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '.78rem', color: 'var(--muted)' }}><span>Peak {format(max)}</span></div>
-      <svg className="bars" viewBox="0 0 100 50" preserveAspectRatio="none" role="img" aria-label={`Bar chart, peak ${format(max)}`}>
-        <line x1="0" x2="100" y1="49.8" y2="49.8" stroke="var(--line)" strokeWidth="0.4" vectorEffect="non-scaling-stroke" />
-        {data.map((d, i) => {
-          const h = (value(d) / max) * 48;
-          return <rect key={i} x={i * w + w * 0.15} y={50 - h} width={w * 0.7} height={Math.max(h, 0.3)} fill={color}><title>{`${label(d)}: ${format(value(d))}`}</title></rect>;
-        })}
-      </svg>
-      <div style={{ display: 'grid', gridTemplateColumns: `repeat(${data.length}, 1fr)`, fontSize: '.72rem', color: 'var(--muted)', textAlign: 'center', fontVariantNumeric: 'tabular-nums' }}>
-        {data.map((d, i) => <span key={i}>{i % 2 === 0 || i === data.length - 1 ? label(d) : ''}</span>)}
+    <figure className="chart">
+      <div className="chart__plot">
+        <div className="chart__y" aria-hidden="true">{ticks.map((t, i) => <span key={i}>{raw > 0 || t === 0 ? format(t) : ''}</span>)}</div>
+        <div className="chart__area">
+          <svg className="bars" viewBox="0 0 100 50" preserveAspectRatio="none" role="img"
+            aria-label={`${unit ?? 'Value'} by day. ${raw > 0 ? `Highest ${format(raw)}.` : 'All zero.'}`}>
+            {[0, 25].map((y) => <line key={y} x1="0" x2="100" y1={y + 0.2} y2={y + 0.2} stroke="var(--line)" strokeWidth="1" strokeDasharray="3 3" vectorEffect="non-scaling-stroke" />)}
+            <line x1="0" x2="100" y1="49.8" y2="49.8" stroke="var(--muted)" strokeWidth="1" vectorEffect="non-scaling-stroke" />
+            {data.map((d, i) => {
+              const h = (value(d) / max) * 49.5;
+              return value(d) > 0 ? <rect key={i} x={i * w + w * 0.18} y={49.8 - h} width={w * 0.64} height={h} fill={color} rx="0.6"><title>{`${label(d)}: ${format(value(d))}`}</title></rect> : null;
+            })}
+          </svg>
+          {raw === 0 && empty && <p className="chart__empty"><span className="chart__empty-msg">{empty}</span></p>}
+        </div>
+      </div>
+      <div className="chart__x" style={{ gridTemplateColumns: `repeat(${data.length}, 1fr)` }} aria-hidden="true">
+        {data.map((d, i) => <span key={i}>{(data.length - 1 - i) % step === 0 ? label(d) : ''}</span>)}
       </div>
     </figure>
   );
+}
+
+function niceMax(v: number) {
+  const p = Math.pow(10, Math.floor(Math.log10(v)));
+  const n = v / p;
+  return (n <= 1 ? 1 : n <= 2 ? 2 : n <= 5 ? 5 : 10) * p;
 }
 
 export { money, date, dateTime, del };

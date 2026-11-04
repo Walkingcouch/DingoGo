@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { get, money, dayName, useLoad, Ranges } from '@dingogo/shared';
+import { get, money, dayName, useLoad, Ranges, Icon } from '@dingogo/shared';
 
 const KIND: Record<string, string> = {
   fare: 'Fares', commission: 'DingoGo fee', tip: 'Tips', cash_collected: 'Cash you collected', lease: 'Vehicle lease',
@@ -8,6 +8,7 @@ const KIND: Record<string, string> = {
 
 export function Earnings() {
   const [days, setDays] = useState(7);
+  const [sel, setSel] = useState<number | null>(null);
   const { data, error, loading } = useLoad(() => get(`/driver/earnings?days=${days}`), [days]);
   const byKind: Record<string, number> = data?.by_kind ?? {};
   const takeHome = Object.entries(byKind).filter(([k]) => k !== 'payout').reduce((s, [, v]) => s + v, 0);
@@ -18,48 +19,53 @@ export function Earnings() {
     return { day: d, cents: daily.find((x) => x.day === d)?.cents ?? 0 };
   });
   const max = Math.max(1, ...series.map((s) => s.cents));
+  const selIdx = sel != null && sel < series.length ? sel : series.length - 1;
+  const picked = series[selIdx];
+  const pickedLabel = selIdx === series.length - 1 ? 'Today' : new Date(picked.day + 'T12:00:00').toLocaleDateString('en-AU', { weekday: 'long', day: 'numeric', month: 'short' });
+  const rows = Object.keys(KIND).filter((k) => byKind[k] != null && Number(byKind[k]) !== 0);
 
   return (
     <div className="screen">
       <h1>Earnings</h1>
       <div className="seg" role="group" aria-label="Period">
-        <button aria-pressed={days === 7} onClick={() => setDays(7)}>Last 7 days</button>
-        <button aria-pressed={days === 30} onClick={() => setDays(30)}>Last 30 days</button>
+        <button aria-pressed={days === 7} onClick={() => { setDays(7); setSel(null); }}>Last 7 days</button>
+        <button aria-pressed={days === 30} onClick={() => { setDays(30); setSel(null); }}>Last 30 days</button>
       </div>
       {error && <p className="dg-error">{error}</p>}
       {loading && !data ? <p className="dg-muted">Loading…</p> : data && (
         <>
           <section className="panel">
-            <span className="dg-muted" style={{ fontWeight: 700 }}>Take-home after fees, lease and cash</span>
+            <p className="panel-label">Take-home after fees, lease and cash</p>
             <div className="big-num">{money(takeHome)}</div>
-            <div className="bars" aria-label="Earnings per day">
-              {series.map((s) => (
-                <div key={s.day} title={`${dayName(s.day)}: ${money(s.cents)}`}>
-                  <i style={{ height: `${Math.max(0, (s.cents / max) * 100)}%`, opacity: s.cents < 0 ? 0.3 : 1 }} />
-                  {days === 7 && <small>{new Date(s.day).toLocaleDateString('en-AU', { weekday: 'narrow' })}</small>}
-                </div>
+            <p className="chart-readout" aria-live="polite"><span>{pickedLabel}</span><strong className="dg-money">{money(picked.cents)}</strong></p>
+            <div className={'bars' + (days > 7 ? ' bars--dense' : '')} role="group" aria-label="Earnings per day. Choose a day to see its total.">
+              {series.map((s, i) => (
+                <button key={s.day} type="button" className={(i === selIdx ? 'sel' : '') + (i === series.length - 1 ? ' today' : '')}
+                  aria-pressed={i === selIdx} aria-label={`${dayName(s.day)}: ${money(s.cents)}`} onClick={() => setSel(i)}>
+                  <span className="bar-track"><i style={{ height: `${Math.max(0, (s.cents / max) * 100)}%` }} /></span>
+                  {days === 7 && <small>{new Date(s.day + 'T12:00:00').toLocaleDateString('en-AU', { weekday: 'short' }).slice(0, 2)}</small>}
+                </button>
               ))}
             </div>
           </section>
 
           <section className="panel">
-            <h2 style={{ marginTop: 0 }}>Breakdown</h2>
+            <h2 className="panel-title">Breakdown</h2>
             <ul className="list">
-              {Object.keys(KIND).filter((k) => byKind[k] != null).map((k) => (
+              {rows.map((k) => (
                 <li key={k}><span>{KIND[k]}</span><span className="dg-money" style={{ color: byKind[k] < 0 ? 'var(--earth)' : undefined }}>{money(byKind[k])}</span></li>
               ))}
-              {!Object.keys(byKind).length && <li className="dg-muted">No earnings in this period yet.</li>}
+              {!rows.length && <li className="dg-muted">No earnings in this period yet.</li>}
             </ul>
           </section>
 
           <section className="panel">
             <div className="info-row"><span>Balance to be paid</span><strong className="dg-money">{money(data.balance_cents)}</strong></div>
-            <p className="dg-muted" style={{ fontSize: 'var(--fs-sm)', marginBottom: 0 }}>
-              GST: {money(data.gst_on_fares_cents)} of your fares this period is GST (1/11). Set it aside for your BAS. Cash you collect is subtracted from what DingoGo pays you.
-            </p>
+            {Number(data.gst_on_fares_cents) > 0 && <div className="info-row"><span>GST in your fares</span><strong className="dg-money">{money(data.gst_on_fares_cents)}</strong></div>}
+            <p className="fine-print"><Icon name="info" size={16} />Set the GST (1/11 of fares) aside for your BAS. Cash you collect comes off what DingoGo pays you.</p>
           </section>
 
-          <h2>Recent activity</h2>
+          {(data.ledger ?? []).length > 0 && <h2>Recent activity</h2>}
           <ul className="list">
             {(data.ledger ?? []).map((l: any) => (
               <li key={l.id}>

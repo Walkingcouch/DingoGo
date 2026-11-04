@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { get, patch, post, put, dateTime, useLoad } from '@dingogo/shared';
 import { Page } from '../ctx';
 import { Chip, ErrorMsg, Section, Table, Tabs, useRun } from '../ui';
+import { ROLE, humanize, label } from '../labels';
 
 export default function Settings() {
   const [tab, setTab] = useState<'settings' | 'broadcast' | 'users' | 'audit'>('settings');
@@ -95,8 +96,8 @@ function Users() {
       { key: 'phone', label: 'Phone' }, { key: 'trips', label: 'Trips', num: true }, { key: 'loyalty_points', label: 'Points', num: true },
       { key: 'role', label: 'Role', render: (u) => (
         <select className="dg-select" style={{ minHeight: 34, padding: '2px 6px' }} value={u.role} aria-label="Role"
-          onChange={async (e) => { if (confirm(`Change ${u.name}'s role to ${e.target.value}?`)) { await run(() => patch(`/admin/users/${u.id}`, { role: e.target.value }), 'Role updated'); void reload(); } }}>
-          {roles.map((r) => <option key={r}>{r}</option>)}
+          onChange={async (e) => { if (confirm(`Change ${u.name || 'this user'}'s role to ${label(ROLE, e.target.value)}?`)) { await run(() => patch(`/admin/users/${u.id}`, { role: e.target.value }), 'Role updated'); void reload(); } }}>
+          {roles.map((r) => <option key={r} value={r}>{label(ROLE, r)}</option>)}
         </select>) },
       { key: 'partner', label: 'Partner business', render: (u) => u.role === 'partner' ? (
         <select className="dg-select" style={{ minHeight: 34, padding: '2px 6px' }} value={u.partner_id ?? ''} aria-label="Partner"
@@ -138,7 +139,7 @@ function NewTestAccount({ roles, partners, onCreated }: { roles: string[]; partn
       <div className="grid" style={{ display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))' }}>
         <label className="dg-field"><span>Mobile number</span><input className="dg-input" required inputMode="tel" placeholder="04xx xxx xxx" value={f.phone} onChange={(e) => set('phone', e.target.value)} /></label>
         <label className="dg-field"><span>Name</span><input className="dg-input" required value={f.name} onChange={(e) => set('name', e.target.value)} /></label>
-        <label className="dg-field"><span>Role</span><select className="dg-select" value={f.role} onChange={(e) => set('role', e.target.value)}>{roles.map((r) => <option key={r}>{r}</option>)}</select></label>
+        <label className="dg-field"><span>Role</span><select className="dg-select" value={f.role} onChange={(e) => set('role', e.target.value)}>{roles.map((r) => <option key={r} value={r}>{label(ROLE, r)}</option>)}</select></label>
         {f.role === 'driver' && <>
           <label className="dg-field"><span>Car</span><select className="dg-select" value={f.vehicle_id} onChange={(e) => set('vehicle_id', e.target.value)}>
             <option value="">First available</option>{vehicles.data?.items?.map((v: any) => <option key={v.id} value={v.id}>{v.rego} {v.colour}</option>)}</select></label>
@@ -162,7 +163,7 @@ function NewTestAccount({ roles, partners, onCreated }: { roles: string[]; partn
 function Audit() {
   const { data } = useLoad(() => get('/admin/audit'));
   return <Table rows={data?.items} empty="No admin actions recorded yet." cols={[
-    { key: 'at', label: 'When', nowrap: true, render: (a) => dateTime(a.at) }, { key: 'actor_name', label: 'Who' }, { key: 'action', label: 'Action' },
+    { key: 'at', label: 'When', nowrap: true, render: (a) => dateTime(a.at) }, { key: 'actor_name', label: 'Who' }, { key: 'action', label: 'Action', render: (a) => humanize(a.action) },
     { key: 'entity', label: 'What', render: (a) => `${a.entity ?? ''} ${a.entity_id ? String(a.entity_id).slice(0, 12) : ''}` },
     { key: 'data', label: 'Details', render: (a) => <code style={{ fontSize: '.78rem', wordBreak: 'break-all' }}>{a.data ? JSON.stringify(a.data).slice(0, 160) : ''}</code> },
   ]} />;

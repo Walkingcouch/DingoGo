@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { ApiError, get, money, post, Ranges, useLoad } from '@dingogo/shared';
+import { ApiError, Icon, get, money, post, Ranges, useLoad } from '@dingogo/shared';
 import { DgMap, type MapMarker } from '@dingogo/shared/map';
 import { PlaceField, type Place } from '../components/PlaceField';
 import { QuoteBox } from '../components/QuoteBox';
@@ -10,11 +10,11 @@ import { HirePanel } from './Hire';
 
 type Mode = 'ride' | 'pet' | 'courier' | 'tour' | 'hire';
 const MODES: { id: Mode; label: string; icon: string }[] = [
-  { id: 'ride', label: 'Ride', icon: '🚗' },
-  { id: 'pet', label: 'Pet ride', icon: '🐕' },
-  { id: 'courier', label: 'Send a parcel', icon: '📦' },
-  { id: 'tour', label: 'Tours', icon: '🏜️' },
-  { id: 'hire', label: 'Event hire', icon: '🎉' },
+  { id: 'ride', label: 'Ride', icon: 'car' },
+  { id: 'pet', label: 'Pet ride', icon: 'paw' },
+  { id: 'courier', label: 'Parcel', icon: 'package' },
+  { id: 'tour', label: 'Tours', icon: 'compass' },
+  { id: 'hire', label: 'Hire', icon: 'calendar' },
 ];
 const SIZES = [
   { id: 'S', service: 'courier_s', label: 'Small', desc: 'Satchel or shoebox, up to 5 kg' },
@@ -174,7 +174,7 @@ export function RideScreen() {
         <div className="modes" role="tablist" aria-label="Service">
           {MODES.map((m) => (
             <button key={m.id} role="tab" aria-selected={mode === m.id} className={`modes__b ${mode === m.id ? 'is-on' : ''}`} onClick={() => setMode(m.id)}>
-              <span aria-hidden="true">{m.icon}</span>{m.label}
+              <span className="modes__i"><Icon name={m.icon} size={22} /></span><span className="modes__l">{m.label}</span>
             </button>
           ))}
         </div>
@@ -283,23 +283,25 @@ export function RideScreen() {
             <fieldset className="block pay">
               <legend>Pay with</legend>
               <div className="paylist">
-                <PayOpt on={pay.method === 'card'} onClick={() => setPay({ method: 'card' })} title={cards[0] ? `${cards[0].brand} ending ${cards[0].last4}` : 'Card'}
+                <PayOpt on={pay.method === 'card'} onClick={() => setPay({ method: 'card' })} icon="card" title={cards[0] ? `${cards[0].brand} ending ${cards[0].last4}` : 'Card'}
                   sub={cards[0] ? 'Held when you book, charged at the end' : 'Add a card in Account, or use test mode'} />
-                {cashOk && <PayOpt on={pay.method === 'cash'} onClick={() => setPay({ method: 'cash' })} title="Cash" sub="Pay the driver at the end" />}
-                <PayOpt on={pay.method === 'wallet'} onClick={() => setPay({ method: 'wallet' })} title="DingoGo credit" sub={`${money(me?.user.wallet_cents ?? 0)} available`} />
+                {cashOk && <PayOpt on={pay.method === 'cash'} onClick={() => setPay({ method: 'cash' })} icon="cash" title="Cash" sub="Pay the driver at the end" />}
+                <PayOpt on={pay.method === 'wallet'} onClick={() => setPay({ method: 'wallet' })} icon="wallet" title="DingoGo credit" sub={`${money(me?.user.wallet_cents ?? 0)} available`} />
                 {corp.map((c) => (
-                  <PayOpt key={c.id} on={pay.method === 'corporate' && pay.account === c.id} onClick={() => setPay({ method: 'corporate', account: c.id })} title={c.name} sub="Business account, invoiced monthly" />
+                  <PayOpt key={c.id} on={pay.method === 'corporate' && pay.account === c.id} onClick={() => setPay({ method: 'corporate', account: c.id })} icon="receipt" title={c.name} sub="Business account, invoiced monthly" />
                 ))}
               </div>
             </fieldset>
 
             <QuoteBox quote={quote} loading={qLoading} error={qError} />
-            {!pickup || !dropoff ? <p className="dg-muted" style={{ fontSize: 'var(--fs-sm)' }}>Add a pickup and drop-off to see your price.</p> : null}
             {error && <p className="dg-error" role="alert">{error}</p>}
+            <div className="requestbar">
+            {!pickup || !dropoff ? <p className="requestbar__hint">Add a pickup and drop-off to see your price</p> : null}
             <button className="dg-btn dg-btn--block dg-btn--dark request" disabled={!canRequest || busy} onClick={request}>
               {busy ? 'Booking…' : mode === 'courier' ? `Send parcel${quote ? ` for ${money(quote.total_cents)}` : ''}` : later ? `Schedule ${mode === 'pet' ? 'pet ride' : 'ride'}` : `Book ${mode === 'pet' ? 'pet ride' : 'ride'}${quote ? ` for ${money(quote.total_cents)}` : ''}`}
             </button>
-            {mode === 'courier' && !parcel.prohibited_ack && quote && <p className="dg-muted" style={{ fontSize: 'var(--fs-sm)' }}>Confirm the prohibited items check to send.</p>}
+            {mode === 'courier' && !parcel.prohibited_ack && quote && <p className="requestbar__hint">Confirm the prohibited items check to send</p>}
+            </div>
           </>
         )}
         <p className="ride__foot dg-muted">100% electric. Aboriginal-owned. <Link to="/account/safety">How we keep you safe</Link></p>
@@ -309,11 +311,12 @@ export function RideScreen() {
   );
 }
 
-function PayOpt({ on, onClick, title, sub }: { on: boolean; onClick: () => void; title: string; sub: string }) {
+function PayOpt({ on, onClick, title, sub, icon }: { on: boolean; onClick: () => void; title: string; sub: string; icon: string }) {
   return (
     <button type="button" role="radio" aria-checked={on} className={`payopt ${on ? 'is-on' : ''}`} onClick={onClick}>
+      <span className="payopt__ic"><Icon name={icon} size={20} /></span>
+      <span className="payopt__t"><strong>{title}</strong><small>{sub}</small></span>
       <span className="payopt__r" aria-hidden="true" />
-      <span><strong>{title}</strong><small>{sub}</small></span>
     </button>
   );
 }

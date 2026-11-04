@@ -1,8 +1,7 @@
 import { useState } from 'react';
 import { NavLink, Navigate, Route, Routes } from 'react-router-dom';
-import { Login, getToken, initAuth, setToken } from '@dingogo/shared';
+import { Icon, Login, getToken, initAuth, setToken } from '@dingogo/shared';
 import { DriverProvider, useDriver } from './state';
-import { IcBolt, IcDrive, IcList, IcMoney, IcUser } from './icons';
 import { Drive } from './screens/Drive';
 import { Offer } from './screens/Offer';
 import { ActiveTrip } from './screens/ActiveTrip';
@@ -33,11 +32,11 @@ function Home() {
 function Shell({ onSignOut }: { onSignOut: () => void }) {
   const { offer, toast } = useDriver();
   const tabs = [
-    { to: '/', label: 'Drive', icon: <IcDrive /> },
-    { to: '/earnings', label: 'Earnings', icon: <IcMoney /> },
-    { to: '/charging', label: 'Charging', icon: <IcBolt /> },
-    { to: '/trips', label: 'Trips', icon: <IcList /> },
-    { to: '/profile', label: 'Profile', icon: <IcUser /> },
+    { to: '/', label: 'Drive', icon: <Icon name="car" size={26} /> },
+    { to: '/earnings', label: 'Earnings', icon: <Icon name="wallet" size={26} /> },
+    { to: '/charging', label: 'Charging', icon: <Icon name="bolt" size={26} /> },
+    { to: '/trips', label: 'Trips', icon: <Icon name="list" size={26} /> },
+    { to: '/profile', label: 'Profile', icon: <Icon name="user" size={26} /> },
   ];
   return (
     <div className="shell">
@@ -53,10 +52,10 @@ function Shell({ onSignOut }: { onSignOut: () => void }) {
         </Routes>
       </div>
       <nav className="tabs" aria-label="Main">
-        {tabs.map((t) => <NavLink key={t.to} to={t.to} end className={({ isActive }) => (isActive ? 'active' : '')}>{t.icon}{t.label}</NavLink>)}
+        {tabs.map((t) => <NavLink key={t.to} to={t.to} end className={({ isActive }) => (isActive ? 'active' : '')}>{t.icon}<span>{t.label}</span></NavLink>)}
       </nav>
       {offer && <Offer key={offer.trip_id} />}
-      {toast && <div role="status" style={{ position: 'fixed', left: 16, right: 16, top: 'max(16px, env(safe-area-inset-top))', zIndex: 4000, background: 'var(--night)', color: 'var(--gum)', padding: '14px 16px', borderRadius: 'var(--r-md)', fontWeight: 700, boxShadow: 'var(--shadow-pop)' }}>{toast}</div>}
+      {toast && <div role="status" className="toast"><Icon name="info" size={20} />{toast}</div>}
     </div>
   );
 }

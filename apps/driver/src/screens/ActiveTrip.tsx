@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { ApiError, get, km, money, post, uploadFile } from '@dingogo/shared';
+import { ApiError, Icon, get, km, money, post, uploadFile } from '@dingogo/shared';
 import { DgMap, type MapMarker } from '@dingogo/shared/map';
 import { useDriver } from '../state';
 import { SignaturePad } from './SignaturePad';
@@ -36,7 +36,7 @@ export function ActiveTrip() {
   async function act(path: string, body?: unknown) {
     setBusy(true); setError(null);
     try { const r = await post(`/driver/trips/${t.id}/${path}`, body); setTrip(r.trip); return r; }
-    catch (e) { setError(e instanceof ApiError ? e.message : 'No connection — try again'); }
+    catch (e) { setError(e instanceof ApiError ? e.message : 'No connection. Try again.'); }
     finally { setBusy(false); }
   }
 
@@ -61,17 +61,17 @@ export function ActiveTrip() {
     <div className="trip">
       <div style={{ position: 'relative', minHeight: 0 }}>
         <DgMap markers={markers} padding={50} />
-        <button className="sos" onClick={() => setSosOpen(true)}>SOS</button>
+        <button className="sos" onClick={() => setSosOpen(true)} aria-label="SOS, emergency help"><Icon name="sos" size={22} />SOS</button>
       </div>
       <section className="trip-sheet" aria-live="polite">
-        <p className="dg-muted" style={{ margin: 0, fontSize: 'var(--fs-sm)' }}>{t.ref}{t.payment_method === 'cash' ? `, cash fare ${money(t.quote_cents)}` : ''}</p>
+        <div className="trip-meta"><span className="dg-muted">{t.ref}</span>{t.payment_method === 'cash' && <span className="dg-chip dg-chip--ochre"><Icon name="cash" size={16} />Cash {money(t.quote_cents)}</span>}</div>
         <h1 className="stage">{stageTitle}</h1>
         <p className="addr">{target.address}</p>
 
         {t.status !== 'arrived' && (
           <div className="btn-row" style={{ margin: '14px 0' }}>
-            <a className="dg-btn dg-btn--dark" href={links.google} target="_blank" rel="noreferrer">Google Maps</a>
-            <a className="dg-btn dg-btn--ghost" href={links.apple} target="_blank" rel="noreferrer">Apple Maps</a>
+            <a className="dg-btn dg-btn--dark" href={links.google} target="_blank" rel="noreferrer"><Icon name="navigation" size={18} />Google Maps</a>
+            <a className="dg-btn dg-btn--ghost" href={links.apple} target="_blank" rel="noreferrer"><Icon name="map" size={18} />Apple Maps</a>
           </div>
         )}
 
@@ -94,7 +94,7 @@ export function ActiveTrip() {
         {t.status === 'arrived' && isCourier && (
           <>
             {parcel && <ParcelInfo p={parcel} />}
-            <p className="dg-note">Check the parcel. Refuse alcohol, weapons, drugs or dangerous goods — cancel with "Parcel looks prohibited".</p>
+            <p className="dg-note">Check the parcel. Refuse alcohol, weapons, drugs or dangerous goods. Cancel with "Parcel looks prohibited".</p>
             <button className="dg-btn dg-btn--block btn-xl" onClick={() => act('start')} disabled={busy}>{busy ? 'Updating…' : 'Parcel collected'}</button>
           </>
         )}
@@ -123,14 +123,14 @@ export function ActiveTrip() {
 }
 
 function TripFlags({ t }: { t: any }) {
-  const flags: string[] = [];
-  if (t.passengers > 1) flags.push(`👥 ${t.passengers} passengers`);
-  if (t.has_pet) flags.push(`🐕 Pet${t.pet_details ? `: ${t.pet_details}` : ''}`);
-  if (t.assistance_animal) flags.push('🦮 Assistance animal');
-  if (t.needs_wheelchair) flags.push('♿ Wheelchair');
-  if (t.notes) flags.push(`“${t.notes}”`);
+  const flags: [string, string][] = [];
+  if (t.passengers > 1) flags.push(['users', `${t.passengers} passengers`]);
+  if (t.has_pet) flags.push(['paw', `Pet${t.pet_details ? `: ${t.pet_details}` : ''}`]);
+  if (t.assistance_animal) flags.push(['shield', 'Assistance animal']);
+  if (t.needs_wheelchair) flags.push(['access', 'Wheelchair']);
+  if (t.notes) flags.push(['chat', `“${t.notes}”`]);
   if (!flags.length) return null;
-  return <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 14 }}>{flags.map((f) => <span key={f} className="dg-chip dg-chip--ochre" style={{ fontSize: 'var(--fs-sm)', whiteSpace: 'normal' }}>{f}</span>)}</div>;
+  return <ul className="trip-flags">{flags.map(([ic, f]) => <li key={f}><Icon name={ic} size={18} />{f}</li>)}</ul>;
 }
 
 function ParcelInfo({ p }: { p: any }) {
@@ -164,7 +164,7 @@ function ProofOfDelivery({ parcel, busy, onSubmit }: { parcel: any; busy: boolea
 
   return (
     <div>
-      {parcel && <p style={{ marginTop: 0 }}>For <strong>{parcel.recipient_name}</strong>{parcel.requires_signature ? ' — signature required' : ''}.</p>}
+      {parcel && <p style={{ marginTop: 0 }}>For <strong>{parcel.recipient_name}</strong>{parcel.requires_signature ? ', signature required' : ''}.</p>}
       <div className="seg" role="group" aria-label="Proof of delivery">
         {modes.filter(([k]) => !(parcel?.requires_signature && k !== 'signature')).map(([k, l]) => <button key={k} type="button" aria-pressed={mode === k} onClick={() => setMode(k)}>{l}</button>)}
       </div>
@@ -216,14 +216,14 @@ function SosSheet({ onClose }: { onClose: () => void }) {
   const [err, setErr] = useState<string | null>(null);
   async function alertOps() {
     try { await post('/driver/sos', { lat: pos?.lat, lng: pos?.lng }); setSent(true); }
-    catch { setErr('Alert not sent — call 000 directly.'); }
+    catch { setErr('Alert not sent. Call 000 directly.'); }
   }
   return (
     <div className="overlay" onClick={(e) => e.target === e.currentTarget && onClose()}>
       <div className="sheet" role="dialog" aria-modal="true" aria-labelledby="sos-h">
         <h2 id="sos-h">Emergency help</h2>
-        <a className="dg-btn dg-btn--danger dg-btn--block btn-xl" href="tel:000" onClick={() => void alertOps()}>Call 000</a>
-        <button className="dg-btn dg-btn--dark dg-btn--block btn-xl" style={{ marginTop: 10 }} onClick={alertOps} disabled={sent}>{sent ? 'DingoGo has been alerted' : 'Alert DingoGo with my location'}</button>
+        <a className="dg-btn dg-btn--danger dg-btn--block btn-xl" href="tel:000" onClick={() => void alertOps()}><Icon name="phone" size={22} />Call 000</a>
+        <button className="dg-btn dg-btn--dark dg-btn--block btn-xl" style={{ marginTop: 10 }} onClick={alertOps} disabled={sent}><Icon name={sent ? 'check' : 'pin'} size={22} />{sent ? 'DingoGo has been alerted' : 'Alert DingoGo with my location'}</button>
         {sent && <p className="dg-note">The operations team can see your location and will call you.</p>}
         {err && <p className="dg-error">{err}</p>}
         <button className="dg-btn dg-btn--ghost dg-btn--block" style={{ marginTop: 10 }} onClick={onClose}>Close</button>
@@ -253,7 +253,7 @@ function TripDone({ onClose }: { onClose: () => void }) {
             <div className="panel" style={{ textAlign: 'center' }}>
               <p style={{ margin: 0, fontWeight: 700 }}>How was {t.rider?.name?.split(' ')[0] ?? 'your passenger'}?</p>
               <div className="stars" role="group" aria-label="Rate passenger">
-                {[1, 2, 3, 4, 5].map((n) => <button key={n} className={n <= rating ? 'on' : ''} aria-label={`${n} star${n > 1 ? 's' : ''}`} onClick={() => !rated && rate(n)}>★</button>)}
+                {[1, 2, 3, 4, 5].map((n) => <button key={n} className={n <= rating ? 'on' : ''} aria-label={`${n} star${n > 1 ? 's' : ''}`} aria-pressed={n === rating} onClick={() => !rated && rate(n)}><Icon name="star" size={36} style={n <= rating ? { fill: 'currentColor' } : undefined} /></button>)}
               </div>
               {rated && <p className="dg-muted" style={{ margin: 0 }}>Thanks</p>}
             </div>

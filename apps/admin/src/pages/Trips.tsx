@@ -1,11 +1,11 @@
 import { useState } from 'react';
-import { get, post, money, dateTime, time, km, mins, STATUS_LABEL, COURIER_STATUS_LABEL, statusTone, useLoad } from '@dingogo/shared';
+import { get, post, money, dateTime, time, km, mins, STATUS_LABEL, COURIER_STATUS_LABEL, statusTone, useLoad, Icon } from '@dingogo/shared';
 import { DgMap, type MapMarker } from '@dingogo/shared/map';
 import { Page } from '../ctx';
 import { Chip, Drawer, ErrorMsg, Modal, Table, exportCsv, useRun, type Col } from '../ui';
+import { CHANNEL, EVENT_TYPE, OFFER_STATUS, PARCEL_SIZE, PAYMENT_KIND, PAYMENT_METHOD, PAYMENT_STATUS, SERVICE_NAME, label } from '../labels';
 
 const SERVICES: [string, string][] = [['ride', 'Ride'], ['pet', 'Pet-friendly'], ['courier_s', 'Courier small'], ['courier_m', 'Courier medium'], ['courier_l', 'Courier large'], ['hourly', 'Hourly hire']];
-const SERVICE_NAME: Record<string, string> = Object.fromEntries([...SERVICES, ['tour', 'Private tour']]);
 
 export default function Trips() {
   const [status, setStatus] = useState('');
@@ -18,13 +18,13 @@ export default function Trips() {
 
   const cols: Col<any>[] = [
     { key: 'ref', label: 'Ref', nowrap: true, render: (t) => <strong>{t.ref}</strong> },
-    { key: 'status', label: 'Status', render: (t) => <Chip tone={statusTone(t.status)}>{(t.service.startsWith('courier') ? COURIER_STATUS_LABEL : STATUS_LABEL)[t.status]}</Chip>, csv: (t) => t.status },
-    { key: 'service', label: 'Service', render: (t) => SERVICE_NAME[t.service] ?? t.service },
+    { key: 'status', label: 'Status', render: (t) => <Chip tone={statusTone(t.status)}>{(t.service.startsWith('courier') ? COURIER_STATUS_LABEL : STATUS_LABEL)[t.status] ?? label({}, t.status)}</Chip>, csv: (t) => t.status },
+    { key: 'service', label: 'Service', nowrap: true, render: (t) => label(SERVICE_NAME, t.service) },
     { key: 'when', label: 'When', nowrap: true, render: (t) => dateTime(t.scheduled_for ?? t.requested_at), csv: (t) => t.scheduled_for ?? t.requested_at },
-    { key: 'rider_name', label: 'Rider' },
-    { key: 'driver_name', label: 'Driver' },
-    { key: 'route', label: 'Route', render: (t) => <span style={{ fontSize: '.85rem' }}>{t.pickup_address} to {t.dropoff_address}</span>, csv: (t) => `${t.pickup_address} -> ${t.dropoff_address}` },
-    { key: 'payment_method', label: 'Pay' },
+    { key: 'rider_name', label: 'Rider', truncate: 160 },
+    { key: 'driver_name', label: 'Driver', truncate: 160 },
+    { key: 'route', label: 'Route', render: (t) => <span className="route" title={`${t.pickup_address} to ${t.dropoff_address}`}><span className="trunc">{t.pickup_address}</span><span className="trunc sub">to {t.dropoff_address}</span></span>, csv: (t) => `${t.pickup_address} -> ${t.dropoff_address}` },
+    { key: 'payment_method', label: 'Payment', nowrap: true, render: (t) => label(PAYMENT_METHOD, t.payment_method) },
     { key: 'final_cents', label: 'Fare', num: true, render: (t) => money(t.final_cents ?? t.quote_cents), csv: (t) => ((t.final_cents ?? t.quote_cents) / 100).toFixed(2) },
   ];
 
@@ -34,7 +34,7 @@ export default function Trips() {
       <button className="dg-btn dg-btn--sm" onClick={() => setBooking(true)}>New phone booking</button>
     </>}>
       <form className="toolbar" onSubmit={(e) => { e.preventDefault(); setSearch(q); }}>
-        <input className="dg-input" placeholder="Ref, name, phone or address" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Search trips" style={{ minWidth: 260 }} />
+        <input className="dg-input" placeholder="Ref, name, phone or address" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Search trips" style={{ minWidth: 200, flex: '1 1 220px', maxWidth: 320 }} />
         <select className="dg-select" value={status} onChange={(e) => setStatus(e.target.value)} aria-label="Status">
           <option value="">All statuses</option><option value="active">In progress</option>
           {Object.entries(STATUS_LABEL).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
@@ -43,7 +43,7 @@ export default function Trips() {
         <button className="dg-btn dg-btn--sm dg-btn--dark">Search</button>
       </form>
       <ErrorMsg error={error} />
-      <Table rows={data?.trips} cols={cols} onRow={(t) => setOpen(t.id)} empty="No trips match." />
+      <Table rows={data?.trips} cols={cols} onRow={(t) => setOpen(t.id)} empty={search || status || kind ? 'No trips match these filters.' : 'No trips yet. Phone bookings and app requests appear here.'} />
       {open && <TripDrawer id={open} onClose={() => { setOpen(null); void reload(); }} />}
       {booking && <PhoneBooking onClose={(id) => { setBooking(false); void reload(); if (id) setOpen(id); }} />}
     </Page>
@@ -69,25 +69,25 @@ function TripDrawer({ id, onClose }: { id: string; onClose: () => void }) {
           <DgMap markers={markers} track={data.track} padding={30} />
         </div>
         <dl className="kv">
-          <dt>Service</dt><dd>{SERVICE_NAME[t.service] ?? t.service}{t.channel !== 'app' && ` (booked by ${t.channel})`}</dd>
+          <dt>Service</dt><dd>{label(SERVICE_NAME, t.service)}{t.channel !== 'app' && ` (booked by ${label(CHANNEL, t.channel).toLowerCase()})`}</dd>
           <dt>From</dt><dd>{t.pickup_address}</dd><dt>To</dt><dd>{t.dropoff_address}</dd>
           <dt>Rider</dt><dd>{t.rider?.name} {t.rider?.phone && <a href={`tel:${t.rider.phone}`}>{t.rider.phone}</a>}</dd>
           <dt>Driver</dt><dd>{t.driver ? <>{t.driver.name} {t.driver.phone && <a href={`tel:${t.driver.phone}`}>{t.driver.phone}</a>}</> : '—'}</dd>
           <dt>Vehicle</dt><dd>{t.vehicle ? `${t.vehicle.colour} ${t.vehicle.make} ${t.vehicle.model}, ${t.vehicle.rego}` : '—'}</dd>
           <dt>Estimate</dt><dd>{km(t.est_distance_m)}, {mins(t.est_duration_s)}</dd>
           <dt>Trip PIN</dt><dd>{t.verify_pin}</dd>
-          <dt>Payment</dt><dd>{t.payment_method}, {t.payment_status}</dd>
+          <dt>Payment</dt><dd>{label(PAYMENT_METHOD, t.payment_method)}, {label(PAYMENT_STATUS, t.payment_status).toLowerCase()}</dd>
           {t.scheduled_for && <><dt>Scheduled</dt><dd>{dateTime(t.scheduled_for)}</dd></>}
           {(t.has_pet || t.assistance_animal || t.needs_wheelchair || t.women_driver_pref) && <><dt>Needs</dt><dd>{[t.has_pet && 'Pet', t.assistance_animal && 'Assistance animal', t.needs_wheelchair && 'Wheelchair', t.women_driver_pref && 'Female driver preferred'].filter(Boolean).join(', ')}</dd></>}
           {t.ndis_number && <><dt>NDIS no.</dt><dd>{t.ndis_number}</dd></>}
           {t.notes && <><dt>Notes</dt><dd>{t.notes}</dd></>}
           {t.cancel_reason && <><dt>Cancel reason</dt><dd>{t.cancel_reason}</dd></>}
-          {t.rider_rating && <><dt>Rating</dt><dd>{'★'.repeat(t.rider_rating)} {t.rider_feedback}</dd></>}
+          {t.rider_rating && <><dt>Rating</dt><dd><span className="stars" aria-label={`${t.rider_rating} out of 5`}>{Array.from({ length: 5 }, (_, i) => <Icon key={i} name="star" size={16} style={{ fill: i < t.rider_rating ? 'var(--ochre)' : 'none', color: i < t.rider_rating ? 'var(--ochre)' : 'var(--line)' }} />)}</span> {t.rider_feedback}</dd></>}
         </dl>
         {t.parcel && (<>
           <h3 style={{ marginTop: 18 }}>Parcel</h3>
           <dl className="kv">
-            <dt>Size</dt><dd>{t.parcel.size}, {t.parcel.description}</dd>
+            <dt>Size</dt><dd>{label(PARCEL_SIZE, t.parcel.size)}, {t.parcel.description}</dd>
             <dt>Sender</dt><dd>{t.parcel.sender_name} {t.parcel.sender_phone}</dd>
             <dt>Recipient</dt><dd>{t.parcel.recipient_name} {t.parcel.recipient_phone}</dd>
             <dt>Delivery PIN</dt><dd>{t.parcel.delivery_pin}</dd>
@@ -104,15 +104,15 @@ function TripDrawer({ id, onClose }: { id: string; onClose: () => void }) {
 
         <h3 style={{ marginTop: 18 }}>Timeline</h3>
         <ul className="timeline">
-          {data.events.map((e: any) => <li key={e.id}><strong>{e.type.replace(/_/g, ' ')}</strong> <span className="dg-muted">{time(e.at)}</span>{e.data?.reason && <> — {e.data.reason}</>}</li>)}
+          {data.events.map((e: any) => <li key={e.id}><strong>{label(EVENT_TYPE, e.type)}</strong> <span className="dg-muted">{time(e.at)}</span>{e.data?.reason && <span className="sub">{e.data.reason}</span>}</li>)}
         </ul>
         {data.offers.length > 0 && (<>
           <h3 style={{ marginTop: 18 }}>Driver offers</h3>
-          <table className="tbl"><tbody>{data.offers.map((o: any) => <tr key={o.driver_id}><td>{o.name}</td><td>{o.status}</td><td className="num">{time(o.offered_at)}</td></tr>)}</tbody></table>
+          <table className="tbl"><tbody>{data.offers.map((o: any) => <tr key={o.driver_id}><td>{o.name}</td><td>{label(OFFER_STATUS, o.status)}</td><td className="num">{time(o.offered_at)}</td></tr>)}</tbody></table>
         </>)}
         {data.payments.length > 0 && (<>
           <h3 style={{ marginTop: 18 }}>Payments</h3>
-          <table className="tbl"><tbody>{data.payments.map((p: any) => <tr key={p.id}><td>{p.kind}</td><td>{p.provider}</td><td>{p.status}</td><td className="num">{money(p.amount_cents)}</td></tr>)}</tbody></table>
+          <table className="tbl"><tbody>{data.payments.map((p: any) => <tr key={p.id}><td>{label(PAYMENT_KIND, p.kind)}</td><td>{label({ stripe: 'Stripe', mock: 'Test payment', cash: 'Cash', wallet: 'DingoGo credit', corporate: 'Business account' }, p.provider)}</td><td>{label(PAYMENT_STATUS, p.status)}</td><td className="num">{money(p.amount_cents)}</td></tr>)}</tbody></table>
         </>)}
         {(t.final_cents || t.cancel_fee_cents) > 0 && (
           <form className="panel" style={{ marginTop: 18 }} onSubmit={async (e) => {

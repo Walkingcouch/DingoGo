@@ -31,7 +31,7 @@ export function Profile({ onSignOut }: { onSignOut: () => void }) {
   return (
     <div className="screen">
       <h1>{d?.name}</h1>
-      <p className="dg-muted" style={{ marginTop: 0 }}>{d?.phone}{d?.rating_avg ? `, ${Number(d.rating_avg).toFixed(2)}★ from ${d.rating_count} trips` : ''}</p>
+      <p className="dg-muted" style={{ marginTop: 0 }}>{d?.phone}{d?.rating_avg ? `, rated ${Number(d.rating_avg).toFixed(2)} from ${d.rating_count} trips` : ''}</p>
 
       {v && (
         <section className="panel">
@@ -47,7 +47,7 @@ export function Profile({ onSignOut }: { onSignOut: () => void }) {
         <h2 style={{ marginTop: 0 }}>Trip preferences</h2>
         <label className="dg-check"><input type="checkbox" checked={!!d?.accepts_courier} onChange={(e) => pref('accepts_courier', e.target.checked)} /><span>Accept parcel deliveries</span></label>
         <label className="dg-check"><input type="checkbox" checked={!!d?.accepts_pets} onChange={(e) => pref('accepts_pets', e.target.checked)} /><span>Accept pet-friendly rides (needs a pet-ready car)</span></label>
-        <label className="dg-check"><input type="checkbox" checked={!!d?.female_driver} onChange={(e) => pref('female_driver', e.target.checked)} /><span>I'm a woman driver — match me with riders who ask for one</span></label>
+        <label className="dg-check"><input type="checkbox" checked={!!d?.female_driver} onChange={(e) => pref('female_driver', e.target.checked)} /><span>I'm a woman driver. Match me with riders who ask for one</span></label>
         <p className="dg-muted" style={{ fontSize: 'var(--fs-sm)', margin: '4px 0 12px' }}>Assistance animals are always accepted, whatever these settings.</p>
         <form onSubmit={(e) => { e.preventDefault(); void pref('languages', langs.split(',').map((s) => s.trim()).filter(Boolean)); }}>
           <label className="dg-field"><span>Languages you speak</span><input className="dg-input" value={langs} onChange={(e) => setLangs(e.target.value)} placeholder="English, Arrernte" /></label>

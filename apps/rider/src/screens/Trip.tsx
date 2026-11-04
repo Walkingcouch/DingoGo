@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import {
+  Icon,
   ApiError, REALTIME, COURIER_STATUS_LABEL, STATUS_LABEL, connectRealtime, date, dateTime, get, km, money, post, statusTone, time, useInterval, Ranges,
 } from '@dingogo/shared';
 import { DgMap, type MapMarker } from '@dingogo/shared/map';
@@ -103,13 +104,13 @@ function LiveTrip({ trip, carPos, reload, onClose }: { trip: any; carPos: any; r
             <div className="driver__av" aria-hidden="true">{d.name?.[0]}</div>
             <div className="driver__info">
               <strong>{d.name}</strong>
-              <span className="dg-muted">{d.rating ? `★ ${Number(d.rating).toFixed(1)}` : 'New driver'}{d.languages?.length ? `, speaks ${d.languages.map(langName).join(' and ')}` : ''}</span>
+              <span className="dg-muted">{d.rating ? <><Icon name="star" size={14} /> {Number(d.rating).toFixed(1)}</> : 'New driver'}{d.languages?.length ? `, speaks ${d.languages.map(langName).join(' and ')}` : ''}</span>
               {v && <span>{v.colour} {v.make} {v.model}</span>}
             </div>
             {v && (
               <div className="driver__car">
                 <span className="rego">{v.rego}</span>
-                {v.battery_pct != null && <span className="dg-chip dg-chip--green">⚡ {v.battery_pct}%</span>}
+                {v.battery_pct != null && <span className="dg-chip dg-chip--green"><Icon name="battery" size={14} /> {v.battery_pct}%</span>}
               </div>
             )}
           </div>
@@ -327,7 +328,7 @@ export function Receipt({ tripId }: { tripId: string }) {
             <tr><td>Includes GST</td><td className="dg-money">{money(r.gst_cents)}</td></tr>
           </tbody>
         </table>
-        <p className="co2"><span aria-hidden="true">🌱</span> {km(r.distance_km * 1000)} electric. About {r.co2_saved_kg} kg of CO₂ not burned compared with a petrol car.</p>
+        <p className="co2"><Icon name="leaf" size={18} style={{ color: 'var(--saltbush)' }} /> {km(r.distance_km * 1000)} electric. About {r.co2_saved_kg} kg of CO₂ not burned compared with a petrol car.</p>
         <button className="dg-btn dg-btn--ghost dg-btn--sm" onClick={() => window.print()}>Print or save as PDF</button>
       </div>
       <Ranges height={18} fill="var(--line)" />

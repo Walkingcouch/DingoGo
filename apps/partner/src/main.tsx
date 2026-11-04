@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import ReactDOM from 'react-dom/client';
 import '@dingogo/shared/brand.css';
 import './partner.css';
-import { ApiError, Login, Ranges, get, getToken, initAuth, money, post, setToken, dateTime, time, useLoad } from '@dingogo/shared';
+import { ApiError, Icon, Login, Ranges, get, getToken, initAuth, money, post, setToken, dateTime, time, useLoad } from '@dingogo/shared';
 import mascot from '@dingogo/shared/assets/mascot.png';
 
 initAuth('partner');
@@ -36,24 +36,24 @@ function Redeem({ onDone }: { onDone: () => void }) {
 
   return (
     <>
-      <form onSubmit={check}>
+      <form onSubmit={check} className="p-card">
         <label className="dg-field"><span>Customer's reward code</span>
           <input className="dg-input p-code" value={code} onChange={(e) => { setCode(e.target.value.toUpperCase().replace(/\s/g, '')); setResult(null); }}
             placeholder="DG······" autoCapitalize="characters" autoComplete="off" spellCheck={false} maxLength={20} required autoFocus />
         </label>
-        <button className="dg-btn dg-btn--dark dg-btn--block" disabled={busy || code.length < 4}>{busy && result === null ? 'Checking…' : 'Check code'}</button>
+        <button className="dg-btn dg-btn--dark dg-btn--block p-cta" disabled={busy || code.length < 4}>{busy && result === null ? 'Checking…' : 'Check code'}</button>
       </form>
       {result?.kind === 'check' && (
         <div className="p-result p-result--check" aria-live="polite">
-          <span className="dg-muted">Valid for {result.r.customer || 'this customer'}</span>
+          <span className="p-result__tag"><Icon name="check" size={16} /> Valid for {result.r.customer || 'this customer'}</span>
           <h2>{result.r.title}</h2>
           <p className="dg-muted" style={{ marginTop: 0 }}>Expires {dateTime(result.r.expires_at)}</p>
-          <button className="dg-btn dg-btn--green dg-btn--block" style={{ minHeight: 60, fontSize: '1.2rem' }} onClick={redeem} disabled={busy}>{busy ? 'Redeeming…' : 'Redeem and serve'}</button>
+          <button className="dg-btn dg-btn--green dg-btn--block" style={{ minHeight: 64, fontSize: 'var(--fs-lg)' }} onClick={redeem} disabled={busy}>{busy ? 'Redeeming…' : 'Redeem and serve'}</button>
         </div>
       )}
       {result?.kind === 'ok' && (
         <div className="p-result p-result--ok" role="status">
-          <div className="big" aria-hidden="true">✓</div>
+          <div className="p-result__badge"><Icon name="check" size={40} strokeWidth={2.6} /></div>
           <h2>Redeemed</h2>
           <p style={{ margin: 0, fontSize: '1.15rem' }}>Serve {result.customer ? `${result.customer} ` : ''}one {result.title.replace(/^free /i, '').toLowerCase()}.</p>
           <p style={{ margin: '8px 0 0', opacity: .9 }}>Recorded at {time(new Date())}. DingoGo pays you at month end.</p>
@@ -61,7 +61,7 @@ function Redeem({ onDone }: { onDone: () => void }) {
       )}
       {result?.kind === 'bad' && (
         <div className="p-result p-result--bad" role="alert">
-          <div className="big" aria-hidden="true">✕</div>
+          <div className="p-result__badge"><Icon name="x" size={40} strokeWidth={2.6} /></div>
           <h2>Don't serve</h2>
           <p style={{ margin: 0, fontSize: '1.1rem' }}>{result.msg}</p>
         </div>
@@ -79,7 +79,7 @@ function Vouchers() {
     catch (err) { setMsg({ ok: false, text: err instanceof ApiError ? err.message : 'Could not record the sale' }); }
   }
   return (
-    <form onSubmit={sell}>
+    <form onSubmit={sell} className="p-card">
       <p style={{ marginTop: 0 }}>Selling a DingoGo credit card over the counter? Enter the code printed on the card so it's recorded as sold by your business.</p>
       <label className="dg-field"><span>Voucher card code</span><input className="dg-input p-code" style={{ fontSize: '1.4rem' }} value={code} onChange={(e) => setCode(e.target.value.toUpperCase().trim())} required /></label>
       <button className="dg-btn dg-btn--block">Record sale</button>
@@ -100,12 +100,13 @@ function Home({ onSignOut }: { onSignOut: () => void }) {
       <header className="p-head">
         <div className="p-head__row">
           <img src={mascot} alt="" />
-          <div><h1>{p?.name ?? 'Partner'}</h1><small>DingoGo rewards partner</small></div>
-          <button onClick={onSignOut}>Sign out</button>
+          <div className="p-head__id"><h1 title={p?.name}>{(p?.name ?? 'Partner').replace(/\s*\(demo\)$/i, '')}</h1>
+            <small>Rewards partner{/\(demo\)$/i.test(p?.name ?? '') && <span className="p-demo">Demo</span>}</small></div>
+          <button onClick={onSignOut} aria-label="Sign out"><Icon name="logout" size={18} /><span>Sign out</span></button>
         </div>
-        <nav className="p-tabs">
-          {([['redeem', 'Redeem'], ['history', 'This month'], ['vouchers', 'Sell credit']] as const).map(([k, l]) => (
-            <button key={k} className={tab === k ? 'on' : ''} onClick={() => setTab(k)} aria-current={tab === k}>{l}</button>
+        <nav className="p-tabs" aria-label="Sections">
+          {([['redeem', 'Redeem', 'qr'], ['history', 'This month', 'chart'], ['vouchers', 'Sell credit', 'ticket']] as const).map(([k, l, ic]) => (
+            <button key={k} className={tab === k ? 'on' : ''} onClick={() => setTab(k)} aria-current={tab === k ? 'page' : undefined}><Icon name={ic} size={18} />{l}</button>
           ))}
         </nav>
       </header>
@@ -118,13 +119,13 @@ function Home({ onSignOut }: { onSignOut: () => void }) {
             <div><b>{money(me.data.owed_this_month_cents)}</b><span>DingoGo owes you</span></div>
           </div>
           <p className="dg-muted" style={{ marginTop: 0 }}>We pay {money(p?.settlement_cents_per_redemption)} for each reward served, at the end of each month. {me.data.stats.all_time} served all time.</p>
-          <h2 style={{ fontSize: 'var(--fs-lg)' }}>Recently redeemed</h2>
+          <h2 className="p-h2">Recently redeemed</h2>
           <ul className="p-list">
             {!hist.data?.items.length && <li className="dg-muted">Nothing redeemed yet.</li>}
             {hist.data?.items.slice(0, 30).map((r: any) => <li key={r.code}><span>{r.title}<br /><small className="dg-muted">{r.code}</small></span><span className="dg-muted" style={{ textAlign: 'right' }}>{dateTime(r.redeemed_at)}</span></li>)}
           </ul>
           {me.data.rewards.length > 0 && (<>
-            <h2 style={{ fontSize: 'var(--fs-lg)', marginTop: 20 }}>Your rewards in the app</h2>
+            <h2 className="p-h2">Your rewards in the app</h2>
             <ul className="p-list">{me.data.rewards.map((r: any) => <li key={r.id}><span>{r.title}</span><span className="dg-muted">{r.points_cost} points</span></li>)}</ul>
           </>)}
         </>)}

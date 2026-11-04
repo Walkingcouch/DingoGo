@@ -22,7 +22,7 @@ export function SignaturePad({ onChange }: { onChange: (dataUrl: string | null) 
 
   return (
     <div>
-      <canvas ref={ref} className="sigpad" aria-label="Signature area — sign with your finger" onPointerDown={down} onPointerMove={move} onPointerUp={up} onPointerLeave={up} />
+      <canvas ref={ref} className="sigpad" aria-label="Signature area. Sign with your finger." onPointerDown={down} onPointerMove={move} onPointerUp={up} onPointerLeave={up} />
       <button type="button" className="dg-btn dg-btn--ghost dg-btn--sm" style={{ marginTop: 8 }} onClick={clear}>Clear signature</button>
     </div>
   );

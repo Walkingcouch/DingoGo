@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { get, post, money, date, dateTime, useLoad } from '@dingogo/shared';
 import { Page } from '../ctx';
 import { Chip, CrudSection, ErrorMsg, Section, Table, Tabs, exportCsv, useRun, type Field } from '../ui';
+import { OWNERSHIP, label } from '../labels';
 
 const soon = (d?: string | null) => !d || new Date(d).getTime() < Date.now() + 30 * 864e5;
 const Exp = ({ d }: { d?: string | null }) => <span style={soon(d) ? { color: 'var(--earth)', fontWeight: 700 } : undefined}>{d ? date(d) : 'Missing'}</span>;
@@ -42,7 +43,7 @@ function Vehicles() {
       { key: 'rego', label: 'Rego', nowrap: true, render: (v) => <strong>{v.rego}</strong> },
       { key: 'model', label: 'Vehicle', render: (v) => `${v.year} ${v.make} ${v.model}, ${v.colour}` },
       { key: 'battery_pct', label: 'Battery', num: true, render: (v) => (v.battery_pct != null ? `${v.battery_pct}%` : '—') },
-      { key: 'ownership', label: 'Ownership', render: (v) => v.ownership.replace(/_/g, ' ') },
+      { key: 'ownership', label: 'Ownership', render: (v) => label(OWNERSHIP, v.ownership) },
       { key: 'lease_weekly_cents', label: 'Lease/wk', num: true, render: (v) => (v.lease_weekly_cents ? money(v.lease_weekly_cents) : '—') },
       { key: 'cvl_expiry', label: 'CVL', render: (v) => <Exp d={v.cvl_expiry} /> },
       { key: 'rego_expiry', label: 'Rego', render: (v) => <Exp d={v.rego_expiry} /> },

@@ -1,56 +1,96 @@
+import type { ReactNode } from 'react';
 import { Link } from 'react-router-dom';
-import { get, money, useLoad, SERVICE_ICON } from '@dingogo/shared';
+import { get, money, useLoad, Icon, SERVICE_ICON_NAME } from '@dingogo/shared';
 import { Page } from '../ctx';
 import { Bars, ErrorMsg, Loading, Section } from '../ui';
+import { SERVICE_NAME, label } from '../labels';
 
-const SERVICE_NAME: Record<string, string> = { ride: 'Ride', pet: 'Pet-friendly', courier_s: 'Courier small', courier_m: 'Courier medium', courier_l: 'Courier large', tour: 'Tour', hourly: 'Hourly hire' };
+const dayLabel = (day: string) => new Date(day + 'T00:00:00').toLocaleDateString('en-AU', { day: 'numeric', month: 'short' });
+
+/** Compare today with yesterday in words, on its own line. */
+function vsYesterday(today: number, yesterday: number | undefined, fmt: (n: number) => string = String) {
+  if (yesterday == null) return null;
+  if (today === 0 && yesterday === 0) return 'None yesterday either';
+  if (today === yesterday) return 'Same as yesterday';
+  return `Yesterday: ${fmt(yesterday)}`;
+}
+
+function Kpi({ value, title, note, tone, to }: { value: ReactNode; title: string; note?: ReactNode; tone?: 'red' | 'green'; to?: string }) {
+  const body = (<>
+    <span className="kpi__title">{title}</span>
+    <b className={tone ? `kpi__v--${tone}` : undefined}>{value}</b>
+    {note && <small className="kpi__note">{note}</small>}
+  </>);
+  return to ? <Link to={to} className="kpi kpi--link">{body}</Link> : <div className="kpi">{body}</div>;
+}
 
 export default function Dashboard() {
   const { data: d, error } = useLoad(() => get('/admin/dashboard'));
   if (error) return <Page title="Dashboard"><ErrorMsg error={error} /></Page>;
   if (!d) return <Page title="Dashboard"><Loading /></Page>;
-  const mixTotal = d.mix.reduce((s: number, m: any) => s + m.n, 0) || 1;
+  const mixTotal = d.mix.reduce((s: number, m: any) => s + m.n, 0);
   const fortnight = d.daily.reduce((s: number, x: any) => s + x.revenue_cents, 0);
-  const open: [string, number, string][] = [
-    ['Emergency alerts', d.live.open_sos, '/safety'], ['Compliance flags', d.live.open_flags, '/safety'],
-    ['Drivers awaiting approval', d.live.pending_drivers, '/drivers'], ['Documents to review', d.live.pending_docs, '/drivers'],
-    ['Support tickets', d.live.open_tickets, '/support'], ['Hire requests', d.live.new_hire_requests, '/support'],
-    ['Driver applications', d.live.new_applications, '/drivers'], ['Scheduled bookings', d.live.scheduled, '/trips'],
+  const fortnightTrips = d.daily.reduce((s: number, x: any) => s + x.trips, 0);
+  const y = d.daily.length > 1 ? d.daily[d.daily.length - 2] : undefined;
+  const open: { label: string; n: number; to: string; icon: string; urgent?: boolean }[] = [
+    { label: 'Emergency alerts', n: d.live.open_sos, to: '/safety', icon: 'sos', urgent: true },
+    { label: 'Compliance flags', n: d.live.open_flags, to: '/safety', icon: 'flag', urgent: true },
+    { label: 'Drivers awaiting approval', n: d.live.pending_drivers, to: '/drivers', icon: 'user' },
+    { label: 'Documents to review', n: d.live.pending_docs, to: '/drivers', icon: 'document' },
+    { label: 'Driver applications', n: d.live.new_applications, to: '/drivers', icon: 'users' },
+    { label: 'Support tickets', n: d.live.open_tickets, to: '/support', icon: 'chat' },
+    { label: 'Hire requests', n: d.live.new_hire_requests, to: '/support', icon: 'calendar' },
+    { label: 'Scheduled bookings', n: d.live.scheduled, to: '/trips', icon: 'clock' },
   ];
+  const outstanding = open.filter((o) => o.n > 0 && o.label !== 'Scheduled bookings').length;
+
   return (
     <Page title="Dashboard">
+      <h2 className="sr-only">Today</h2>
       <div className="kpis" aria-label="Today">
-        <div className="kpi"><b>{money(d.today.revenue_cents)}</b><span>Taken today</span></div>
-        <div className="kpi"><b>{d.today.completed}</b><span>Trips completed today</span></div>
-        <div className="kpi"><b>{d.today.requested}</b><span>Requests today ({d.today.courier} courier)</span></div>
-        <div className="kpi"><b style={{ color: d.today.unfulfilled ? 'var(--earth)' : undefined }}>{d.today.unfulfilled}</b><span>Missed: no driver free</span></div>
-        <div className="kpi"><b>{d.live.online_drivers}</b><span>Drivers online now</span></div>
-        <div className="kpi"><b>{d.live.active_trips}</b><span>Trips in progress</span></div>
+        <Kpi title="Taken today" value={money(d.today.revenue_cents)} note={vsYesterday(d.today.revenue_cents, y?.revenue_cents, (n) => money(n))} />
+        <Kpi title="Trips completed" value={d.today.completed} note={vsYesterday(d.today.completed, y?.trips)} />
+        <Kpi title="Requests today" value={d.today.requested} note={d.today.requested ? `${d.today.courier} of them courier` : 'No bookings yet today'} />
+        <Kpi title="Missed, no driver free" value={d.today.unfulfilled} tone={d.today.unfulfilled ? 'red' : undefined} note={d.today.unfulfilled ? 'Check driver cover' : 'Every request was covered'} />
+        <Kpi title="Drivers online" value={d.live.online_drivers} tone={d.live.online_drivers ? 'green' : undefined} note={d.live.online_drivers ? 'Available for offers' : 'Nobody is online right now'} to="/live" />
+        <Kpi title="Trips in progress" value={d.live.active_trips} note={d.live.active_trips ? 'See them on the live map' : 'No trips on the road'} to="/live" />
       </div>
 
-      <div className="grid3" style={{ marginTop: 20 }}>
+      <div className="grid3" style={{ marginTop: 'var(--sp-5)' }}>
         <div className="panel">
-          <h3>Revenue, last 14 days <span className="dg-muted" style={{ fontWeight: 400, fontSize: '.9rem' }}>{money(fortnight)} total</span></h3>
-          <Bars data={d.daily} value={(x) => x.revenue_cents} label={(x) => x.day.slice(8) + '/' + x.day.slice(5, 7)} format={(v) => money(v)} />
-          <h3 style={{ marginTop: 12 }}>Completed trips per day</h3>
-          <Bars data={d.daily} value={(x) => x.trips} label={(x) => x.day.slice(8) + '/' + x.day.slice(5, 7)} color="var(--night-2)" />
+          <div className="panel__head"><h3>Revenue, last 14 days</h3><span className="dg-muted">{money(fortnight)} total</span></div>
+          <Bars data={d.daily} value={(x) => x.revenue_cents} label={(x) => dayLabel(x.day)} format={(v) => money(v)} unit="Revenue"
+            empty="No revenue in the last 14 days. Takings appear here once trips are completed." />
+          <div className="panel__head" style={{ marginTop: 'var(--sp-5)' }}><h3>Completed trips per day</h3><span className="dg-muted">{fortnightTrips} in 14 days</span></div>
+          <Bars data={d.daily} value={(x) => x.trips} label={(x) => dayLabel(x.day)} color="var(--night-2)" unit="Trips"
+            empty="No completed trips in the last 14 days." />
         </div>
-        <div style={{ display: 'grid', gap: 20, alignContent: 'start' }}>
+        <div style={{ display: 'grid', gap: 'var(--sp-5)', alignContent: 'start' }}>
           <div className="panel">
-            <h3>Needs attention</h3>
-            <table className="tbl"><tbody>
-              {open.map(([l, n, to]) => (
-                <tr key={l}><td><Link to={to} style={{ color: 'inherit' }}>{l}</Link></td>
-                  <td className="num"><strong style={{ color: n && (l.startsWith('Emergency') || l.startsWith('Compliance')) ? 'var(--earth)' : undefined }}>{n}</strong></td></tr>
+            <div className="panel__head"><h3>Needs attention</h3><span className="dg-muted">{outstanding ? `${outstanding} ${outstanding === 1 ? 'area' : 'areas'}` : 'All clear'}</span></div>
+            <ul className="attn">
+              {open.map((o) => (
+                <li key={o.label}>
+                  <Link to={o.to} className={o.n ? '' : 'is-zero'}>
+                    <Icon name={o.icon} size={18} />
+                    <span className="attn__label">{o.label}</span>
+                    <span className={'count' + (o.n && o.urgent ? ' count--red' : o.n ? ' count--ochre' : '')}>{o.n}</span>
+                    <Icon name="chevronRight" size={16} className="attn__go" />
+                  </Link>
+                </li>
               ))}
-            </tbody></table>
+            </ul>
           </div>
           <div className="panel">
-            <h3>Service mix, 30 days</h3>
+            <div className="panel__head"><h3>Service mix, 30 days</h3><span className="dg-muted">{mixTotal} trips</span></div>
+            {!d.mix.length && <p className="empty-note">No trips in the last 30 days.</p>}
             {d.mix.map((m: any) => (
-              <div key={m.service} style={{ margin: '6px 0' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '.9rem' }}><span>{SERVICE_ICON[m.service]} {SERVICE_NAME[m.service] ?? m.service}</span><span className="dg-money">{m.n}</span></div>
-                <div style={{ height: 6, background: 'var(--line)', borderRadius: 3 }}><div style={{ width: `${(m.n / mixTotal) * 100}%`, height: '100%', background: 'var(--ochre)', borderRadius: 3 }} /></div>
+              <div key={m.service} className="mix">
+                <div className="mix__row">
+                  <span><Icon name={SERVICE_ICON_NAME[m.service] ?? 'car'} size={18} /> {label(SERVICE_NAME, m.service)}</span>
+                  <span className="dg-money">{m.n} <span className="dg-muted">({Math.round((m.n / (mixTotal || 1)) * 100)}%)</span></span>
+                </div>
+                <div className="mix__bar"><div style={{ width: `${(m.n / (mixTotal || 1)) * 100}%` }} /></div>
               </div>
             ))}
           </div>
@@ -59,10 +99,10 @@ export default function Dashboard() {
 
       <Section title="Electric fleet impact" />
       <div className="kpis">
-        <div className="kpi"><b>{d.lifetime.ev_km.toLocaleString('en-AU')} km</b><span>Driven on electricity, all time</span></div>
-        <div className="kpi"><b style={{ color: 'var(--saltbush)' }}>{d.lifetime.co2_avoided_kg.toLocaleString('en-AU')} kg</b><span>CO₂ avoided vs. average petrol car</span></div>
-        <div className="kpi"><b>{d.avg_rating_30d ?? '—'}</b><span>Average rider rating, 30 days</span></div>
-        <div className="kpi"><b>{d.ad_plays_today}</b><span>Roof screen plays today</span></div>
+        <Kpi title="Driven on electricity" value={`${d.lifetime.ev_km.toLocaleString('en-AU')} km`} note="All time" />
+        <Kpi title="CO₂ avoided" value={`${d.lifetime.co2_avoided_kg.toLocaleString('en-AU')} kg`} tone="green" note="Compared with an average petrol car" />
+        <Kpi title="Average rider rating" value={d.avg_rating_30d ?? '—'} note={d.avg_rating_30d ? 'Last 30 days, out of 5' : 'No ratings in the last 30 days'} />
+        <Kpi title="Roof screen plays" value={d.ad_plays_today} note="Today" to="/ads" />
       </div>
     </Page>
   );

@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { get, post, money, date, dateTime, useLoad } from '@dingogo/shared';
 import { Page } from '../ctx';
 import { Chip, CrudSection, ErrorMsg, Section, Table, Tabs, exportCsv, useRun } from '../ui';
+import { PARTNER_KIND, REDEMPTION_STATUS, label } from '../labels';
 
 export default function Loyalty() {
   const [tab, setTab] = useState<'partners' | 'rewards' | 'redemptions' | 'vouchers'>('partners');
@@ -17,7 +18,7 @@ export default function Loyalty() {
         { key: 'settlement_cents_per_redemption', label: 'DingoGo pays per redemption', type: 'money', help: 'What we reimburse the partner for each reward served' },
         { key: 'aboriginal_owned', label: 'Aboriginal-owned business', type: 'bool' }, { key: 'active', label: 'Active', type: 'bool' },
       ]} cols={[
-        { key: 'name', label: 'Partner', render: (p) => <strong>{p.name}</strong> }, { key: 'kind', label: 'Type' }, { key: 'address', label: 'Address' },
+        { key: 'name', label: 'Partner', render: (p) => <strong>{p.name}</strong> }, { key: 'kind', label: 'Type', render: (p) => label(PARTNER_KIND, p.kind) }, { key: 'address', label: 'Address', truncate: 240 },
         { key: 'settlement_cents_per_redemption', label: 'Paid per redemption', num: true, render: (p) => money(p.settlement_cents_per_redemption) },
         { key: 'aboriginal_owned', label: '', render: (p) => p.aboriginal_owned && <Chip tone="ochre">Aboriginal-owned</Chip> },
         { key: 'active', label: 'Status', render: (p) => (p.active ? <Chip tone="green">Active</Chip> : <Chip>Inactive</Chip>) },
@@ -50,7 +51,7 @@ function Redemptions() {
     <Table rows={data?.items} cols={[
       { key: 'code', label: 'Code', render: (r) => <strong>{r.code}</strong> }, { key: 'title', label: 'Reward' }, { key: 'partner_name', label: 'Partner' },
       { key: 'user_name', label: 'Customer' }, { key: 'issued_at', label: 'Issued', render: (r) => date(r.issued_at) },
-      { key: 'status', label: 'Status', render: (r) => <Chip tone={r.status === 'redeemed' ? 'green' : r.status === 'issued' ? 'ochre' : ''}>{r.status}</Chip> },
+      { key: 'status', label: 'Status', render: (r) => <Chip tone={r.status === 'redeemed' ? 'green' : r.status === 'issued' ? 'ochre' : ''}>{label(REDEMPTION_STATUS, r.status)}</Chip> },
       { key: 'redeemed_at', label: 'Redeemed', render: (r) => dateTime(r.redeemed_at) },
     ]} />
   </>);

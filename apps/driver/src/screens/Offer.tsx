@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { ApiError, km, mins, money, post } from '@dingogo/shared';
+import { ApiError, Icon, SERVICE_ICON_NAME, km, mins, money, post } from '@dingogo/shared';
 import { estimateEarnings, useDriver } from '../state';
 
 const LABEL: Record<string, string> = { ride: 'Ride', pet: 'Pet-friendly ride', courier_s: 'Small parcel', courier_m: 'Medium parcel', courier_l: 'Large parcel', tour: 'Private tour', hourly: 'Hourly hire' };
@@ -49,17 +49,17 @@ export function Offer() {
           <circle cx="36" cy="36" r="30" fill="none" stroke="rgba(255,255,255,.15)" strokeWidth="7" />
           <circle cx="36" cy="36" r="30" fill="none" stroke="var(--ochre)" strokeWidth="7" strokeLinecap="round"
             strokeDasharray={C} strokeDashoffset={C * (1 - frac)} transform="rotate(-90 36 36)" style={{ transition: 'stroke-dashoffset .25s linear' }} />
-          <text x="36" y="43" textAnchor="middle" fill="#fff" fontSize="22" fontWeight="800" fontFamily="var(--font-display)">{left}</text>
+          <text x="36" y="44" textAnchor="middle" fill="#fff" fontSize="22" fontWeight="800" fontFamily="var(--font-display)">{left}</text>
         </svg>
         <div>
-          <h1 id="offer-h">{LABEL[offer.service] ?? 'New request'}</h1>
-          <span style={{ color: '#B8BFD0' }}>Pickup in {mins(offer.pickup_eta_s)}</span>
+          <h1 id="offer-h"><Icon name={SERVICE_ICON_NAME[offer.service] ?? 'car'} size={26} />{LABEL[offer.service] ?? 'New request'}</h1>
+          <span className="offer-sub">Pickup in {mins(offer.pickup_eta_s)}</span>
         </div>
       </div>
 
       <div className="offer-body">
         <div className="offer-earn">{money(earn)}</div>
-        <div style={{ color: '#B8BFD0' }}>Your estimated earnings for {km(offer.est_distance_m)}, about {mins(offer.est_duration_s)}</div>
+        <div className="offer-sub">Your estimated earnings for {km(offer.est_distance_m)}, about {mins(offer.est_duration_s)}</div>
 
         <div className="leg">
           <span className="dot" style={{ background: 'var(--saltbush)' }} />
@@ -71,12 +71,12 @@ export function Offer() {
         </div>
 
         <div className="flags">
-          {offer.payment_method === 'cash' && <span className="flag">💵 Cash — collect {money(offer.quote_cents)}</span>}
-          {!isCourier && offer.passengers > 1 && <span className="flag">👥 {offer.passengers} passengers</span>}
-          {offer.has_pet && <span className="flag">🐕 Pet on board</span>}
-          {offer.needs_wheelchair && <span className="flag">♿ Wheelchair</span>}
-          {offer.assistance_animal && <span className="flag legal"><strong>Assistance animal.</strong> By law (Disability Discrimination Act) you must accept assistance animals. Refusals are reviewed.</span>}
-          {offer.notes && <span className="flag" style={{ fontWeight: 400, width: '100%' }}>“{offer.notes}”</span>}
+          {offer.payment_method === 'cash' && <span className="flag"><Icon name="cash" size={18} />Cash fare, collect {money(offer.quote_cents)}</span>}
+          {!isCourier && offer.passengers > 1 && <span className="flag"><Icon name="users" size={18} />{offer.passengers} passengers</span>}
+          {offer.has_pet && <span className="flag"><Icon name="paw" size={18} />Pet on board</span>}
+          {offer.needs_wheelchair && <span className="flag"><Icon name="access" size={18} />Wheelchair</span>}
+          {offer.assistance_animal && <span className="flag legal"><Icon name="shield" size={18} /><span><strong>Assistance animal.</strong> By law (Disability Discrimination Act) you must accept assistance animals. Refusals are reviewed.</span></span>}
+          {offer.notes && <span className="flag flag-note"><Icon name="chat" size={18} />“{offer.notes}”</span>}
         </div>
         {error && <p className="dg-error">{error}</p>}
       </div>

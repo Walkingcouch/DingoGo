@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link, Route, Routes, useNavigate, useSearchParams } from 'react-router-dom';
-import { ApiError, ago, date, del, get, money, patch, post, useLoad, Ranges } from '@dingogo/shared';
+import { ApiError, Icon, ago, date, del, get, money, patch, post, useLoad, Ranges } from '@dingogo/shared';
 import { Dialog, Page, Spinner } from '../components/ui';
 import { useMe } from '../ctx';
 
@@ -23,24 +23,24 @@ function Menu() {
   const unread = useLoad(() => get<{ notifications: any[] }>('/me/notifications'));
   const n = unread.data?.notifications.filter((x) => !x.read_at).length ?? 0;
   const items = [
-    { to: 'profile', title: 'Profile and preferences', sub: 'Name, emergency contact, accessibility, language' },
-    { to: 'payment', title: 'Payment and credit', sub: `${money(me?.user.wallet_cents ?? 0)} DingoGo credit` },
-    { to: 'notifications', title: 'Notifications', sub: n ? `${n} unread` : 'All caught up' },
-    { to: 'help', title: 'Help', sub: 'Lost property, fares, report a problem' },
-    { to: 'safety', title: 'Safety', sub: 'Trip PIN, sharing, SOS, our drivers' },
-    { to: 'privacy', title: 'Privacy and your data', sub: 'Download or delete your data' },
+    { to: 'profile', icon: 'user', title: 'Profile and preferences', sub: 'Name, emergency contact, accessibility, language' },
+    { to: 'payment', icon: 'wallet', title: 'Payment and credit', sub: `${money(me?.user.wallet_cents ?? 0)} DingoGo credit` },
+    { to: 'notifications', icon: 'bell', title: 'Notifications', sub: n ? `${n} unread` : 'All caught up' },
+    { to: 'help', icon: 'help', title: 'Help', sub: 'Lost property, fares, report a problem' },
+    { to: 'safety', icon: 'shield', title: 'Safety', sub: 'Trip PIN, sharing, SOS, our drivers' },
+    { to: 'privacy', icon: 'lock', title: 'Privacy and your data', sub: 'Download or delete your data' },
   ];
   return (
     <Page title="Account">
       <div className="me">
         <div className="me__av" aria-hidden="true">{me?.user.name?.[0] ?? '?'}</div>
         <div><strong>{me?.user.name || 'Add your name'}</strong><span className="dg-muted">{me?.user.phone}</span>
-          {me?.user.rating_avg && <span className="dg-muted">Your rating ★ {Number(me.user.rating_avg).toFixed(1)}</span>}</div>
+          {me?.user.rating_avg && <span className="dg-muted"><Icon name="star" size={14} /> {Number(me.user.rating_avg).toFixed(1)} rider rating</span>}</div>
       </div>
       <ul className="list">
         {items.map((i) => (
-          <li key={i.to}><Link to={i.to} className="row"><span className="row__main"><strong>{i.title}</strong><span className="dg-muted">{i.sub}</span></span>
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path d="M9 5l7 7-7 7" /></svg></Link></li>
+          <li key={i.to}><Link to={i.to} className="row"><span className="row__icon"><Icon name={i.icon} size={20} /></span><span className="row__main"><strong>{i.title}</strong><span className="dg-muted">{i.sub}</span></span>
+            <Icon name="chevronRight" size={18} className="row__chev" /></Link></li>
         ))}
       </ul>
       <button className="dg-btn dg-btn--ghost dg-btn--block" style={{ marginTop: 20 }} onClick={signOut}>Sign out</button>
@@ -140,7 +140,7 @@ function Payment() {
           <ul className="list">
             {pm.data?.methods.map((c: any) => (
               <li key={c.id} className="row">
-                <span className="row__icon" aria-hidden="true">💳</span>
+                <span className="row__icon"><Icon name="card" size={20} /></span>
                 <span className="row__main"><strong>{c.brand} ending {c.last4}</strong>{c.is_default && <span className="dg-muted">Default</span>}</span>
                 <button className="dg-btn dg-btn--ghost dg-btn--sm" disabled={busy} onClick={() => act(() => del(`/payment-methods/${c.id}`), 'Card removed.')}>Remove</button>
               </li>

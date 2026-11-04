@@ -4,19 +4,20 @@ import { get, post, time, ago, STATUS_LABEL, statusTone, useInterval, useLoad } 
 import { DgMap, type MapMarker } from '@dingogo/shared/map';
 import { Page, useOps } from '../ctx';
 import { Chip, useRun } from '../ui';
+import { DOC_TYPE, ROLE, SOS_STATUS, label } from '../labels';
 
 const EVENT_TEXT: Record<string, (d: any) => string> = {
   'trip.created': (d) => `New ${d.status === 'scheduled' ? 'scheduled booking' : 'request'} ${d.ref ?? ''}`,
   'trip.updated': (d) => `${d.ref ?? 'Trip'}: ${STATUS_LABEL[d.status] ?? d.status}`,
   'sos.new': (d) => `EMERGENCY from ${d.user_name ?? 'user'}${d.trip_ref ? ` on ${d.trip_ref}` : ''}`,
-  'sos.updated': (d) => `SOS ${d.status}`,
+  'sos.updated': (d) => `Emergency alert ${label(SOS_STATUS, d.status).toLowerCase()}`,
   'driver.status': (d) => `Driver went ${d.online ? 'online' : 'offline'}`,
   'compliance.flag': () => 'Compliance flag: assistance animal refusal',
   'safety.deviation': (d) => `Route deviation on ${d.ref} (${d.off_m} m off route)`,
   'support.new': (d) => `Support ticket: ${d.subject}`,
   'application.new': () => 'New driver application',
   'hire.new': () => 'New hire request',
-  'driver.document': (d) => `Driver uploaded ${String(d.type).replace(/_/g, ' ')}`,
+  'driver.document': (d) => `Driver uploaded ${label(DOC_TYPE, d.type).toLowerCase()}`,
 };
 
 export default function Live() {
@@ -105,7 +106,7 @@ export default function Live() {
           {data?.sos.length > 0 && (
             <div className="panel" style={{ borderColor: 'var(--earth)' }}>
               <h3 style={{ color: 'var(--earth)' }}>Open emergency alerts</h3>
-              {data.sos.map((s: any) => <p key={s.id} style={{ margin: '4px 0' }}>{s.user_name} ({s.role}) {ago(s.created_at)} {s.trip_ref && `on ${s.trip_ref}`}</p>)}
+              {data.sos.map((s: any) => <p key={s.id} style={{ margin: '4px 0' }}>{s.user_name} ({label(ROLE, s.role).toLowerCase()}) {ago(s.created_at)} {s.trip_ref && `on ${s.trip_ref}`}</p>)}
               <Link to="/safety" className="dg-btn dg-btn--danger dg-btn--sm">Respond</Link>
             </div>
           )}

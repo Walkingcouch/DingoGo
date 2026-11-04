@@ -2,8 +2,8 @@ import { useState } from 'react';
 import { get, patch, post, apiBase, date, dateTime, ago, assetUrl, useLoad } from '@dingogo/shared';
 import { Page, useOps } from '../ctx';
 import { Chip, ErrorMsg, Section, Table, Tabs, useRun } from '../ui';
+import { DOC_TYPE, FLAG_KIND, FLAG_STATUS, ROLE, SOS_STATUS, label } from '../labels';
 
-const FLAG_TEXT: Record<string, string> = { assistance_animal_refusal: 'Assistance animal refusal', route_deviation: 'Route deviation', doc_expired: 'Document expired', levy: 'Levy' };
 
 export default function Safety() {
   const [tab, setTab] = useState<'sos' | 'flags' | 'expiring' | 'docs'>('sos');
@@ -28,8 +28,8 @@ export default function Safety() {
         {openSos.map((s: any) => (
           <div key={s.id} className="panel" style={{ borderColor: 'var(--earth)', borderWidth: 2, marginBottom: 12 }}>
             <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-              <h3 style={{ margin: 0, color: 'var(--earth)' }}>{s.user_name} ({s.role}) raised an alert {ago(s.created_at)}</h3>
-              <Chip tone={s.status === 'open' ? 'red' : 'ochre'}>{s.status}</Chip>
+              <h3 style={{ margin: 0, color: 'var(--earth)' }}>{s.user_name} ({label(ROLE, s.role).toLowerCase()}) raised an alert {ago(s.created_at)}</h3>
+              <Chip tone={s.status === 'open' ? 'red' : 'ochre'}>{label(SOS_STATUS, s.status)}</Chip>
             </div>
             <p style={{ margin: '6px 0' }}>{s.message ?? 'No message.'} {s.trip_ref && <>Trip {s.trip_ref}.</>} Call them: <a href={`tel:${s.user_phone}`}><strong>{s.user_phone}</strong></a>. If anyone is in danger call 000.</p>
             {s.lat != null && <p className="dg-muted" style={{ margin: '4px 0' }}>Location {s.lat.toFixed(5)}, {s.lng.toFixed(5)}</p>}
@@ -43,7 +43,7 @@ export default function Safety() {
         {!openSos.length && <p className="dg-note" style={{ background: 'var(--saltbush-soft)' }}>No open emergency alerts.</p>}
         <Section title="Alert history" />
         <Table rows={sos.data?.items.filter((s: any) => s.status === 'resolved')} empty="No resolved alerts." cols={[
-          { key: 'created_at', label: 'When', render: (s) => dateTime(s.created_at) }, { key: 'user_name', label: 'Raised by', render: (s) => `${s.user_name} (${s.role})` },
+          { key: 'created_at', label: 'When', render: (s) => dateTime(s.created_at) }, { key: 'user_name', label: 'Raised by', render: (s) => <>{s.user_name}<span className="sub">{label(ROLE, s.role)}</span></> },
           { key: 'trip_ref', label: 'Trip' }, { key: 'notes', label: 'Outcome' }, { key: 'resolved_at', label: 'Resolved', render: (s) => dateTime(s.resolved_at) },
         ]} />
       </>)}
@@ -52,12 +52,12 @@ export default function Safety() {
         <ErrorMsg error={comp.error} />
         <Table rows={comp.data?.flags} empty="No flags." cols={[
           { key: 'created_at', label: 'When', nowrap: true, render: (f) => dateTime(f.created_at) },
-          { key: 'kind', label: 'Type', render: (f) => <Chip tone={f.kind === 'assistance_animal_refusal' ? 'red' : 'ochre'}>{FLAG_TEXT[f.kind] ?? f.kind}</Chip> },
+          { key: 'kind', label: 'Type', render: (f) => <Chip tone={f.kind === 'assistance_animal_refusal' ? 'red' : 'ochre'}>{label(FLAG_KIND, f.kind)}</Chip> },
           { key: 'driver_name', label: 'Driver' }, { key: 'trip_ref', label: 'Trip' }, { key: 'detail', label: 'Detail' },
           { key: 'status', label: 'Status', render: (f) => (
             <select className="dg-select" style={{ minHeight: 34, padding: '2px 6px' }} value={f.status} aria-label="Flag status"
               onChange={async (e) => { await run(() => patch(`/admin/compliance/${f.id}`, { status: e.target.value }), 'Flag updated'); reloadAll(); }}>
-              {['open', 'reviewed', 'actioned', 'dismissed'].map((s) => <option key={s}>{s}</option>)}
+              {['open', 'reviewed', 'actioned', 'dismissed'].map((s) => <option key={s} value={s}>{label(FLAG_STATUS, s)}</option>)}
             </select>) },
         ]} />
       </>)}
@@ -74,7 +74,7 @@ export default function Safety() {
       </>)}
       {tab === 'docs' && (
         <Table rows={comp.data?.pending_documents} empty="Nothing waiting for review." cols={[
-          { key: 'created_at', label: 'Uploaded', render: (d) => dateTime(d.created_at) }, { key: 'driver_name', label: 'Driver' }, { key: 'type', label: 'Document', render: (d) => d.type.replace(/_/g, ' ') },
+          { key: 'created_at', label: 'Uploaded', render: (d) => dateTime(d.created_at) }, { key: 'driver_name', label: 'Driver' }, { key: 'type', label: 'Document', render: (d) => label(DOC_TYPE, d.type) },
           { key: 'number', label: 'Number' }, { key: 'expires_at', label: 'Expires', render: (d) => date(d.expires_at) },
           { key: 'file', label: 'File', render: (d) => (d.file_url ? <a href={assetUrl(d.file_url)} target="_blank" rel="noreferrer">View</a> : '—') },
           { key: 'x', label: '', render: (d) => <>

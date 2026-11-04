@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom';
-import { COURIER_STATUS_LABEL, SERVICE_ICON, STATUS_LABEL, dayName, get, money, statusTone, time, useLoad } from '@dingogo/shared';
+import { COURIER_STATUS_LABEL, Icon, SERVICE_ICON_NAME, STATUS_LABEL, dayName, get, money, statusTone, time, useLoad } from '@dingogo/shared';
 import { Page, Spinner } from '../components/ui';
 import { ACTIVE } from '../ctx';
 
@@ -34,6 +34,9 @@ export function TripsScreen() {
   );
 }
 
+/** Drop the trailing suburb/state so addresses fit on one line. */
+const short = (a?: string) => (a ?? '').replace(/,?\s*(Alice Springs|NT|0870|Australia)\b.*$/i, '') || a || '';
+
 function TripRow({ t }: { t: any }) {
   const labels = t.kind === 'courier' ? COURIER_STATUS_LABEL : STATUS_LABEL;
   const href = ACTIVE.includes(t.status) ? `/trip/${t.id}` : `/trips/${t.id}`;
@@ -41,14 +44,17 @@ function TripRow({ t }: { t: any }) {
   return (
     <li>
       <Link to={href} className="row">
-        <span className="row__icon" aria-hidden="true">{SERVICE_ICON[t.service] ?? '🚗'}</span>
-        <span className="row__main">
-          <strong>{t.dropoff_address === t.pickup_address ? t.pickup_address : t.dropoff_address}</strong>
-          <span className="dg-muted">{dayName(when)}, {time(when)}</span>
+        <span className="row__icon"><Icon name={SERVICE_ICON_NAME[t.service] ?? 'car'} size={20} /></span>
+        <span className="row__main trip-row">
+          <span className="trip-row__when"><span>{dayName(when)}, {time(when)}</span><span className={`dg-chip dg-chip--${statusTone(t.status)}`}>{labels[t.status]}</span></span>
+          <span className="trip-row__place"><span className="trip-row__dot" aria-hidden="true" /><span>{short(t.pickup_address)}</span></span>
+          {t.dropoff_address && t.dropoff_address !== t.pickup_address && (
+            <span className="trip-row__place"><span className="trip-row__dot trip-row__dot--to" aria-hidden="true" /><span><span className="sr-only">to </span>{short(t.dropoff_address)}</span></span>
+          )}
         </span>
         <span className="row__end">
           <span className="dg-money">{money(t.final_cents ?? t.quote_cents)}</span>
-          <span className={`dg-chip dg-chip--${statusTone(t.status)}`}>{labels[t.status]}</span>
+          <Icon name="chevronRight" size={18} className="row__chev" />
         </span>
       </Link>
     </li>

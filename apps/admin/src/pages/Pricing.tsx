@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { money, date } from '@dingogo/shared';
+import { money, date, Icon, SERVICE_ICON_NAME } from '@dingogo/shared';
 import { Page } from '../ctx';
 import { Chip, CrudSection, Tabs, type Field } from '../ui';
 
@@ -20,9 +20,9 @@ export default function Pricing() {
     <Page title="Pricing & tours">
       <Tabs tabs={[['fares', 'Fares'], ['zones', 'Service areas'], ['promos', 'Promo codes'], ['plans', 'DingoGo Pass'], ['holidays', 'Public holidays'], ['tours', 'Tours']]} value={tab} onChange={setTab} />
       {tab === 'fares' && <CrudSection title="Fare rules" path="fares" pk="service" newLabel="Add service" fields={FARE_FIELDS}
-        describe={<p className="dg-muted" style={{ marginTop: 0, maxWidth: 780 }}>Benchmark: Alice Springs taxis charge $5.30 flagfall plus $2.45/km by day and $6.60 plus $2.89/km at night (NT tariff, May 2026), plus a 5% card surcharge. All fares include GST.</p>}
+        describe={<p className="dg-muted" style={{ marginTop: 0, maxWidth: 780 }}>Benchmark: the Alice Springs taxi maximum tariff from 1 July 2026 is $5.50 flagfall plus $2.45/km on weekdays by day, and $6.80 plus $2.89/km at night and on weekends (NT Government Gazette S53). Taxis add a card surcharge. All DingoGo fares include GST.</p>}
         cols={[
-          { key: 'label', label: 'Service', render: (r) => <><strong>{r.label}</strong><br /><span className="dg-muted" style={{ fontSize: '.82rem' }}>{r.service}</span></> },
+          { key: 'label', label: 'Service', nowrap: true, render: (r) => <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}><Icon name={SERVICE_ICON_NAME[r.service] ?? 'car'} size={18} /><strong>{r.label}</strong></span> },
           { key: 'base_cents', label: 'Base', num: true, render: (r) => money(r.base_cents) }, { key: 'per_km_cents', label: 'Per km', num: true, render: (r) => money(r.per_km_cents) },
           { key: 'per_min_cents', label: 'Per min', num: true, render: (r) => money(r.per_min_cents) }, { key: 'booking_fee_cents', label: 'Booking', num: true, render: (r) => money(r.booking_fee_cents) },
           { key: 'min_fare_cents', label: 'Minimum', num: true, render: (r) => money(r.min_fare_cents) }, { key: 'cancel_fee_cents', label: 'Cancel fee', num: true, render: (r) => money(r.cancel_fee_cents) },

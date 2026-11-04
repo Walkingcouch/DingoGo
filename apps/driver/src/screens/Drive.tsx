@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { ApiError, money, post } from '@dingogo/shared';
+import { ApiError, Icon, money, post } from '@dingogo/shared';
 import { DgMap, type MapMarker } from '@dingogo/shared/map';
 import { PLACES, rangeKm, useDriver } from '../state';
 
@@ -33,38 +33,43 @@ export function Drive() {
   return (
     <div className="drive">
       <div className="drive-top">
-        <span className="status-pill"><span className={'status-dot' + (online ? ' on' : '')} />{online ? 'Online — waiting for trips' : 'Offline'}</span>
+        <span className="status-pill" role="status"><span className={'status-dot' + (online ? ' on' : '')} aria-hidden />{online ? 'Online, waiting for trips' : 'Offline'}</span>
         <span style={{ flex: 1 }} />
-        <button className="round-btn" aria-label="Set my location" onClick={() => setPickPlace(true)}>📍</button>
+        <button className="round-btn" aria-label="Set my location" onClick={() => setPickPlace(true)}><Icon name="locate" size={22} /></button>
       </div>
       <div className="drive-map">
         <DgMap markers={markers} padding={80} zoom={14} />
       </div>
       <section className="drive-sheet" aria-label="Driving status">
         {!pos && (
-          <p className="dg-note" style={{ marginTop: 0 }}>
-            Location is off. <button className="dg-btn dg-btn--sm dg-btn--dark" onClick={() => setPickPlace(true)}>Set location</button>
-          </p>
+          <div className="inline-notice">
+            <Icon name="pin" size={20} />
+            <span>Location is off</span>
+            <button className="link-btn" onClick={() => setPickPlace(true)}>Set location</button>
+          </div>
         )}
         {online
-          ? <button className="online-toggle stop" onClick={goOffline} disabled={busy}>Go offline</button>
-          : <button className="online-toggle go" onClick={() => { setErrors(null); setAskBattery(true); }} disabled={busy}>Go online</button>}
+          ? <button className="online-toggle stop" onClick={goOffline} disabled={busy}><Icon name="power" size={24} />Go offline</button>
+          : <button className="online-toggle go" onClick={() => { setErrors(null); setAskBattery(true); }} disabled={busy}><Icon name="power" size={24} />Go online</button>}
 
-        <div className="battery" style={{ marginTop: 14 }} aria-label={`Battery ${battery} percent, about ${range} kilometres`}>
-          <span aria-hidden style={{ fontSize: 20 }}>🔋</span>
-          <div className="battery-bar"><i className={battery < 20 ? 'low' : ''} style={{ width: `${battery}%` }} /></div>
+        <div className="battery" aria-label={`Battery ${battery} percent, about ${range} kilometres`}>
+          <Icon name="battery" size={26} style={{ color: battery < 20 ? 'var(--earth)' : 'var(--saltbush)' }} />
+          <div className="battery-bar" aria-hidden><i className={battery < 20 ? 'low' : ''} style={{ width: `${battery}%` }} /></div>
           <strong className="dg-money">{battery}%</strong>
-          <span className="dg-muted">≈{range} km</span>
+          <span className="dg-muted">{range} km</span>
         </div>
 
-        <div className="stats" style={{ marginTop: 14 }}>
+        <div className="stats">
           <div className="stat"><b>{me?.today?.trips ?? 0}</b><span>Trips today</span></div>
           <div className="stat"><b>{money(me?.today?.gross_cents ?? 0)}</b><span>Fares today</span></div>
-          <div className="stat"><b>{me?.driver?.rating_avg ? Number(me.driver.rating_avg).toFixed(2) : '—'}</b><span>Rating</span></div>
+          <div className="stat"><b>{me?.driver?.rating_avg ? Number(me.driver.rating_avg).toFixed(2) : 'New'}</b><span>Rating</span></div>
         </div>
-        <p className="dg-muted" style={{ margin: '12px 0 0', fontSize: 'var(--fs-sm)' }}>
-          {v ? `${v.colour} ${v.make} ${v.model}, ${v.rego}.` : ''}{acc != null ? ` You accepted ${acc}% of requests in the last 30 days.` : ''}
-        </p>
+        {(v || acc != null) && (
+          <div className="vehicle-line">
+            {v && <span><Icon name="car" size={18} />{v.colour} {v.make} {v.model}, <strong>{v.rego}</strong></span>}
+            {acc != null && <span className="dg-muted">{acc}% accepted (30 days)</span>}
+          </div>
+        )}
       </section>
 
       {askBattery && (
@@ -72,9 +77,9 @@ export function Drive() {
           <div className="sheet" role="dialog" aria-modal="true" aria-labelledby="bat-h">
             <h2 id="bat-h">How much charge?</h2>
             <p className="dg-muted" style={{ marginTop: 0 }}>Check the dash. We use it so you're never sent on a trip you can't finish.</p>
-            <div style={{ textAlign: 'center', fontFamily: 'var(--font-display)', fontSize: 'var(--fs-4xl)', fontWeight: 800 }}>{battery}%</div>
+            <div className="dial-num">{battery}%</div>
             <input type="range" min={0} max={100} step={1} value={battery} onChange={(e) => setBattery(Number(e.target.value))}
-              aria-label="Battery percent" style={{ width: '100%', height: 40, accentColor: 'var(--ochre)' }} />
+              aria-label="Battery percent" className="range-input" />
             <p className="dg-muted" style={{ textAlign: 'center' }}>About {range} km of range in this heat</p>
             {battery < 15 && <p className="dg-error">Charge above 15% before going online.</p>}
             {errors && (
@@ -96,12 +101,12 @@ export function Drive() {
           <div className="sheet" role="dialog" aria-modal="true" aria-labelledby="loc-h">
             <h2 id="loc-h">Where are you?</h2>
             <p className="dg-muted" style={{ marginTop: 0 }}>{geoDenied ? 'GPS is unavailable, so pick the nearest place.' : 'Using GPS. You can override it for testing.'}</p>
-            <ul className="list">
-              {simulated && <li><button className="dg-btn dg-btn--ghost dg-btn--block" onClick={() => { setSimulated(null); setPickPlace(false); }}>Use my GPS</button></li>}
+            <ul className="place-list">
+              {simulated && <li><button className="dg-btn dg-btn--ghost dg-btn--block place-btn" onClick={() => { setSimulated(null); setPickPlace(false); }}><Icon name="locate" size={18} />Use my GPS</button></li>}
               {PLACES.map((p) => (
                 <li key={p.name}>
-                  <button className="dg-btn dg-btn--ghost dg-btn--block" style={{ justifyContent: 'flex-start' }}
-                    onClick={() => { setSimulated({ lat: p.lat, lng: p.lng, heading: null }); setPickPlace(false); }}>{p.name}</button>
+                  <button className="dg-btn dg-btn--ghost dg-btn--block place-btn"
+                    onClick={() => { setSimulated({ lat: p.lat, lng: p.lng, heading: null }); setPickPlace(false); }}><Icon name="pin" size={18} />{p.name}</button>
                 </li>
               ))}
             </ul>

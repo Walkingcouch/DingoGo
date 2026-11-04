@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { get, patch, money, date, useLoad } from '@dingogo/shared';
 import { Page } from '../ctx';
 import { Chip, CrudSection, Section, Table, Tabs, exportCsv, useRun, type Field } from '../ui';
+import { CAMPAIGN_STATUS, label } from '../labels';
 
 export function LedPreview({ headline, subline, bg, fg }: { headline?: string; subline?: string; bg?: string; fg?: string }) {
   return (
@@ -48,7 +49,7 @@ export default function Ads() {
           { key: 'name', label: 'Campaign', render: (c) => <><strong>{c.name}</strong><br /><span className="dg-muted" style={{ fontSize: '.85rem' }}>{advOpts.find(([id]) => id === c.advertiser_id)?.[1]}</span></> },
           { key: 'dates', label: 'Runs', render: (c) => <>{date(c.starts_on)} to {date(c.ends_on)}<br /><span className="dg-muted" style={{ fontSize: '.85rem' }}>{c.hour_from}:00 to {c.hour_to}:00{c.geo_radius_m ? `, within ${c.geo_radius_m} m` : ''}</span></> },
           { key: 'cpm_cents', label: 'Per 1,000', num: true, render: (c) => (c.cpm_cents ? money(c.cpm_cents) : 'Free') },
-          { key: 'status', label: 'Status', render: (c) => <Chip tone={STATUS_TONE[c.status]}>{c.status}</Chip> },
+          { key: 'status', label: 'Status', render: (c) => <Chip tone={STATUS_TONE[c.status]}>{label(CAMPAIGN_STATUS, c.status)}</Chip> },
           { key: 'x', label: '', render: (c) => (
             <span onClick={(e) => e.stopPropagation()}>
               {c.status !== 'approved' && <button className="dg-btn dg-btn--sm dg-btn--green" onClick={async () => { await run(() => patch(`/admin/campaigns/${c.id}`, { status: 'approved' }), 'Campaign approved'); setK(k + 1); }}>Approve</button>}

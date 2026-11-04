@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { ApiError, dateTime, get, money, post, useLoad } from '@dingogo/shared';
+import { ApiError, Icon, dateTime, get, money, post, useLoad } from '@dingogo/shared';
 import { rangeKm, useDriver } from '../state';
 
 const nowLocal = (offsetMin = 0) => { const d = new Date(Date.now() + offsetMin * 60000); d.setMinutes(d.getMinutes() - d.getTimezoneOffset()); return d.toISOString().slice(0, 16); };
@@ -16,36 +16,41 @@ export function Charging() {
     <div className="screen">
       <h1>Charging</h1>
       <section className="panel">
-        <div className="battery">
-          <span aria-hidden style={{ fontSize: 24 }}>🔋</span>
-          <div className="battery-bar"><i className={battery < 20 ? 'low' : ''} style={{ width: `${battery}%` }} /></div>
+        <div className="battery" aria-label={`Battery ${battery} percent`}>
+          <Icon name="battery" size={24} style={{ color: battery < 20 ? 'var(--earth)' : 'var(--saltbush)' }} />
+          <div className="battery-bar" aria-hidden><i className={battery < 20 ? 'low' : ''} style={{ width: `${battery}%` }} /></div>
           <strong className="dg-money">{battery}%</strong>
         </div>
-        <p className="dg-muted" style={{ margin: '8px 0 12px' }}>About {rangeKm(me?.driver?.vehicle?.range_km, battery)} km left with air-con in this heat.</p>
+        <p className="dg-muted" style={{ margin: '10px 0 14px' }}>About {rangeKm(me?.driver?.vehicle?.range_km, battery)} km left with air-con in this heat.</p>
         <div className="btn-row">
-          <button className="dg-btn dg-btn--ghost" onClick={() => setCheckIn(true)}>Battery check-in</button>
-          <button className="dg-btn" onClick={() => setForm(true)}>Log a charge</button>
+          <button className="dg-btn dg-btn--ghost" onClick={() => setCheckIn(true)}><Icon name="battery" size={18} />Check in</button>
+          <button className="dg-btn" onClick={() => setForm(true)}><Icon name="plus" size={18} />Log a charge</button>
         </div>
       </section>
 
       {m && (
-        <div className="stats" style={{ marginTop: 12 }}>
-          <div className="stat"><b>{Number(m.kwh).toFixed(0)}</b><span>kWh this month</span></div>
-          <div className="stat"><b>{money(m.cost_cents)}</b><span>Electricity</span></div>
-          <div className="stat"><b>{centsPerKm != null ? `${centsPerKm}c` : '—'}</b><span>Per trip km ({m.trip_km} km)</span></div>
-        </div>
+        <>
+          <h2>This month</h2>
+          <div className="stats">
+            <div className="stat"><b>{Number(m.kwh).toFixed(0)}</b><span>kWh</span></div>
+            <div className="stat"><b>{money(m.cost_cents)}</b><span>Electricity</span></div>
+            <div className="stat"><b>{centsPerKm != null ? `${centsPerKm}c` : 'None'}</b><span>Per km</span></div>
+          </div>
+          <p className="fine-print"><Icon name="info" size={16} />{m.trip_km ? `Based on ${m.trip_km} trip km. ` : ''}Home charging is reimbursed at the household tariff with your next payout.</p>
+        </>
       )}
-      <p className="dg-muted" style={{ fontSize: 'var(--fs-sm)' }}>Home charging is reimbursed at the household tariff with your next payout.</p>
 
       <h2>Sessions</h2>
       <ul className="list">
         {(data?.sessions ?? []).map((s: any) => (
-          <li key={s.id}>
-            <div>
-              <div>{s.location === 'home' ? 'Home' : s.location === 'depot' ? 'Depot' : s.site_name || 'Public charger'}, {Number(s.kwh).toFixed(1)} kWh</div>
-              <div className="sub">{dateTime(s.started_at)}{s.start_pct != null && s.end_pct != null ? `, ${s.start_pct}% to ${s.end_pct}%` : ''}</div>
+          <li key={s.id} className="session">
+            <span className="session-ic" aria-hidden><Icon name={s.location === 'home' ? 'home' : 'bolt'} size={20} /></span>
+            <div style={{ minWidth: 0, flex: 1 }}>
+              <div className="session-title">{s.location === 'home' ? 'Home' : s.location === 'depot' ? 'Depot' : s.site_name || 'Public charger'}</div>
+              <div className="sub">{dateTime(s.started_at)}</div>
+              <div className="sub">{Number(s.kwh).toFixed(1)} kWh{s.start_pct != null && s.end_pct != null ? `, ${s.start_pct}% to ${s.end_pct}%` : ''}</div>
             </div>
-            <div style={{ textAlign: 'right' }}>
+            <div className="session-end">
               <div className="dg-money">{money(s.cost_cents)}</div>
               {s.reimbursed_at ? <span className="dg-chip dg-chip--green">Reimbursed</span> : s.reimbursable ? <span className="dg-chip">Pending</span> : null}
             </div>
@@ -126,8 +131,8 @@ function CheckIn({ onClose, onSaved }: { onClose: () => void; onSaved: (p: numbe
     <div className="overlay" onClick={(e) => e.target === e.currentTarget && onClose()}>
       <form className="sheet" onSubmit={save} role="dialog" aria-modal="true" aria-labelledby="ci-h">
         <h2 id="ci-h">Battery check-in</h2>
-        <div style={{ textAlign: 'center', fontFamily: 'var(--font-display)', fontSize: 'var(--fs-3xl)', fontWeight: 800 }}>{pct}%</div>
-        <input type="range" min={0} max={100} value={pct} onChange={(e) => setPct(Number(e.target.value))} aria-label="Battery percent" style={{ width: '100%', height: 40, accentColor: 'var(--ochre)' }} />
+        <div className="dial-num">{pct}%</div>
+        <input type="range" min={0} max={100} value={pct} onChange={(e) => setPct(Number(e.target.value))} aria-label="Battery percent" className="range-input" />
         <div className="btn-row">
           <label className="dg-field"><span>Odometer (km)</span><input className="dg-input" inputMode="numeric" value={odo} onChange={(e) => setOdo(e.target.value)} /></label>
           <label className="dg-field"><span>Outside temp (°C)</span><input className="dg-input" inputMode="decimal" value={temp} onChange={(e) => setTemp(e.target.value)} /></label>
