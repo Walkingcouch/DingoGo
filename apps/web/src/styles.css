@@ -418,3 +418,4 @@ p { text-wrap: pretty; }
 @media (max-width: 860px) { .foot-top { grid-template-columns: 1fr; } .foot-cols { grid-template-columns: 1fr 1fr; } .foot-base { grid-template-columns: 1fr; } }
 
 .wrap.section { padding-left: var(--gutter); padding-right: var(--gutter); }
+.page-head + .section { padding-top: calc(var(--sec) * .7); }
