@@ -190,7 +190,7 @@ export default async function adminRoutes(app: FastifyInstance) {
     let where = `deleted_at IS NULL AND (name ILIKE $1 OR phone ILIKE $1 OR coalesce(email,'') ILIKE $1)`;
     if (role) { vals.push(role); where += ` AND role = $2`; }
     return { users: await q(
-      `SELECT u.id, u.name, u.phone, u.email, u.role, u.loyalty_points, u.wallet_cents, u.rating_avg, u.blocked, u.created_at, u.partner_id,
+      `SELECT u.id, u.name, u.phone, u.email, u.role, u.loyalty_points, u.wallet_cents, u.rating_avg, u.blocked, u.created_at, u.partner_id, u.test_account,
               (SELECT count(*)::int FROM trips t WHERE t.rider_id = u.id AND t.status = 'completed') trips
        FROM users u WHERE ${where} ORDER BY u.created_at DESC LIMIT 200`, vals) };
   });
@@ -201,6 +201,7 @@ export default async function adminRoutes(app: FastifyInstance) {
       role: z.enum(['rider', 'driver', 'admin', 'dispatcher', 'partner', 'corporate_admin']).optional(),
       blocked: z.boolean().optional(), partner_id: z.string().uuid().nullable().optional(), name: z.string().max(80).optional(),
       add_points: z.number().int().optional(), add_wallet_cents: z.number().int().optional(),
+      test_account: z.boolean().optional(),
     }), req.body);
     const id = (req.params as any).id;
     const { add_points, add_wallet_cents, ...rest } = b;
@@ -214,6 +215,48 @@ export default async function adminRoutes(app: FastifyInstance) {
     if (b.role === 'driver') await q('INSERT INTO drivers (user_id) VALUES ($1) ON CONFLICT DO NOTHING', [id]);
     await audit(me.id, 'update', 'user', id, b);
     return { user: await one('SELECT id, name, phone, role, blocked, loyalty_points, wallet_cents, partner_id FROM users WHERE id = $1', [id]) };
+  });
+
+  /** Create an account for testing. Test accounts sign in with code 000000 (while demo mode is on), so no SMS is needed.
+   *  A test driver can be made ready to drive immediately: approved, credentials on file, and a car assigned. */
+  app.post('/admin/users', async (req, reply) => {
+    const me = await admin(req);
+    const b = parse(z.object({
+      phone, name: z.string().min(1).max(80),
+      role: z.enum(['rider', 'driver', 'admin', 'dispatcher', 'partner', 'corporate_admin']).default('rider'),
+      test_account: z.boolean().default(true),
+      partner_id: z.string().uuid().nullable().optional(),
+      vehicle_id: z.string().uuid().nullable().optional(),
+      ready_to_drive: z.boolean().default(true),
+      wallet_cents: z.number().int().min(0).max(100000).default(0),
+      loyalty_points: z.number().int().min(0).max(100000).default(0),
+    }), req.body);
+    const exists = await one('SELECT id FROM users WHERE phone = $1 AND deleted_at IS NULL', [b.phone]);
+    if (exists) throw bad('phone_taken', 'An account with that phone number already exists — edit it in the list instead');
+    const user = await tx(async (c) => {
+      const u = await one(
+        `INSERT INTO users (phone, name, role, referral_code, test_account, partner_id, wallet_cents, loyalty_points)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id, name, phone, role, test_account`,
+        [b.phone, b.name, b.role, referralCode(b.name), b.test_account, b.role === 'partner' ? b.partner_id ?? null : null, b.wallet_cents, b.loyalty_points], c);
+      if (b.role === 'driver') {
+        if (b.ready_to_drive) {
+          const far = new Date(Date.now() + 2 * 365 * 864e5).toISOString().slice(0, 10);
+          const today = new Date().toISOString().slice(0, 10);
+          const vehicle = b.vehicle_id ?? (await one('SELECT id FROM vehicles WHERE active ORDER BY rego LIMIT 1', [], c))?.id ?? null;
+          await c.query(
+            `INSERT INTO drivers (user_id, status, vehicle_id, licence_no, licence_expiry, h_endorsement_expiry, cpv_authority_no, abn, gst_registered,
+               police_check_date, medical_date, da_training_date, accepts_pets, bio)
+             VALUES ($1,'approved',$2,'TEST',$3,$3,'TEST','00000000000',true,$4,$4,$4,true,'Test driver account')`,
+            [u.id, vehicle, far, today]);
+        } else {
+          await c.query(`INSERT INTO drivers (user_id) VALUES ($1)`, [u.id]);
+        }
+      }
+      return u;
+    });
+    await audit(me.id, 'create_user', 'user', user.id, { role: b.role, test_account: b.test_account });
+    reply.code(201);
+    return { user };
   });
 
   app.get('/admin/drivers', async (req) => {

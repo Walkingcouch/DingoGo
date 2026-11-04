@@ -16,7 +16,15 @@ const publicUser = (u: any) => ({
 });
 
 // Demo sign-in only for the exact seeded demo numbers, and only when demo mode is switched on (OTP_DEMO_PREFIXES set).
-const isDemoPhone = (p: string) => config.otpDemoPrefixes.length > 0 && config.otpDemoNumbers.includes(p);
+const demoModeOn = () => config.otpDevMode || config.otpDemoPrefixes.length > 0;
+const isSeededDemo = (p: string) => config.otpDemoPrefixes.length > 0 && config.otpDemoNumbers.includes(p);
+/** Seeded demo numbers, plus any account an admin created as a test account. */
+async function isDemoPhone(p: string) {
+  if (isSeededDemo(p)) return true;
+  if (!demoModeOn()) return false;
+  const u = await one('SELECT 1 FROM users WHERE phone = $1 AND test_account AND deleted_at IS NULL', [p]);
+  return !!u;
+}
 
 export default async function authRoutes(app: FastifyInstance) {
   app.post('/auth/otp/request', async (req) => {
@@ -31,7 +39,7 @@ export default async function authRoutes(app: FastifyInstance) {
       `INSERT INTO otp_codes (phone, code_hash, expires_at, attempts) VALUES ($1, $2, now() + interval '10 minutes', 0)
        ON CONFLICT (phone) DO UPDATE SET code_hash = $2, expires_at = now() + interval '10 minutes', attempts = 0`,
       [body.phone, sha256(code)]);
-    const demo = isDemoPhone(body.phone);
+    const demo = await isDemoPhone(body.phone);
     const sent = await sendSms(body.phone, `Your DingoGo code is ${code}. It expires in 10 minutes. Never share this code.`);
     if (!sent.sent && !config.otpDevMode && !demo) {
       throw new ApiError(503, 'sms_unavailable', 'Sign-in by text message isn’t switched on yet. Please try again later.');
@@ -46,7 +54,7 @@ export default async function authRoutes(app: FastifyInstance) {
     }), req.body);
 
     const otp = await one('SELECT * FROM otp_codes WHERE phone = $1', [body.phone]);
-    const devBypass = (config.otpDevMode || isDemoPhone(body.phone)) && body.code === '000000';
+    const devBypass = body.code === '000000' && (config.otpDevMode || await isDemoPhone(body.phone));
     if (!devBypass) {
       if (!otp || new Date(otp.expires_at) < new Date()) throw bad('otp_expired', 'Code expired — request a new one');
       if (otp.attempts >= 5) throw new ApiError(429, 'otp_locked', 'Too many attempts — request a new code');

@@ -84,12 +84,14 @@ function Users() {
   const run = useRun();
   const roles = ['rider', 'driver', 'admin', 'dispatcher', 'partner', 'corporate_admin'];
   return (<>
+    <NewTestAccount roles={roles} partners={partners.data?.items ?? []} onCreated={() => void reload()} />
+    <Section title="All users" />
     <form className="toolbar" onSubmit={(e) => { e.preventDefault(); setSearch(q); }}>
       <input className="dg-input" placeholder="Name, phone or email" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Search users" style={{ minWidth: 260 }} />
       <button className="dg-btn dg-btn--sm dg-btn--dark">Search</button>
     </form>
     <Table rows={data?.users} cols={[
-      { key: 'name', label: 'Name', render: (u) => <><strong>{u.name || 'No name'}</strong>{u.blocked && <> <Chip tone="red">Blocked</Chip></>}</> },
+      { key: 'name', label: 'Name', render: (u) => <><strong>{u.name || 'No name'}</strong>{u.test_account && <> <Chip tone="ochre">Test</Chip></>}{u.blocked && <> <Chip tone="red">Blocked</Chip></>}</> },
       { key: 'phone', label: 'Phone' }, { key: 'trips', label: 'Trips', num: true }, { key: 'loyalty_points', label: 'Points', num: true },
       { key: 'role', label: 'Role', render: (u) => (
         <select className="dg-select" style={{ minHeight: 34, padding: '2px 6px' }} value={u.role} aria-label="Role"
@@ -106,6 +108,55 @@ function Users() {
       }}>Adjust points</button> },
     ]} />
   </>);
+}
+
+/** Test accounts sign in with code 000000, so the team can try every app without SMS. */
+function NewTestAccount({ roles, partners, onCreated }: { roles: string[]; partners: any[]; onCreated: () => void }) {
+  const blank = { phone: '', name: '', role: 'rider', partner_id: '', vehicle_id: '', ready_to_drive: true, wallet: '20', points: '1000' };
+  const [f, setF] = useState(blank);
+  const [created, setCreated] = useState<any>(null);
+  const vehicles = useLoad(() => get('/admin/vehicles'));
+  const run = useRun();
+  const set = (k: string, v: any) => setF((x) => ({ ...x, [k]: v }));
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    const r = await run(() => post('/admin/users', {
+      phone: f.phone, name: f.name, role: f.role, test_account: true,
+      partner_id: f.role === 'partner' ? f.partner_id || null : undefined,
+      vehicle_id: f.role === 'driver' ? f.vehicle_id || null : undefined,
+      ready_to_drive: f.ready_to_drive,
+      wallet_cents: f.role === 'rider' ? Math.round(Number(f.wallet || 0) * 100) : 0,
+      loyalty_points: f.role === 'rider' ? Number(f.points || 0) : 0,
+    }), 'Test account created');
+    if (r) { setCreated((r as any).user); setF(blank); onCreated(); }
+  }
+  const appFor: Record<string, string> = { rider: '/rider/', driver: '/driver/', admin: '/admin/', dispatcher: '/admin/', partner: '/partner/', corporate_admin: '/rider/' };
+  return (
+    <form className="panel" onSubmit={submit} style={{ marginBottom: 24 }}>
+      <Section title="Create a test account" />
+      <p className="dg-muted" style={{ marginTop: 0 }}>Test accounts sign in with code <strong>000000</strong>, so you can try the apps before SMS is connected. Use any mobile number you like; it never receives a text.</p>
+      <div className="grid" style={{ display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))' }}>
+        <label className="dg-field"><span>Mobile number</span><input className="dg-input" required inputMode="tel" placeholder="04xx xxx xxx" value={f.phone} onChange={(e) => set('phone', e.target.value)} /></label>
+        <label className="dg-field"><span>Name</span><input className="dg-input" required value={f.name} onChange={(e) => set('name', e.target.value)} /></label>
+        <label className="dg-field"><span>Role</span><select className="dg-select" value={f.role} onChange={(e) => set('role', e.target.value)}>{roles.map((r) => <option key={r}>{r}</option>)}</select></label>
+        {f.role === 'driver' && <>
+          <label className="dg-field"><span>Car</span><select className="dg-select" value={f.vehicle_id} onChange={(e) => set('vehicle_id', e.target.value)}>
+            <option value="">First available</option>{vehicles.data?.items?.map((v: any) => <option key={v.id} value={v.id}>{v.rego} {v.colour}</option>)}</select></label>
+          <label className="dg-check" style={{ alignSelf: 'end' }}><input type="checkbox" checked={f.ready_to_drive} onChange={(e) => set('ready_to_drive', e.target.checked)} /><span>Ready to drive (approved, papers on file)</span></label>
+        </>}
+        {f.role === 'partner' && <label className="dg-field"><span>Café</span><select className="dg-select" required value={f.partner_id} onChange={(e) => set('partner_id', e.target.value)}>
+          <option value="">Choose…</option>{partners.map((p: any) => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label>}
+        {f.role === 'rider' && <>
+          <label className="dg-field"><span>Starting DingoGo credit ($)</span><input className="dg-input" inputMode="decimal" value={f.wallet} onChange={(e) => set('wallet', e.target.value)} /></label>
+          <label className="dg-field"><span>Starting Dingo Points</span><input className="dg-input" inputMode="numeric" value={f.points} onChange={(e) => set('points', e.target.value)} /></label>
+        </>}
+      </div>
+      <button className="dg-btn">Create test account</button>
+      {created && <p className="dg-note" role="status" style={{ marginTop: 12 }}>
+        <strong>{created.name}</strong> can now sign in at <a href={appFor[created.role] ?? '/rider/'} target="_blank" rel="noreferrer">{(appFor[created.role] ?? '/rider/').replace(/\//g, ' ').trim() || 'rider'} app</a> with {created.phone} and code 000000.
+      </p>}
+    </form>
+  );
 }
 
 function Audit() {
