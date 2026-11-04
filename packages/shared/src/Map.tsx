@@ -5,9 +5,9 @@ import 'leaflet/dist/leaflet.css';
 
 export const ALICE = { lat: -23.6980, lng: 133.8807 };
 const env = (import.meta as any).env ?? {};
-/** CARTO Voyager basemap: calm colours that sit under the DingoGo palette. Free for low volume with attribution;
+/** CARTO Voyager basemap: calm colours that sit under the DingoGo palette. Free up to 5M tile requests a month with this key (CARTO dashboard: usage, domain restrictions);
  *  set VITE_TILE_URL to a paid provider (MapTiler, Stadia, Mapbox) before scaling up. */
-const TILE_URL = env.VITE_TILE_URL ?? 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png';
+const TILE_URL = env.VITE_TILE_URL ?? 'https://basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png?key=cb1_5202_1_92ee69774dec256c7a8c17d1';
 const TILE_ATTR = env.VITE_TILE_ATTR ?? '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>';
 
 export type Pt = { lat: number; lng: number };
