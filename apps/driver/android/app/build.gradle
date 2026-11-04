@@ -7,8 +7,9 @@ android {
         applicationId "au.com.dingogo.driver"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 1
-        versionName "1.0"
+        // CI sets the build number so each new APK installs over the last one.
+        versionCode (System.getenv("GITHUB_RUN_NUMBER") ?: "1").toInteger()
+        versionName "1.0." + (System.getenv("GITHUB_RUN_NUMBER") ?: "0")
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
@@ -16,8 +17,22 @@ android {
             ignoreAssetsPattern '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+    // Shared TEST signing key (committed on purpose, see android-signing/README.md) so test builds update in place.
+    // Google Play releases must use a private upload key kept out of the repo.
+    signingConfigs {
+        test {
+            storeFile rootProject.file('../../../android-signing/dingogo-test.keystore')
+            storePassword 'dingogo-test'
+            keyAlias 'dingogo-test'
+            keyPassword 'dingogo-test'
+        }
+    }
     buildTypes {
+        debug {
+            signingConfig signingConfigs.test
+        }
         release {
+            signingConfig signingConfigs.test
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }

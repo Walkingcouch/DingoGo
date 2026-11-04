@@ -74,6 +74,9 @@ export const AIRPORT: Place = { name: 'Alice Springs Airport', address: 'Santa T
 /** Where "Book" goes: the live rider web app (same site in production). */
 const env = (import.meta as any).env ?? {};
 export const RIDER_URL: string = env.VITE_RIDER_URL || '/rider/';
+/** Android test builds (GitHub release "android-latest"). Swap for the Google Play listing once published. */
+export const ANDROID_RIDER_APK = 'https://github.com/Walkingcouch/DingoGo/releases/download/android-latest/dingogo-rider.apk';
+export const ANDROID_DRIVER_APK = 'https://github.com/Walkingcouch/DingoGo/releases/download/android-latest/dingogo-driver.apk';
 
 /** Alice Springs taxi tariffs (NT Government, from 22 May 2026): day $5.30 + $2.45/km; night & weekend $6.60 + $2.89/km. */
 const isNightQuote = (q: { lines: { label: string }[] }) => q.lines.some((l) => l.label.startsWith('Late-night'));

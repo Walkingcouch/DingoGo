@@ -1,3 +1,4 @@
+import { ANDROID_DRIVER_APK } from '../Estimator';
 import { PageHead } from '../Layout';
 import { Area, Field, formData, Sent, useSubmit } from '../forms';
 import { useMeta } from '../meta';
@@ -29,6 +30,7 @@ export default function Drive() {
           <div><h2>The car</h2></div>
           <div className="prose">
             <p>You can drive a DingoGo fleet car on shifts, or lease your own BYD Dolphin through us so you can use it after hours too. As a guide, finance through EV Direct Finance works out to around <b>$113 a week over 7 years</b> for a car with a drive-away price of about $30,650. That figure is indicative only; your actual repayment depends on your credit assessment and the lender's terms.</p>
+            <p>Already approved? <a href={ANDROID_DRIVER_APK}>Download the DingoGo Driver app for Android</a>. The iPhone app is coming soon.</p>
             <p>The car is charged at home overnight. We log each charging session and pay you back for the electricity, so you're not out of pocket.</p>
           </div>
         </div>

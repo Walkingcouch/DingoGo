@@ -2,7 +2,7 @@ name: Android apps
 on:
   push:
     branches: [dingogo, main]
-    paths: ['apps/rider/**', 'apps/driver/**', 'packages/shared/**', '.github/workflows/android.yml']
+    paths: ['apps/rider/**', 'apps/driver/**', 'packages/shared/**', 'android-signing/**', '.github/workflows/android.yml']
   workflow_dispatch:
 permissions:
   contents: write
@@ -37,11 +37,11 @@ jobs:
       - name: Sync into Android project
         working-directory: apps/${{ matrix.app }}
         run: npx cap sync android
-      - name: Gradle build (debug APK, installable for testing)
+      - name: Gradle build (release APK, signed with the shared test key)
         working-directory: apps/${{ matrix.app }}/android
-        run: chmod +x gradlew && ./gradlew --no-daemon assembleDebug
+        run: chmod +x gradlew && ./gradlew --no-daemon assembleRelease
       - name: Rename APK
-        run: cp apps/${{ matrix.app }}/android/app/build/outputs/apk/debug/app-debug.apk dingogo-${{ matrix.app }}.apk
+        run: cp apps/${{ matrix.app }}/android/app/build/outputs/apk/release/app-release.apk dingogo-${{ matrix.app }}.apk
       - uses: actions/upload-artifact@v4
         with:
           name: dingogo-${{ matrix.app }}-apk
@@ -50,5 +50,5 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release view android-latest >/dev/null 2>&1 || gh release create android-latest --prerelease --target ${{ github.sha }} --title "DingoGo Android test builds" --notes "Debug APKs for testing. Install on Android by allowing installs from this source. Store releases need a signing key."
+          gh release view android-latest >/dev/null 2>&1 || gh release create android-latest --prerelease --target ${{ github.sha }} --title "DingoGo Android test builds" --notes "Android test builds of the DingoGo rider and driver apps. Download the APK on your phone, open it and allow installs from your browser. New builds install over old ones."
           gh release upload android-latest dingogo-${{ matrix.app }}.apk --clobber

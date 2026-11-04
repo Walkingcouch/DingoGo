@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import QRCode from 'qrcode';
 import { get, money, post } from '@dingogo/shared';
 import mascot from '../assets/mascot-clean.png';
-import { AIRPORT, Estimator, RIDER_URL, TODD_MALL, type Place } from '../Estimator';
+import { AIRPORT, Estimator, RIDER_URL, TODD_MALL, type Place, ANDROID_RIDER_APK } from '../Estimator';
 import { contact, rule, useConfig } from '../config';
 import { useMeta } from '../meta';
 import { Scene, type SceneTone } from '../Scene';
@@ -109,7 +109,7 @@ export default function Home() {
             </div>
             <div className="app-stores">
               <span className="store" aria-disabled="true"><small>Coming soon to the</small><b>App Store</b></span>
-              <span className="store" aria-disabled="true"><small>Coming soon on</small><b>Google Play</b></span>
+              <a className="store store--live" href={ANDROID_RIDER_APK}><small>Download for</small><b>Android</b></a>
             </div>
             <p className="app-note">No smartphone? Call <a href={`tel:${c.phone.replace(/\s/g, '')}`}>{c.phone}</a> and we'll book for you. Prepaid DingoGo cards are coming to partner shops for people without a bank card.</p>
           </div>

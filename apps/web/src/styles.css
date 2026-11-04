@@ -211,6 +211,8 @@ p { text-wrap: pretty; }
 .app-stores { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 18px; }
 .store { display: inline-flex; flex-direction: column; justify-content: center; min-height: 52px; padding: 0 16px; border-radius: var(--r-md); border: 1.5px solid rgba(255,255,255,.25); color: var(--gum); }
 .store small { color: #AAB2C5; font-size: .74rem; } .store b { font-size: 1rem; }
+.store[aria-disabled] { opacity: .6; }
+.store--live { border-color: var(--ochre); text-decoration: none; } .store--live:hover { background: rgba(232,145,45,.12); }
 .app-note { color: #AAB2C5; font-size: .96rem; max-width: 52ch; }
 .app-note a { color: var(--ochre); }
 @media (max-width: 960px) { .app-grid { grid-template-columns: 1fr; } }
