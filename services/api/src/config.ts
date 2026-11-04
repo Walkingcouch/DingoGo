@@ -24,6 +24,7 @@ export const config = {
     from: env.TWILIO_FROM ?? '',
   },
   expoPushEnabled: env.EXPO_PUSH_ENABLED === 'true',
+  orsKey: env.ORS_API_KEY ?? '',                             // openrouteservice.org free key (2,000 routes/day)
   osrmUrl: env.OSRM_URL ?? '',                               // e.g. https://router.project-osrm.org (self-host for prod)
   dispatch: {
     offerTimeoutS: Number(env.OFFER_TIMEOUT_S ?? 20),

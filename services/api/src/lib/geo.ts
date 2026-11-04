@@ -13,13 +13,40 @@ export function haversine(a: LatLng, b: LatLng): number {
   return 2 * R * Math.asin(Math.sqrt(h));
 }
 
-export interface Route { distance_m: number; duration_s: number; source: 'osrm' | 'estimate'; geometry?: [number, number][] }
+export interface Route { distance_m: number; duration_s: number; source: 'osrm' | 'ors' | 'estimate'; geometry?: [number, number][] }
 
 /**
  * Road distance/time. Uses OSRM when OSRM_URL is configured (self-hosted recommended),
  * otherwise a calibrated estimate: straight-line × 1.3 road factor; 38 km/h in town, 90 km/h for long legs.
  */
+const cache = new Map<string, { at: number; r: Route }>();
+
 export async function route(a: LatLng, b: LatLng): Promise<Route> {
+  // Cache by ~10 m grid for 10 minutes: quotes are re-requested often and the free routing plan is capped per day.
+  const k = [a.lat, a.lng, b.lat, b.lng].map((n) => n.toFixed(4)).join(',');
+  const hit = cache.get(k);
+  if (hit && Date.now() - hit.at < 600_000) return hit.r;
+  const r = await routeUncached(a, b);
+  if (r.source !== 'estimate') { if (cache.size > 2000) cache.clear(); cache.set(k, { at: Date.now(), r }); }
+  return r;
+}
+
+async function routeUncached(a: LatLng, b: LatLng): Promise<Route> {
+  if (!config.osrmUrl && config.orsKey) {
+    try {
+      const url = `https://api.openrouteservice.org/v2/directions/driving-car?start=${a.lng},${a.lat}&end=${b.lng},${b.lat}`;
+      const res = await fetch(url, { headers: { Authorization: config.orsKey, Accept: 'application/geo+json' }, signal: AbortSignal.timeout(3000) });
+      if (res.ok) {
+        const j: any = await res.json();
+        const f = j.features?.[0];
+        const sum = f?.properties?.summary;
+        if (f && sum && sum.distance != null) return {
+          distance_m: Math.round(sum.distance), duration_s: Math.round(sum.duration ?? 0), source: 'ors',
+          geometry: f.geometry?.coordinates?.map(([lng, lat]: number[]) => [lat, lng]),
+        };
+      }
+    } catch { /* fall through to estimate */ }
+  }
   if (config.osrmUrl) {
     try {
       const url = `${config.osrmUrl}/route/v1/driving/${a.lng},${a.lat};${b.lng},${b.lat}?overview=simplified&geometries=geojson`;
