@@ -5,9 +5,10 @@ import 'leaflet/dist/leaflet.css';
 
 export const ALICE = { lat: -23.6980, lng: 133.8807 };
 const env = (import.meta as any).env ?? {};
-/** OSM tiles for development only. In production set VITE_TILE_URL to a commercial tile provider (MapTiler, Stadia, Mapbox). */
-const TILE_URL = env.VITE_TILE_URL ?? 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
-const TILE_ATTR = env.VITE_TILE_ATTR ?? '&copy; OpenStreetMap contributors';
+/** CARTO Voyager basemap: calm colours that sit under the DingoGo palette. Free for low volume with attribution;
+ *  set VITE_TILE_URL to a paid provider (MapTiler, Stadia, Mapbox) before scaling up. */
+const TILE_URL = env.VITE_TILE_URL ?? 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png';
+const TILE_ATTR = env.VITE_TILE_ATTR ?? '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>';
 
 export type Pt = { lat: number; lng: number };
 export type MapMarker = Pt & { id: string; kind: 'pickup' | 'dropoff' | 'car' | 'car-busy' | 'car-off' | 'me' | 'sos' | 'partner'; label?: string; heading?: number | null; onClick?: () => void };
