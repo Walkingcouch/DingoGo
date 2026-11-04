@@ -15,11 +15,17 @@ const publicUser = (u: any) => ({
   rating_avg: u.rating_avg, partner_id: u.partner_id, created_at: u.created_at,
 });
 
-const isDemoPhone = (p: string) => config.otpDemoPrefixes.some((x) => p.startsWith(x));
+// Demo sign-in only for the exact seeded demo numbers, and only when demo mode is switched on (OTP_DEMO_PREFIXES set).
+const isDemoPhone = (p: string) => config.otpDemoPrefixes.length > 0 && config.otpDemoNumbers.includes(p);
 
 export default async function authRoutes(app: FastifyInstance) {
   app.post('/auth/otp/request', async (req) => {
     const body = parse(z.object({ phone }), req.body);
+    // Rate limits (stop SMS pumping & harassment): 1 request / 30 s and 5 / hour per number.
+    const recent = await one(`SELECT count(*)::int n, max(at) last FROM otp_requests WHERE phone = $1 AND at > now() - interval '1 hour'`, [body.phone]);
+    if (recent && recent.last && Date.now() - new Date(recent.last).getTime() < 30_000) throw new ApiError(429, 'otp_too_soon', 'Please wait 30 seconds before asking for another code');
+    if (recent && recent.n >= 5) throw new ApiError(429, 'otp_limit', 'Too many codes requested. Try again in an hour.');
+    await q('INSERT INTO otp_requests (phone, ip) VALUES ($1, $2)', [body.phone, req.ip ?? null]);
     const code = String(crypto.randomInt(0, 1_000_000)).padStart(6, '0');
     await q(
       `INSERT INTO otp_codes (phone, code_hash, expires_at, attempts) VALUES ($1, $2, now() + interval '10 minutes', 0)

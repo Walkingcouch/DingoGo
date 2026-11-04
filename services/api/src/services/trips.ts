@@ -288,7 +288,9 @@ export async function dispatchTrip(tripId: string): Promise<'offered' | 'waiting
     const pending = await one(`SELECT 1 FROM trip_offers WHERE trip_id = $1 AND status = 'offered' AND expires_at > now()`, [tripId], c);
     if (pending) return 'waiting';
 
-    if (t.dispatch_attempts >= config.dispatch.maxAttempts) {
+    // Give up only after maxAttempts real offers, or after the search window (small fleet: cars free up within minutes).
+    const searching = Date.now() - new Date(t.requested_at).getTime();
+    if (t.dispatch_attempts >= config.dispatch.maxAttempts || searching > config.dispatch.searchWindowMin * 60000) {
       await failNoDrivers(c, t);
       return 'no_drivers';
     }
@@ -320,12 +322,9 @@ export async function dispatchTrip(tripId: string): Promise<'offered' | 'waiting
       .filter((d) => d.toPickup <= config.dispatch.searchRadiusKm * 1000 && d.rangeOk)
       .sort((a, b) => a.toPickup - b.toPickup);
 
-    await c.query('UPDATE trips SET dispatch_attempts = dispatch_attempts + 1 WHERE id = $1', [tripId]);
     const pick = ranked[0];
-    if (!pick) {
-      // nobody now — keep the attempt count ticking; the dispatcher loop retries until maxAttempts
-      return 'waiting';
-    }
+    if (!pick) return 'waiting'; // nobody free right now — keep searching until the window closes
+    await c.query('UPDATE trips SET dispatch_attempts = dispatch_attempts + 1 WHERE id = $1', [tripId]);
     const etaS = Math.round(pick.toPickup / 1000 / 38 * 3600) + 60;
     await c.query(
       `INSERT INTO trip_offers (trip_id, driver_id, expires_at, pickup_eta_s) VALUES ($1, $2, now() + ($3 || ' seconds')::interval, $4)`,
@@ -611,8 +610,11 @@ export async function addTip(riderId: string, tripId: string, cents: number) {
     if (!t || t.rider_id !== riderId) throw notFound('Trip');
     if (t.status !== 'completed') throw conflict('bad_state', 'You can tip after the trip');
     if (t.tip_cents > 0) throw conflict('already_tipped');
+    const auth = await pay.authorise(cents, { description: `DingoGo tip ${t.ref}` });
+    const cap = auth.ok ? await pay.capture(auth.ref, cents) : { ok: false, error: auth.error };
+    if (!cap.ok) throw new ApiError(402, 'payment_failed', cap.error ?? 'Your card could not be charged for the tip');
     await c.query('UPDATE trips SET tip_cents = $2 WHERE id = $1', [tripId, cents]);
-    await c.query(`INSERT INTO payments (trip_id, user_id, provider, kind, amount_cents, status) VALUES ($1,$2,'card','tip',$3,'succeeded')`, [tripId, riderId, cents]);
+    await c.query(`INSERT INTO payments (trip_id, user_id, provider, provider_ref, kind, amount_cents, status) VALUES ($1,$2,$3,$4,'tip',$5,'succeeded')`, [tripId, riderId, auth.provider, auth.ref, cents]);
     // 100% of tips go to the driver.
     await c.query(`INSERT INTO driver_ledger (driver_id, trip_id, kind, amount_cents, note) VALUES ($1,$2,'tip',$3,'Tip — 100% to driver')`, [t.driver_id, tripId, cents]);
     setImmediate(() => void notify(t.driver_id, 'You got a tip! 💛', `$${(cents / 100).toFixed(2)} on ${t.ref}`));

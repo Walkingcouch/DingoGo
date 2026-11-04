@@ -52,8 +52,9 @@ export default async function driverRoutes(app: FastifyInstance) {
   app.patch('/driver/me', async (req) => {
     const me = await requireUser(req, 'driver');
     const b = parse(z.object({
-      licence_no: z.string().max(20).optional(), licence_expiry: z.string().date().optional(),
-      cpv_authority_no: z.string().max(20).optional(), h_endorsement_expiry: z.string().date().optional(),
+      // Expiry dates are set only by DingoGo when a document is reviewed — drivers cannot extend their own credentials.
+      licence_no: z.string().max(20).optional(),
+      cpv_authority_no: z.string().max(20).optional(),
       abn: z.string().regex(/^\d{11}$/, 'ABN is 11 digits').optional(), gst_registered: z.boolean().optional(),
       bank_bsb: z.string().regex(/^\d{6}$/).optional(), bank_account: z.string().regex(/^\d{5,10}$/).optional(),
       languages: z.array(z.string().max(20)).max(6).optional(), bio: z.string().max(300).optional(),

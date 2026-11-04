@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { config } from '../config.js';
 import { one, q, tx } from '../db.js';
 import { requireUser } from '../auth.js';
-import { bad, conflict, forbidden, notFound } from '../lib/errors.js';
+import { ApiError, bad, conflict, forbidden, notFound } from '../lib/errors.js';
 import { voucherCode } from '../lib/ids.js';
 import { searchPlaces } from '../lib/places.js';
 import { latLng, parse, z } from '../lib/validate.js';
@@ -204,7 +204,8 @@ export default async function riderRoutes(app: FastifyInstance) {
     if (!plan) throw notFound('Plan');
     const auth = await pay.authorise(plan.price_cents, { description: `DingoGo Pass ${plan.name}` });
     if (!auth.ok) throw bad('payment_failed', auth.error);
-    await pay.capture(auth.ref, plan.price_cents);
+    const cap = await pay.capture(auth.ref, plan.price_cents);
+    if (!cap.ok) throw bad('payment_failed', cap.error ?? 'Your card could not be charged');
     await q(`INSERT INTO payments (user_id, provider, provider_ref, kind, amount_cents, gst_cents, status) VALUES ($1,$2,$3,'subscription',$4,$5,'succeeded')`,
       [me.id, auth.provider, auth.ref, plan.price_cents, Math.round(plan.price_cents / 11)]);
     const sub = await one(
@@ -250,7 +251,8 @@ export default async function riderRoutes(app: FastifyInstance) {
     const b = parse(z.object({ cents: z.number().int().min(1000).max(50000) }), req.body);
     const auth = await pay.authorise(b.cents, { description: 'DingoGo credit top-up' });
     if (!auth.ok) throw bad('payment_failed', auth.error);
-    await pay.capture(auth.ref, b.cents);
+    const cap = await pay.capture(auth.ref, b.cents);
+    if (!cap.ok) throw bad('payment_failed', cap.error ?? 'Your card could not be charged');
     await q(`INSERT INTO payments (user_id, provider, provider_ref, kind, amount_cents, status) VALUES ($1,$2,$3,'topup',$4,'succeeded')`, [me.id, auth.provider, auth.ref, b.cents]);
     const u = await one('UPDATE users SET wallet_cents = wallet_cents + $2 WHERE id = $1 RETURNING wallet_cents', [me.id, b.cents]);
     return { wallet_cents: u.wallet_cents };
@@ -260,9 +262,14 @@ export default async function riderRoutes(app: FastifyInstance) {
   app.post('/wallet/voucher', async (req) => {
     const me = await requireUser(req);
     const b = parse(z.object({ code: z.string().min(6).max(30) }), req.body);
+    const fails = await one(`SELECT count(*)::int n FROM audit_log WHERE actor_id = $1 AND action = 'voucher_fail' AND at > now() - interval '1 hour'`, [me.id]);
+    if (fails!.n >= 5) throw new ApiError(429, 'too_many_attempts', 'Too many wrong codes. Try again in an hour.');
     return tx(async (c) => {
       const v = await one('SELECT * FROM gift_vouchers WHERE upper(code) = upper($1) FOR UPDATE', [b.code.trim()], c);
-      if (!v) throw bad('voucher_invalid', 'Voucher code not found');
+      if (!v) {
+        await c.query(`INSERT INTO audit_log (actor_id, action, entity) VALUES ($1, 'voucher_fail', 'gift_vouchers')`, [me.id]);
+        throw bad('voucher_invalid', 'Voucher code not found');
+      }
       if (v.redeemed_at) throw bad('voucher_used', 'This voucher has already been used');
       if (v.expires_at && new Date(v.expires_at) < new Date()) throw bad('voucher_expired', 'This voucher has expired');
       await c.query('UPDATE gift_vouchers SET redeemed_by = $2, redeemed_at = now() WHERE code = $1', [v.code, me.id]);
