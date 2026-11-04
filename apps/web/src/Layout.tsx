@@ -77,7 +77,7 @@ function Footer() {
         </div>
         <div className="foot-base">
           <span className="brand foot-brand"><span className="brand-mark"><img src={mascot} alt="" /></span><b>DingoGo</b></span>
-          <p>Aboriginal-owned, all-electric rides and deliveries. Owned by Johnathan Ah Chee and Micah Bartlett. In an emergency call 000.</p>
+          <p>Aboriginal-owned, local rides and deliveries, going electric. Owned by Johnathan Ah Chee and Micah Bartlett. In an emergency call 000.</p>
           <p>© {new Date().getFullYear()} DingoGo Rideshare &amp; Courier</p>
         </div>
       </div>

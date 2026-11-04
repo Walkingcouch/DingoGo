@@ -1,7 +1,7 @@
 {
   "name": "DingoGo — rides & deliveries",
   "short_name": "DingoGo",
-  "description": "Aboriginal-owned electric rideshare and courier in Alice Springs (Mparntwe).",
+  "description": "Aboriginal-owned rideshare and courier in Alice Springs (Mparntwe). Local rides, going electric.",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#FBFAF7",

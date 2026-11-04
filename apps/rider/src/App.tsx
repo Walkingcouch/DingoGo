@@ -44,7 +44,7 @@ export function App() {
   }, [authed]); // eslint-disable-line
 
   if (!authed) {
-    return <Login title="Rides and deliveries for Mparntwe" subtitle="Electric, Aboriginal-owned and local to Alice Springs." askName askReferral
+    return <Login title="Rides and deliveries for Mparntwe" subtitle="Aboriginal-owned and local to Alice Springs. Going electric." askName askReferral
       onDone={() => setAuthed(true)} />;
   }
 

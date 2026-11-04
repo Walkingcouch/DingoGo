@@ -287,3 +287,4 @@ li.row { padding: .8rem 0; }
 /* Login (shared component): keep the disabled button legible */
 .dg-btn:disabled { opacity: 1; background: var(--line); color: var(--muted); border-color: transparent; cursor: not-allowed; box-shadow: none; }
 @media (max-width: 370px) { .modes { gap: 4px; } .modes__i { width: 34px; height: 34px; } .sheet { padding-left: 16px; padding-right: 16px; } .requestbar { margin-left: -16px; margin-right: -16px; padding-left: 16px; padding-right: 16px; } }
+.fuel-chip { vertical-align: middle; }

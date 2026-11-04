@@ -8,7 +8,7 @@ type Tour = { id: string; slug: string; name: string; summary: string; descripti
 const hours = (m: number) => (m % 60 ? `${Math.floor(m / 60)} h ${m % 60} min` : `${m / 60} hours`);
 
 export default function Tours() {
-  useMeta('Private tours', 'Private electric tours from Alice Springs: Telegraph Station, the West MacDonnell gaps, Desert Park and Emily and Jessie Gaps.');
+  useMeta('Private tours', 'Private tours with a local driver from Alice Springs: Telegraph Station, the West MacDonnell gaps, Desert Park and Emily and Jessie Gaps.');
   const [tours, setTours] = useState<Tour[] | null>(null);
   const [err, setErr] = useState(false);
   const f = useSubmit('/public/hire-requests');

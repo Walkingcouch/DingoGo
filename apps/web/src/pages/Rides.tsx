@@ -26,7 +26,7 @@ export function FareTable({ services }: { services: (FareRule | undefined)[] }) 
 }
 
 export default function Rides() {
-  useMeta('Rides', 'Fixed-price electric rides around Alice Springs: airport, town, hospital and home. Pet-friendly cars and assistance animals always welcome.');
+  useMeta('Rides', 'Fixed-price local rides around Alice Springs: airport, town, hospital and home. Pet-friendly cars and assistance animals always welcome.');
   const cfg = useConfig();
   const ride = rule(cfg, 'ride');
   const plan = cfg?.plans.find((p) => p.code === 'pass');
@@ -83,9 +83,9 @@ export default function Rides() {
         <div className="wrap split">
           <div><h2>Getting to the airport</h2></div>
           <div className="prose">
-            <p>Alice Springs Airport is about 15 km from Todd Mall, around 15 minutes. Book ahead for early flights; we'll start looking for your driver 15 minutes before pickup. The boot of a Dolphin holds two large suitcases and a carry-on.</p>
+            <p>Alice Springs Airport is about 15 km from Todd Mall, around 15 minutes. Book ahead for early flights; we'll start looking for your driver 15 minutes before pickup. Most cars are standard sedans or SUVs, with room in the boot for two large suitcases and a carry-on. Travelling with more? Tell us when you book.</p>
             <h3>Wheelchair users</h3>
-            <p>Our first cars are BYD Dolphins, which aren't wheelchair-accessible vehicles. If you travel in your wheelchair, call us and we'll help you book a wheelchair-accessible taxi. If you can transfer to a seat, we can carry a folding chair in the boot.</p>
+            <p>Most cars are standard sedans or SUVs, not wheelchair-accessible vehicles. If you travel in your wheelchair, call us and we'll help you book a wheelchair-accessible taxi. If you can transfer to a seat, we can carry a folding chair in the boot.</p>
             {plan && (
               <>
                 <h3>Ride often? {plan.name}</h3>

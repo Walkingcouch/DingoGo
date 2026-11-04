@@ -2,7 +2,7 @@ import { useEffect } from 'react';
 
 export function useMeta(title: string, description?: string) {
   useEffect(() => {
-    document.title = title === 'DingoGo' ? 'DingoGo — electric rides and deliveries in Alice Springs' : `${title} | DingoGo`;
+    document.title = title === 'DingoGo' ? 'DingoGo — local rides and deliveries in Alice Springs' : `${title} | DingoGo`;
     if (description) {
       let m = document.querySelector('meta[name="description"]');
       if (!m) { m = document.createElement('meta'); m.setAttribute('name', 'description'); document.head.appendChild(m); }

@@ -197,7 +197,7 @@ p { text-wrap: pretty; }
 .why-list h3 { font-size: 1.2rem; margin: 6px 0 4px; }
 .why-list p { margin: 0; color: var(--muted); }
 .why-ico { width: 44px; height: 44px; padding: 8px; border-radius: 14px; background: var(--surface); color: var(--ochre-deep); box-shadow: 0 0 0 1px var(--hairline); }
-.why-ico--bolt { color: var(--saltbush); } .why-ico--paw { color: var(--dusk); } .why-ico--shield { color: var(--earth); } .why-ico--tag { color: var(--night); }
+.why-ico--leaf { color: var(--saltbush); } .why-ico--paw { color: var(--dusk); } .why-ico--shield { color: var(--earth); } .why-ico--tag { color: var(--night); }
 :root[data-theme="dark"] .why-ico--tag { color: var(--gum); }
 @media (max-width: 900px) { .why-grid { grid-template-columns: 1fr; gap: 28px; } }
 @media (max-width: 600px) { .why-list { grid-template-columns: 1fr; gap: 24px; } }

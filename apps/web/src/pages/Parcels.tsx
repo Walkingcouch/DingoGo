@@ -16,7 +16,7 @@ export const PROHIBITED = [
 ];
 
 export default function Parcels() {
-  useMeta('Send a parcel', 'Same-day parcel delivery around Alice Springs in electric cars, with a delivery PIN or signature on every handover.');
+  useMeta('Send a parcel', 'Same-day parcel delivery around Alice Springs by local drivers, with a delivery PIN or signature on every handover.');
   const cfg = useConfig();
   return (
     <>

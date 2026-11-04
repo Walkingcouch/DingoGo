@@ -41,7 +41,7 @@ export function ToursPanel({ pickup, setPickup, onFocusPickup, payMethod }: { pi
   if (!sel) {
     return (
       <div className="tours">
-        <p className="dg-muted" style={{ marginTop: 0 }}>Private tours in a quiet electric car. One price for up to {data?.tours[0]?.max_passengers ?? 4} guests, with a local driver.</p>
+        <p className="dg-muted" style={{ marginTop: 0 }}>Private tours with a local driver. One price for up to {data?.tours[0]?.max_passengers ?? 4} guests, with a local driver.</p>
         {data!.tours.map((t) => (
           <button key={t.id} className="tour" onClick={() => setSel(t)}>
             <span className="tour__top"><strong>{t.name}</strong><span className="dg-money">{money(t.price_cents)}</span></span>

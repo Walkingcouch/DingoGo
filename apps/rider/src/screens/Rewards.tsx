@@ -98,7 +98,7 @@ export function RewardsScreen() {
         <h2 className="section__title">Bring a friend</h2>
         <p>When a friend signs up with your code and takes their first trip, you both get {data.referral_bonus} points.</p>
         <div className="refer__code"><span>{data.referral_code}</span>
-          <button className="dg-btn dg-btn--sm" onClick={() => shareOrCopy({ title: 'DingoGo', text: `Try DingoGo, Alice Springs' electric rideshare. Use my code ${data.referral_code} when you sign up and we both get ${data.referral_bonus} points.` }, copy)}>
+          <button className="dg-btn dg-btn--sm" onClick={() => shareOrCopy({ title: 'DingoGo', text: `Try DingoGo, Alice Springs' Aboriginal-owned rideshare. Use my code ${data.referral_code} when you sign up and we both get ${data.referral_bonus} points.` }, copy)}>
             {copied ? 'Copied' : 'Share code'}
           </button>
         </div>

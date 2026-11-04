@@ -26,7 +26,7 @@ const TOUR_TONES: Record<string, { tone: SceneTone; gap?: boolean }> = {
 const hrs = (m: number) => (m % 60 ? `${Math.floor(m / 60)} h ${m % 60} min` : `${m / 60} hours`);
 
 export default function Home() {
-  useMeta('DingoGo', 'Aboriginal-owned, 100% electric rideshare and same-day courier in Alice Springs (Mparntwe). See your fixed price before you book.');
+  useMeta('DingoGo', 'Aboriginal-owned, local rideshare and same-day courier in Alice Springs (Mparntwe), going electric. See your fixed price before you book.');
   const cfg = useConfig();
   const c = contact(cfg);
   const min = (s: string) => { const r = rule(cfg, s); return r ? money(r.min_fare_cents) : '—'; };
@@ -41,7 +41,7 @@ export default function Home() {
           <div className="hero-copy">
             <p className="hero-kicker">Rides and deliveries in Mparntwe, Alice Springs</p>
             <h1>Where are you headed?</h1>
-            <p className="hero-lede">Quiet electric cars, local drivers and a fixed price before you book. Owned by Aboriginal people from right here.</p>
+            <p className="hero-lede">Local drivers, a fixed price before you book, and a fleet going electric. Owned by Aboriginal people from right here.</p>
             <Estimator />
           </div>
           <div className="hero-mascot" aria-hidden="true">
@@ -85,12 +85,12 @@ export default function Home() {
       <section className="section why-band">
         <div className="wrap why-grid">
           <div className="why-lead">
-            <h2>Owned here, driven here, charged here</h2>
+            <h2>Owned here, driven here, kept here</h2>
             <p>DingoGo is a small local company. The fares you pay stay in Central Australia, and the people who drive you live here too.</p>
           </div>
           <ul className="why-list">
             <li><Icon k="hand" /><div><h3>Aboriginal-owned</h3><p>Owned by Johnathan Ah Chee and Micah Bartlett. We hire and train local drivers, including speakers of Arrernte and other local languages.</p></div></li>
-            <li><Icon k="bolt" /><div><h3>Every car is electric</h3><p>BYD Dolphins charged at home in town. Your receipt shows the CO₂ you saved against an average petrol car.</p></div></li>
+            <li><Icon k="leaf" /><div><h3>Going electric</h3><p>Our goal is an all-electric fleet. Until then, electric and hybrid cars get your trip first, and if you ride electric your receipt shows the CO₂ you saved.</p></div></li>
             <li><Icon k="tag" /><div><h3>The price is the price</h3><p>Fixed before you book, GST included, no waiting meter and no card surcharge.</p></div></li>
             <li><Icon k="paw" /><div><h3>Assistance animals always ride</h3><p>On every service, at no cost. Drivers are trained, and refusals are investigated.</p></div></li>
             <li><Icon k="shield" /><div><h3>Safety built in</h3><p>Accredited drivers, a trip PIN, live trip sharing, an SOS button and a women-preferred driver option.</p></div></li>
@@ -143,7 +143,7 @@ export default function Home() {
           </div>
           <div className="duo-card duo-card--drive">
             <h2>Drive with DingoGo</h2>
-            <p>Drive a fleet car on shifts or lease your own BYD Dolphin through us. We help with the NT accreditation steps, the police check and medical, and getting set up for GST.</p>
+            <p>Drive your own car, any fuel type, under 13 years old. We help with the NT accreditation steps, your car's rideshare licence, the police check and medical, and getting set up for GST.</p>
             <p className="duo-figure"><b>75%</b> of every trip fare goes to you, plus 100% of tips.</p>
             <Link to="/drive" className="dg-btn dg-btn--dark">Apply to drive</Link>
           </div>
@@ -253,7 +253,7 @@ function Phones() {
             <small>DG-8ZRCUV</small>
             <b className="ph-title">Driver on the way</b>
             <div className="ph-pin-box"><span>Your trip PIN</span><b>2122</b></div>
-            <div className="ph-driver"><span className="ph-av">T</span><span><b>Tjala</b><small>Grey BYD Dolphin</small></span><span className="ph-rego">CA 12 DG</span></div>
+            <div className="ph-driver"><span className="ph-av">T</span><span><b>Tjala</b><small>White Toyota Camry Hybrid</small></span><span className="ph-rego">CA 12 DG</span></div>
           </div>
         </div>
       </div>
@@ -283,10 +283,10 @@ function Phones() {
   );
 }
 
-function Icon({ k }: { k: 'hand' | 'bolt' | 'tag' | 'paw' | 'shield' }) {
+function Icon({ k }: { k: 'hand' | 'leaf' | 'tag' | 'paw' | 'shield' }) {
   const d: Record<string, string> = {
     hand: 'M7 11V6a1.5 1.5 0 0 1 3 0v4m0-1V4.5a1.5 1.5 0 0 1 3 0V10m0-4a1.5 1.5 0 0 1 3 0v5m0-2a1.5 1.5 0 0 1 3 0v4.5c0 3.6-2.9 6.5-6.5 6.5h-.8a6 6 0 0 1-4.6-2.2L4 15.6a1.6 1.6 0 0 1 2.4-2l.6.7',
-    bolt: 'M13 2 4 14h7l-1 8 9-12h-7l1-8Z',
+    leaf: 'M5 19c0-8 5-13 15-14-1 10-6 15-14 15M5 19c3-4 6-6 9-7',
     tag: 'M20.6 13.4 13.4 20.6a2 2 0 0 1-2.8 0L3 13V3h10l7.6 7.6a2 2 0 0 1 0 2.8ZM7.5 7.5h.01',
     paw: 'M12 13c-2.8 0-5 2.6-5 4.6 0 1.6 1.4 2.4 3 2.4 .8 0 1.4-.4 2-.4s1.2.4 2 .4c1.6 0 3-.8 3-2.4 0-2-2.2-4.6-5-4.6ZM6 10.5a2 2.5 0 1 0 0 .1M18 10.5a2 2.5 0 1 0 0 .1M9.5 6a2 2.5 0 1 0 0 .1M14.5 6a2 2.5 0 1 0 0 .1',
     shield: 'M12 3 4 6v6c0 4.4 3.4 8.3 8 9 4.6-.7 8-4.6 8-9V6l-8-3Zm-3 9 2 2 4-4',

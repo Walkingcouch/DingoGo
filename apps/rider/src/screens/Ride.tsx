@@ -304,7 +304,7 @@ export function RideScreen() {
             </div>
           </>
         )}
-        <p className="ride__foot dg-muted">100% electric. Aboriginal-owned. <Link to="/account/safety">How we keep you safe</Link></p>
+        <p className="ride__foot dg-muted">Aboriginal-owned. Local rides, going electric. <Link to="/account/safety">How we keep you safe</Link></p>
         <Ranges height={36} fill="var(--ochre-soft)" style={{ margin: '1rem -20px -24px', width: 'calc(100% + 40px)' }} />
       </div>
     </div>

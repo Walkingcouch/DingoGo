@@ -10,6 +10,15 @@ import { Dialog, Spinner, Stars, shareOrCopy, useCopy } from '../components/ui';
 
 const RIDE_STEPS = ['requested', 'accepted', 'arrived', 'in_progress', 'completed'];
 
+/** Fuel chip for green cars. Older APIs send no fuel_type/is_ev, so both are optional; petrol and diesel get no chip. */
+const FUEL_LABEL: Record<string, string> = { electric: 'Electric', plug_in_hybrid: 'Plug-in hybrid', hybrid: 'Hybrid' };
+const isEv = (v: any) => v?.is_ev === true || v?.fuel_type === 'electric';
+function FuelChip({ v }: { v: any }) {
+  const label = FUEL_LABEL[v?.fuel_type] ?? (v?.is_ev === true ? 'Electric' : null);
+  if (!label) return null;
+  return <span className="dg-chip dg-chip--green fuel-chip">{isEv(v) && <Icon name="leaf" size={14} />} {label}</span>;
+}
+
 export function TripScreen() {
   const { id } = useParams();
   const nav = useNavigate();
@@ -110,7 +119,8 @@ function LiveTrip({ trip, carPos, reload, onClose }: { trip: any; carPos: any; r
             {v && (
               <div className="driver__car">
                 <span className="rego">{v.rego}</span>
-                {v.battery_pct != null && <span className="dg-chip dg-chip--green"><Icon name="battery" size={14} /> {v.battery_pct}%</span>}
+                <FuelChip v={v} />
+                {v.battery_pct != null && (v.is_ev ?? true) && <span className="dg-chip dg-chip--green"><Icon name="battery" size={14} /> {v.battery_pct}%</span>}
               </div>
             )}
           </div>
@@ -238,7 +248,7 @@ function TripDetail({ trip, reload }: { trip: any; reload: () => Promise<void> }
       <dl className="kv">
         <div><dt>From</dt><dd>{trip.pickup_address}</dd></div>
         {trip.service !== 'tour' && <div><dt>To</dt><dd>{trip.dropoff_address}</dd></div>}
-        {trip.driver && <div><dt>Driver</dt><dd>{trip.driver.name}{trip.vehicle ? `, ${trip.vehicle.rego}` : ''}</dd></div>}
+        {trip.driver && <div><dt>Driver</dt><dd>{trip.driver.name}{trip.vehicle ? `, ${trip.vehicle.rego}` : ''} {trip.vehicle && <FuelChip v={trip.vehicle} />}</dd></div>}
         {trip.parcel?.pod_received_by && <div><dt>Received by</dt><dd>{trip.parcel.pod_received_by}, {time(trip.parcel.delivered_at)}</dd></div>}
         <div><dt>{done ? 'Paid' : 'Price'}</dt><dd className="dg-money">{money(trip.final_cents ?? trip.quote_cents)} <span className="dg-muted">({payLabel(trip.payment_method)})</span></dd></div>
         {trip.cancel_fee_cents > 0 && <div><dt>Cancellation fee</dt><dd className="dg-money">{money(trip.cancel_fee_cents)}</dd></div>}
@@ -253,7 +263,7 @@ function TripDetail({ trip, reload }: { trip: any; reload: () => Promise<void> }
       )}
       {trip.status === 'no_drivers' && <div className="callout callout--earth">No car was free for this trip, so you haven't been charged. Try again in a few minutes, or call us to book ahead.</div>}
       {done && <AfterTrip trip={trip} reload={reload} />}
-      {(done || trip.cancel_fee_cents > 0) && <Receipt tripId={trip.id} />}
+      {(done || trip.cancel_fee_cents > 0) && <Receipt tripId={trip.id} vehicle={trip.vehicle} />}
       <Link className="dg-btn dg-btn--ghost dg-btn--block" style={{ marginTop: 16 }} to={`/account/help?trip=${trip.id}`}>Get help with this trip</Link>
     </div>
   );
@@ -310,16 +320,20 @@ function AfterTrip({ trip, reload }: { trip: any; reload: () => Promise<void> })
   );
 }
 
-export function Receipt({ tripId }: { tripId: string }) {
+export function Receipt({ tripId, vehicle }: { tripId: string; vehicle?: any }) {
   const [r, setR] = useState<any | null>(null);
   useEffect(() => { get(`/trips/${tripId}/receipt`).then((x) => setR(x.receipt)).catch(() => {}); }, [tripId]);
   if (!r) return null;
+  // Receipt `vehicle` is the rego today; tolerate an object if the API starts sending one.
+  const rv = r.vehicle && typeof r.vehicle === 'object' ? r.vehicle : null;
+  const car = vehicle ?? rv;
+  const rego = rv ? rv.rego : r.vehicle;
   return (
     <details className="receipt">
       <summary>Tax invoice</summary>
       <div className="receipt__body">
         <p><strong>{r.supplier?.name ?? 'DingoGo'}</strong><br />ABN {r.supplier?.abn ?? 'TBC'}<br />{r.supplier?.address}</p>
-        <p className="dg-muted">Trip {r.trip_ref}, {dateTime(r.date)}<br />{r.from}{r.to && r.to !== r.from ? ` to ${r.to}` : ''}<br />{r.driver ? `Driver ${r.driver}, ${r.vehicle}` : ''}</p>
+        <p className="dg-muted">Trip {r.trip_ref}, {dateTime(r.date)}<br />{r.from}{r.to && r.to !== r.from ? ` to ${r.to}` : ''}<br />{r.driver ? `Driver ${r.driver}, ${rego ?? ''}` : ''} {r.driver && car && <FuelChip v={car} />}</p>
         <table className="quote__lines">
           <tbody>
             {r.lines.map((l: any, i: number) => <tr key={i}><td>{l.label}</td><td className="dg-money">{money(l.cents)}</td></tr>)}
@@ -328,7 +342,10 @@ export function Receipt({ tripId }: { tripId: string }) {
             <tr><td>Includes GST</td><td className="dg-money">{money(r.gst_cents)}</td></tr>
           </tbody>
         </table>
-        <p className="co2"><Icon name="leaf" size={18} style={{ color: 'var(--saltbush)' }} /> {km(r.distance_km * 1000)} electric. About {r.co2_saved_kg} kg of CO₂ not burned compared with a petrol car.</p>
+        {/* CO₂ only for trips actually done in an electric car, and only when the API sent a figure. */}
+        {isEv(car) && Number(r.co2_saved_kg) > 0 && (
+          <p className="co2"><Icon name="leaf" size={18} style={{ color: 'var(--saltbush)' }} /> {km(r.distance_km * 1000)} in an electric car. About {r.co2_saved_kg} kg of CO₂ not burned compared with a petrol car.</p>
+        )}
         <button className="dg-btn dg-btn--ghost dg-btn--sm" onClick={() => window.print()}>Print or save as PDF</button>
       </div>
       <Ranges height={18} fill="var(--line)" />
