@@ -35,7 +35,7 @@ export function Earnings() {
       {loading && !data ? <p className="dg-muted">Loading…</p> : data && (
         <>
           <section className="panel">
-            <p className="panel-label">Take-home after fees, lease and cash</p>
+            <p className="panel-label">{Number(byKind.lease ?? 0) !== 0 ? 'Take-home after fees, lease and cash' : 'Take-home after fees and cash'}</p>
             <div className="big-num">{money(takeHome)}</div>
             <p className="chart-readout" aria-live="polite"><span>{pickedLabel}</span><strong className="dg-money">{money(picked.cents)}</strong></p>
             <div className={'bars' + (days > 7 ? ' bars--dense' : '')} role="group" aria-label="Earnings per day. Choose a day to see its total.">

@@ -24,6 +24,7 @@ export const DOC_TYPE: Map = {
   licence: 'Driver licence', h_endorsement: 'H endorsement', cpvid: 'CPV identity card', police_check: 'Police check', medical: 'Medical certificate',
   abn: 'ABN', gst: 'GST registration', insurance: 'Insurance', vehicle_cvl: 'Vehicle CVL', roadworthy: 'Roadworthy', first_aid: 'First aid',
   disability_awareness: 'Disability awareness training', wwcc: 'Working with children (Ochre card)',
+  vehicle_rego: 'Registration papers', owner_permission: 'Owner’s written permission',
 };
 export const DOC_STATUS: Map = { pending: 'Waiting for review', approved: 'Approved', rejected: 'Rejected', expired: 'Expired' };
 export const docTone = (s: string) => (s === 'approved' ? 'green' : s === 'pending' ? 'ochre' : 'red');
@@ -41,6 +42,11 @@ export const LEDGER_KIND: Map = { fare: 'Fare share', tip: 'Tip', fee: 'DingoGo 
 export const PARCEL_SIZE: Map = { s: 'Small', m: 'Medium', l: 'Large', small: 'Small', medium: 'Medium', large: 'Large' };
 
 export const OWNERSHIP: Map = { fleet: 'DingoGo fleet', leased_to_driver: 'Leased to driver', dingogo: 'DingoGo owned', dingogo_owned: 'DingoGo owned', driver_owned: 'Driver owned', leased: 'Leased to driver', lease: 'Leased to driver', partner: 'Partner owned' };
+export const FUEL: Map = { electric: 'Electric', plug_in_hybrid: 'Plug-in hybrid', hybrid: 'Hybrid', petrol: 'Petrol', diesel: 'Diesel' };
+/** Electric and hybrids are "green": they get trips first. */
+export const isGreenFuel = (f?: string | null) => f === 'electric' || f === 'plug_in_hybrid' || f === 'hybrid';
+export const VEHICLE_STATUS: Map = { pending: 'Waiting for check', approved: 'Approved', rejected: 'Not approved' };
+export const VEHICLE_STATUS_TONE: Map = { pending: 'ochre', approved: 'green', rejected: 'red' };
 export const EVENT_TYPE: Map = { requested: 'Requested', offered: 'Offered to driver', accepted: 'Driver accepted', arrived: 'Driver arrived', started: 'Trip started', in_progress: 'Trip started', completed: 'Completed', cancelled: 'Cancelled', no_drivers: 'No driver available', picked_up: 'Parcel collected', delivered: 'Parcel delivered', refund: 'Refund issued', rated: 'Rated', pin_verified: 'PIN checked', scheduled: 'Scheduled', released: 'Released to drivers' };
 export const PARTNER_KIND: Map = { cafe: 'Café', shop: 'Shop', community: 'Community organisation', other: 'Other' };
 export const SERVICE_NAME: Map = { ride: 'Ride', pet: 'Pet-friendly ride', courier_s: 'Courier, small', courier_m: 'Courier, medium', courier_l: 'Courier, large', tour: 'Tour', hourly: 'Hourly hire' };
@@ -55,5 +61,9 @@ export function complianceText(issue: string): string {
     if (st === 'pending_documents') return 'Documents still needed';
     return 'Application not yet approved';
   }
-  return issue.replace(/\s*\(ATO:[^)]*\)/, '');
+  const wait = issue.match(/^Your car (\S+) is waiting for DingoGo to check it/);
+  if (wait) return `Car ${wait[1]} waiting for check`;
+  const no = issue.match(/^Your car (\S+) was not approved:?\s*(.*)$/);
+  if (no) return `Car ${no[1]} not approved${no[2] ? `: ${no[2]}` : ''}`;
+  return issue.replace(/\s*\(ATO:[^)]*\)/, '').replace(/^Your car\b/, 'Car');
 }

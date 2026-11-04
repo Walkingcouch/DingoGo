@@ -30,7 +30,7 @@ const NAV: { group: string; items: { to: string; label: string; icon: string; ba
     { to: '/live', label: 'Live map', icon: 'map' }, { to: '/dashboard', label: 'Dashboard', icon: 'chart' }, { to: '/trips', label: 'Trips', icon: 'route' },
     { to: '/safety', label: 'Safety & compliance', icon: 'shield', badge: 'safety' }, { to: '/support', label: 'Support & inbox', icon: 'chat', badge: 'inbox' }] },
   { group: 'People & fleet', items: [
-    { to: '/drivers', label: 'Drivers', icon: 'users', badge: 'drivers' }, { to: '/fleet', label: 'Fleet & charging', icon: 'battery' }, { to: '/business', label: 'Business accounts', icon: 'receipt' }] },
+    { to: '/drivers', label: 'Drivers', icon: 'users', badge: 'drivers' }, { to: '/fleet', label: 'Fleet & charging', icon: 'car', badge: 'cars' }, { to: '/business', label: 'Business accounts', icon: 'receipt' }] },
   { group: 'Commercial', items: [
     { to: '/pricing', label: 'Pricing & tours', icon: 'cash' }, { to: '/loyalty', label: 'Loyalty & vouchers', icon: 'gift' }, { to: '/ads', label: 'Roof advertising', icon: 'bolt' }] },
   { group: 'Admin', items: [{ to: '/reports', label: 'Reports', icon: 'document' }, { to: '/settings', label: 'Settings & broadcast', icon: 'settings' }] },
@@ -48,7 +48,9 @@ function Shell({ me, onSignOut }: { me: any; onSignOut: () => void }) {
     try {
       const d = await get('/admin/dashboard');
       const l = d.live;
-      setCounts({ safety: l.open_sos + l.open_flags, inbox: l.open_tickets + l.new_hire_requests + l.new_applications, drivers: l.pending_drivers + l.pending_docs, sos: l.open_sos });
+      // Cars to check: use the dashboard count if the API sends one, otherwise count the pending queue.
+      const cars = l.pending_vehicles ?? await get('/admin/vehicles?status=pending').then((r) => r.items.filter((v: any) => v.status === 'pending').length).catch(() => 0);
+      setCounts({ safety: l.open_sos + l.open_flags, inbox: l.open_tickets + l.new_hire_requests + l.new_applications, drivers: l.pending_drivers + l.pending_docs, sos: l.open_sos, cars });
       if (l.open_sos) setOpenSos((await get('/admin/sos')).items.filter((s: any) => s.status !== 'resolved'));
       else setOpenSos([]);
     } catch { /* ignore */ }
@@ -60,7 +62,7 @@ function Shell({ me, onSignOut }: { me: any; onSignOut: () => void }) {
     const rt = connectRealtime((m) => {
       if (m.channel !== 'ops') return;
       setEvents((e) => [m, ...e].slice(0, 200));
-      if (/^(sos|support|compliance|application|hire|driver\.document)/.test(m.type)) void refreshRef.current();
+      if (/^(sos|support|compliance|application|hire|driver\.document|vehicle)/.test(m.type)) void refreshRef.current();
     });
     const t = setInterval(() => void refreshRef.current(), 30000);
     return () => { rt.close(); clearInterval(t); };

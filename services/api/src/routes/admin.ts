@@ -392,6 +392,11 @@ export default async function adminRoutes(app: FastifyInstance) {
       if (b.decision === 'approve' && v.owner_driver_id) {
         await c.query('UPDATE drivers SET vehicle_id = $1 WHERE user_id = $2 AND vehicle_id IS NULL', [id, v.owner_driver_id]);
       }
+      // Approving the car approves its waiting papers too (one notification for the car, not one per document).
+      if (b.decision === 'approve') {
+        await c.query(`UPDATE driver_documents SET status = 'approved', reviewer_id = $2, reviewed_at = now()
+                       WHERE vehicle_id = $1 AND status = 'pending'`, [id, me.id]);
+      }
       await c.query('INSERT INTO audit_log (actor_id, action, entity, entity_id, data) VALUES ($1,$2,$3,$4,$5)',
         [me.id, `vehicle_${b.decision}`, 'vehicle', id, b]);
       return v;

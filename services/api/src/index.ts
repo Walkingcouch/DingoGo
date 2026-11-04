@@ -19,7 +19,7 @@ import uploadRoutes from './routes/uploads.js';
 
 export async function buildServer() {
   const app = Fastify({ logger: process.env.LOG_LEVEL ? { level: process.env.LOG_LEVEL } : false, bodyLimit: 1024 * 1024 });
-  await app.register(cors, { origin: config.corsOrigins.includes('*') ? true : config.corsOrigins });
+  await app.register(cors, { origin: config.corsOrigins.includes('*') ? true : config.corsOrigins, methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE'] });
   await app.register(websocket);
 
   app.setErrorHandler((err: any, _req, reply) => {

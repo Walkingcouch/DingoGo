@@ -10,6 +10,7 @@ import { Earnings } from './screens/Earnings';
 import { Charging } from './screens/Charging';
 import { Trips } from './screens/Trips';
 import { Profile } from './screens/Profile';
+import { hasPlug } from './vehicle';
 
 initAuth('driver');
 
@@ -30,11 +31,13 @@ function Home() {
 }
 
 function Shell({ onSignOut }: { onSignOut: () => void }) {
-  const { offer, toast } = useDriver();
+  const { me, offer, toast } = useDriver();
+  // Charging only makes sense for a car with a plug (electric or plug-in hybrid).
+  const plug = hasPlug(me?.driver?.vehicle);
   const tabs = [
     { to: '/', label: 'Drive', icon: <Icon name="car" size={26} /> },
     { to: '/earnings', label: 'Earnings', icon: <Icon name="wallet" size={26} /> },
-    { to: '/charging', label: 'Charging', icon: <Icon name="bolt" size={26} /> },
+    ...(plug ? [{ to: '/charging', label: 'Charging', icon: <Icon name="bolt" size={26} /> }] : []),
     { to: '/trips', label: 'Trips', icon: <Icon name="list" size={26} /> },
     { to: '/profile', label: 'Profile', icon: <Icon name="user" size={26} /> },
   ];
@@ -45,7 +48,7 @@ function Shell({ onSignOut }: { onSignOut: () => void }) {
           <Route path="/" element={<Home />} />
           <Route path="/setup" element={<Onboarding />} />
           <Route path="/earnings" element={<Earnings />} />
-          <Route path="/charging" element={<Charging />} />
+          <Route path="/charging" element={plug || !me ? <Charging /> : <Navigate to="/" />} />
           <Route path="/trips" element={<Trips />} />
           <Route path="/profile" element={<Profile onSignOut={onSignOut} />} />
           <Route path="*" element={<Navigate to="/" />} />

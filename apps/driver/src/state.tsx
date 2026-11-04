@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { ApiError, connectRealtime, get, post, useGeolocation } from '@dingogo/shared';
+import { hasPlug, minYearFallback } from './vehicle';
 
 export const PLACES = [
   { name: 'Todd Mall', lat: -23.6984, lng: 133.8822 },
@@ -13,9 +14,12 @@ export const PLACES = [
 ];
 
 export type Pos = { lat: number; lng: number; heading: number | null };
+/** GET /driver/vehicles: the driver's own cars (plus their fleet car, if any). */
+export type Cars = { vehicles: any[]; current_vehicle_id: string | null; min_year: number; max_age_years: number };
 
 interface Ctx {
   me: any | null; reloadMe: () => Promise<void>;
+  cars: Cars | null;
   online: boolean; setOnline: (v: boolean) => void;
   battery: number; setBattery: (v: number) => void;
   pos: Pos | null; simulated: Pos | null; setSimulated: (p: Pos | null) => void; geoDenied: boolean;
@@ -31,6 +35,7 @@ const LSset = (k: string, v: string | null) => { try { v == null ? localStorage.
 
 export function DriverProvider({ children }: { children: React.ReactNode }) {
   const [me, setMe] = useState<any>(null);
+  const [cars, setCars] = useState<Cars | null>(null);
   const [online, setOnlineState] = useState(false);
   const [battery, setBatteryState] = useState<number>(Number(LS('battery') ?? 80));
   const [simulated, setSimState] = useState<Pos | null>(() => { const s = LS('simpos'); return s ? JSON.parse(s) : null; });
@@ -41,16 +46,20 @@ export function DriverProvider({ children }: { children: React.ReactNode }) {
   const pos: Pos | null = simulated ?? (geo.pos ? { lat: geo.pos.lat, lng: geo.pos.lng, heading: geo.pos.heading } : null);
   const posRef = useRef(pos); posRef.current = pos;
   const batteryRef = useRef(battery); batteryRef.current = battery;
+  const plugRef = useRef(false); plugRef.current = hasPlug(me?.driver?.vehicle);
 
   const showToast = useCallback((s: string) => { setToast(s); setTimeout(() => setToast((t) => (t === s ? null : t)), 4000); }, []);
   const setBattery = (v: number) => { setBatteryState(v); LSset('battery', String(v)); };
   const setSimulated = (p: Pos | null) => { setSimState(p); LSset('simpos', p ? JSON.stringify(p) : null); };
 
   const reloadMe = useCallback(async () => {
-    const r = await get('/driver/me');
+    const [r, c] = await Promise.all([get('/driver/me'), get<Cars>('/driver/vehicles').catch(() => null)]);
     setMe(r);
+    const v = r.driver?.vehicle;
+    // Fall back to the assigned car if the vehicles list is unavailable.
+    setCars(c ?? { vehicles: v ? [v] : [], current_vehicle_id: v?.id ?? null, min_year: minYearFallback(), max_age_years: 13 });
     setOnlineState(!!r.driver?.online);
-    if (r.driver?.vehicle?.battery_pct != null && LS('battery') == null) setBatteryState(r.driver.vehicle.battery_pct);
+    if (v?.battery_pct != null && LS('battery') == null) setBatteryState(v.battery_pct);
   }, []);
   const reloadTrip = useCallback(async () => {
     try { const r = await get('/driver/trips/active'); setTrip((cur: any) => (r.trip ? r.trip : cur && ['completed', 'cancelled_rider', 'cancelled_admin', 'cancelled_driver'].includes(cur.status) ? cur : null)); }
@@ -101,7 +110,7 @@ export function DriverProvider({ children }: { children: React.ReactNode }) {
     const send = async () => {
       const p = posRef.current;
       if (!p) return;
-      try { await post('/driver/location', { lat: p.lat, lng: p.lng, heading: p.heading ?? undefined, battery_pct: batteryRef.current }); }
+      try { await post('/driver/location', { lat: p.lat, lng: p.lng, heading: p.heading ?? undefined, battery_pct: plugRef.current ? batteryRef.current : undefined }); }
       catch (e) { if (e instanceof ApiError && e.status === 401) location.reload(); }
     };
     void send();
@@ -112,7 +121,7 @@ export function DriverProvider({ children }: { children: React.ReactNode }) {
   const setOnline = (v: boolean) => setOnlineState(v);
   const clearOffer = () => setOffer(null);
 
-  return <C.Provider value={{ me, reloadMe, online, setOnline, battery, setBattery, pos, simulated, setSimulated, geoDenied: geo.denied || !geo.pos,
+  return <C.Provider value={{ me, reloadMe, cars, online, setOnline, battery, setBattery, pos, simulated, setSimulated, geoDenied: geo.denied || !geo.pos,
     offer, clearOffer, trip, reloadTrip, setTrip, toast, showToast }}>{children}</C.Provider>;
 }
 

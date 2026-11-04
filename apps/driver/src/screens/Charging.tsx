@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { ApiError, Icon, dateTime, get, money, post, useLoad } from '@dingogo/shared';
 import { rangeKm, useDriver } from '../state';
+import { isEv } from '../vehicle';
 
 const nowLocal = (offsetMin = 0) => { const d = new Date(Date.now() + offsetMin * 60000); d.setMinutes(d.getMinutes() - d.getTimezoneOffset()); return d.toISOString().slice(0, 16); };
 
@@ -10,6 +11,10 @@ export function Charging() {
   const [form, setForm] = useState(false);
   const [checkIn, setCheckIn] = useState(false);
   const m = data?.month;
+  const v = me?.driver?.vehicle;
+  const ev = isEv(v);
+  // Home charging is reimbursed only on DingoGo fleet or leased cars, not cars drivers own.
+  const reimbursed = !!v && v.ownership !== 'driver_owned';
   const centsPerKm = m && m.trip_km ? Math.round(m.cost_cents / m.trip_km) : null;
 
   return (
@@ -21,7 +26,7 @@ export function Charging() {
           <div className="battery-bar" aria-hidden><i className={battery < 20 ? 'low' : ''} style={{ width: `${battery}%` }} /></div>
           <strong className="dg-money">{battery}%</strong>
         </div>
-        <p className="dg-muted" style={{ margin: '10px 0 14px' }}>About {rangeKm(me?.driver?.vehicle?.range_km, battery)} km left with air-con in this heat.</p>
+        <p className="dg-muted" style={{ margin: '10px 0 14px' }}>{ev ? `About ${rangeKm(v?.range_km, battery)} km left with air-con in this heat.` : 'Battery charge. Your plug-in hybrid switches to fuel when it runs low.'}</p>
         <div className="btn-row">
           <button className="dg-btn dg-btn--ghost" onClick={() => setCheckIn(true)}><Icon name="battery" size={18} />Check in</button>
           <button className="dg-btn" onClick={() => setForm(true)}><Icon name="plus" size={18} />Log a charge</button>
@@ -36,7 +41,7 @@ export function Charging() {
             <div className="stat"><b>{money(m.cost_cents)}</b><span>Electricity</span></div>
             <div className="stat"><b>{centsPerKm != null ? `${centsPerKm}c` : 'None'}</b><span>Per km</span></div>
           </div>
-          <p className="fine-print"><Icon name="info" size={16} />{m.trip_km ? `Based on ${m.trip_km} trip km. ` : ''}Home charging is reimbursed at the household tariff with your next payout.</p>
+          <p className="fine-print"><Icon name="info" size={16} />{m.trip_km ? `Based on ${m.trip_km} trip km. ` : ''}{reimbursed ? 'Home charging is reimbursed at the household tariff with your next payout.' : 'Keep a log of your charging costs for your tax return.'}</p>
         </>
       )}
 

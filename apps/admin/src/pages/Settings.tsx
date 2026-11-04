@@ -24,13 +24,13 @@ function SettingsForm() {
   useEffect(() => {
     if (!data) return;
     const m = Object.fromEntries(data.items.map((s: any) => [s.key, s.value]));
-    setV({ business: m.business ?? {}, support: m.support ?? {}, nt_levy_cents: m.nt_levy_cents ?? 100, home_tariff_cents_per_kwh: m.home_tariff_cents_per_kwh ?? 30, roof_display: m.roof_display ?? { mode: 'ads' } });
+    setV({ business: m.business ?? {}, support: m.support ?? {}, nt_levy_cents: m.nt_levy_cents ?? 100, home_tariff_cents_per_kwh: m.home_tariff_cents_per_kwh ?? 30, vehicle_max_age_years: m.vehicle_max_age_years ?? 13, roof_display: m.roof_display ?? { mode: 'ads' } });
   }, [data]);
   if (!v) return <ErrorMsg error={error} />;
   const setIn = (k: string, f: string, x: any) => setV({ ...v, [k]: { ...v[k], [f]: x } });
   async function save(e: React.FormEvent) {
     e.preventDefault();
-    for (const k of ['business', 'support', 'nt_levy_cents', 'home_tariff_cents_per_kwh', 'roof_display']) {
+    for (const k of ['business', 'support', 'nt_levy_cents', 'home_tariff_cents_per_kwh', 'vehicle_max_age_years', 'roof_display']) {
       const r = await run(() => put(`/admin/settings/${k}`, { value: v[k] }));
       if (!r) return;
     }
@@ -47,6 +47,7 @@ function SettingsForm() {
       <div className="form-grid">
         <label className="dg-field"><span>NT passenger levy per trip ($)</span><input className="dg-input" type="number" step="0.01" value={(Number(v.nt_levy_cents) / 100).toFixed(2)} onChange={(e) => setV({ ...v, nt_levy_cents: Math.round(Number(e.target.value) * 100) })} /></label>
         <label className="dg-field"><span>Home charging tariff (cents per kWh)</span><input className="dg-input" type="number" value={v.home_tariff_cents_per_kwh} onChange={(e) => setV({ ...v, home_tariff_cents_per_kwh: Number(e.target.value) })} /><small className="dg-muted">Used to reimburse drivers for charging at home.</small></label>
+        <label className="dg-field"><span>Oldest car allowed (years)</span><input className="dg-input" type="number" min={1} max={13} value={v.vehicle_max_age_years} onChange={(e) => setV({ ...v, vehicle_max_age_years: Number(e.target.value) })} /><small className="dg-muted">NT rideshare cars must be under 13 years old. A car qualifies if built in {new Date().getFullYear() - Number(v.vehicle_max_age_years) + 1} or later.</small></label>
       </div>
       <Section title="Roof screens" />
       <div className="form-grid">

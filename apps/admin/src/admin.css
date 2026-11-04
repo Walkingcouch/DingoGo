@@ -192,3 +192,23 @@ dl.kv dd { margin: 0; }
 .issue { display: grid; gap: 2px; justify-items: start; max-width: 220px; }
 .issue .sub { max-width: 100%; line-height: 1.3; }
 .chart__empty-msg { background: var(--surface); padding: 2px 10px; border-radius: var(--r-sm); }
+
+/* Fleet: cars to check */
+.toolbar-inline { display: inline-flex; align-items: center; gap: var(--sp-2); font-size: .9rem; }
+.toolbar-inline .dg-select { min-height: 36px; padding: .25rem .6rem; width: auto; }
+.review-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(420px, 100%), 1fr)); gap: var(--sp-4); }
+.review { display: grid; gap: var(--sp-2); align-content: start; border-left: 4px solid var(--ochre); }
+.review__head { display: flex; align-items: flex-start; gap: var(--sp-3); }
+.review__head h3 { margin: 0; }
+.review__head p { margin: 2px 0 0; font-size: .88rem; }
+.review__head .spacer { flex: 1; }
+.review__rego { font-family: ui-monospace, monospace; font-size: .9rem; background: var(--bg); border: 1px solid var(--line); border-radius: var(--r-sm); padding: 1px 6px; margin-left: 4px; white-space: nowrap; }
+.review__sub { margin: var(--sp-2) 0 0; font-size: .9rem; }
+.review__docs { list-style: none; margin: 0; padding: 0; }
+.review__docs li { display: flex; align-items: center; gap: var(--sp-2); padding: 6px 0; border-bottom: 1px solid var(--line); font-size: .9rem; }
+.review__docs li:last-child { border-bottom: 0; }
+.review__docs li > svg { color: var(--muted); }
+.review__doc { flex: 1; min-width: 0; }
+.review__doc .sub { display: block; color: var(--muted); font-size: .82rem; }
+.review__form { margin-top: var(--sp-2); }
+@media (max-width: 720px) { .review-list { grid-template-columns: 1fr; } }

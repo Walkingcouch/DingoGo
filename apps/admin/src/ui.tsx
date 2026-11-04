@@ -193,11 +193,13 @@ export function FormFields({ fields, form, setForm, editing }: { fields: Field[]
 }
 
 /** List + create + edit for a /admin/<path> CRUD resource. */
-export function CrudSection<T extends Record<string, any>>({ title, path, cols, fields, pk = 'id', newLabel, preview, filter, right, describe }: {
+export function CrudSection<T extends Record<string, any>>({ title, path, query, refresh, onSaved, cols, fields, pk = 'id', newLabel, preview, filter, right, describe }: {
   title: string; path: string; cols: Col<T>[]; fields: Field[]; pk?: string; newLabel?: string;
+  /** Extra query string for the list request, e.g. "status=all". */ query?: string;
+  /** Bump to reload the list after a change made elsewhere on the page. */ refresh?: number; onSaved?: () => void;
   preview?: (form: Record<string, any>) => ReactNode; filter?: (r: T) => boolean; right?: ReactNode; describe?: ReactNode;
 }) {
-  const { data, error, reload } = useLoad(() => get<{ items: T[] }>(`/admin/${path}`), [path]);
+  const { data, error, reload } = useLoad(() => get<{ items: T[] }>(`/admin/${path}${query ? `?${query}` : ''}`), [path, query, refresh]);
   const [editing, setEditing] = useState<T | 'new' | null>(null);
   const [form, setForm] = useState<Record<string, any>>({});
   const [busy, setBusy] = useState(false);
@@ -214,7 +216,7 @@ export function CrudSection<T extends Record<string, any>>({ title, path, cols, 
       if (isNew) await post(`/admin/${path}`, body);
       else await patch(`/admin/${path}/${encodeURIComponent((editing as T)[pk])}`, body);
       toast(isNew ? `${title.replace(/s$/, '')} created` : 'Changes saved');
-      setEditing(null); void reload();
+      setEditing(null); void reload(); onSaved?.();
     } catch (ex) { setErr(ex instanceof ApiError ? ex.message : ex instanceof SyntaxError ? 'Check the JSON field' : String(ex)); }
     finally { setBusy(false); }
   }

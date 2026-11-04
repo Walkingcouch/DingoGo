@@ -1,20 +1,35 @@
 import { useState } from 'react';
 import { ApiError, patch, post, uploadFile, Ranges } from '@dingogo/shared';
 import { useDriver } from '../state';
+import { CarStatus, FuelChip, carName, minYearFallback } from '../vehicle';
+import { AddCarForm, CarPapers, CarRules, carToSetUp } from './Car';
 
 type State = 'done' | 'review' | 'missing';
 const today = () => new Date().toISOString().slice(0, 10);
 const future = (d?: string | null) => !!d && d >= today();
 const within3m = (d?: string | null) => !!d && (Date.now() - new Date(d).getTime()) / 864e5 <= 92;
 
-interface Step { key: string; title: string; help: string; state: State; form: 'licence' | 'h' | 'doc' | 'abn' | 'gst' | 'bank' | 'vehicle'; docType?: string; needsExpiry?: boolean }
+interface Step { key: string; title: string; help: string; state: State; form: 'licence' | 'h' | 'doc' | 'abn' | 'gst' | 'bank' | 'car'; docType?: string; needsExpiry?: boolean }
 
 export function Onboarding() {
-  const { me, reloadMe } = useDriver();
+  const { me, reloadMe, cars } = useDriver();
   const [open, setOpen] = useState<string | null>(null);
+  const [ownerNeeded, setOwnerNeeded] = useState<Record<string, boolean>>({});
   if (!me) return null;
   const d = me.driver ?? {};
   const docs: any[] = me.documents ?? [];
+  const minYear = cars?.min_year ?? minYearFallback();
+  const car = carToSetUp(cars?.vehicles ?? (d.vehicle ? [d.vehicle] : []), cars?.current_vehicle_id ?? d.vehicle_id);
+  const carDocs = car ? docs.filter((x) => x.vehicle_id === car.id && x.status !== 'rejected') : [];
+  const papersIn = ['vehicle_rego', 'insurance', 'roadworthy', 'vehicle_cvl'].every((t) => carDocs.some((x) => x.type === t));
+  const carState: State = !car ? 'missing'
+    : (car.status ?? 'approved') === 'approved' && future(car.cvl_expiry) ? 'done'
+      : car.status === 'pending' && papersIn ? 'review' : 'missing';
+  const carHelp = !car ? 'Bring your own car: any fuel type, under 13 years old, with 4 doors and an NT rideshare licence (CVL).'
+    : car.status === 'approved' && !future(car.cvl_expiry) ? 'Your car’s rideshare licence (CVL) has expired. Upload the renewed one.'
+      : car.status === 'rejected' ? 'DingoGo couldn’t approve this car yet. See why, then fix it.'
+        : car.status === 'pending' && !papersIn ? 'Upload your car’s papers so DingoGo can check it.'
+          : car.status === 'pending' ? 'DingoGo is checking your car.' : 'Approved for DingoGo trips.';
   const docState = (type: string, ok: boolean): State => {
     if (ok) return 'done';
     const latest = docs.find((x) => x.type === type);
@@ -32,7 +47,7 @@ export function Onboarding() {
     { key: 'gst', title: 'GST registration', help: 'The ATO requires rideshare drivers to register for GST before their first trip, whatever they earn.', state: d.gst_registered ? 'done' : 'missing', form: 'gst' },
     { key: 'bank', title: 'Bank account for payouts', help: 'Earnings are paid weekly to this account.', state: d.bank_bsb ? 'done' : 'missing', form: 'bank' },
     { key: 'da', title: 'Disability awareness training', help: 'Short online module covering assistance animals, wheelchairs and respectful service.', state: docState('disability_awareness', !!d.da_training_date), form: 'doc', docType: 'disability_awareness' },
-    { key: 'vehicle', title: 'Vehicle with rideshare licence', help: 'A DingoGo BYD Dolphin (lease available) or your own EV with an NT rideshare Commercial Vehicle Licence.', state: d.vehicle && future(d.vehicle.cvl_expiry) ? 'done' : docState('vehicle_cvl', false), form: 'vehicle', docType: 'vehicle_cvl', needsExpiry: true },
+    { key: 'car', title: 'Your car', help: carHelp, state: carState, form: 'car' },
   ];
   const doneCount = steps.filter((s) => s.state === 'done').length;
 
@@ -50,17 +65,27 @@ export function Onboarding() {
       )}
 
       <ol className="steps">
-        {steps.map((s) => (
-          <li key={s.key} className={s.state === "done" ? "done" : ""}>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: 12, alignItems: 'center' }}>
-              <div><p>{s.title}</p><small>{s.help}</small></div>
-              {s.state === 'done' ? <span className="dg-chip dg-chip--green">Done</span>
-                : s.state === 'review' ? <span className="dg-chip dg-chip--ochre">In review</span>
-                  : <button className="dg-btn dg-btn--sm" onClick={() => setOpen(open === s.key ? null : s.key)} aria-expanded={open === s.key}>{open === s.key ? 'Close' : 'Add'}</button>}
-            </div>
-            {open === s.key && <StepForm step={s} onSaved={async () => { setOpen(null); await reloadMe(); }} />}
-          </li>
-        ))}
+        {steps.map((s) => {
+          const isCar = s.form === 'car';
+          const btnLabel = open === s.key ? 'Close' : !isCar || !car ? 'Add' : car.status === 'rejected' ? 'Fix' : 'Continue';
+          return (
+            <li key={s.key} className={s.state === "done" ? "done" : ""}>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: 12, alignItems: 'center' }}>
+                <div><p>{s.title}</p><small>{s.help}</small>
+                  {isCar && car && <div className="car-line"><span>{carName(car)}, {car.rego}</span><FuelChip v={car} />{car.status === 'rejected' && <CarStatus v={car} />}</div>}</div>
+                {s.state === 'done' ? <span className="dg-chip dg-chip--green">Done</span>
+                  : s.state === 'review' ? (isCar ? <CarStatus v={car} /> : <span className="dg-chip dg-chip--ochre">In review</span>)
+                    : <button className="dg-btn dg-btn--sm" onClick={() => setOpen(open === s.key ? null : s.key)} aria-expanded={open === s.key}>{btnLabel}</button>}
+              </div>
+              {open === s.key && (isCar
+                ? <div style={{ marginTop: 12 }}>
+                    {car ? <CarPapers car={car} ownerPermissionNeeded={ownerNeeded[car.id]} />
+                      : <><CarRules minYear={minYear} /><AddCarForm minYear={minYear} onSaved={async (v, registeredOwner) => { setOwnerNeeded({ ...ownerNeeded, [v.id]: !registeredOwner }); await reloadMe(); }} /></>}
+                  </div>
+                : <StepForm step={s} onSaved={async () => { setOpen(null); await reloadMe(); }} />)}
+            </li>
+          );
+        })}
       </ol>
       <p className="dg-muted" style={{ fontSize: 'var(--fs-sm)' }}>DingoGo reviews documents within 2 business days. Questions? Call the office.</p>
       <Ranges height={40} fill="var(--line)" style={{ marginTop: 24 }} />
@@ -83,7 +108,7 @@ function StepForm({ step, onSaved }: { step: Step; onSaved: () => void }) {
       if (step.form === 'abn') await patch('/driver/me', { abn: String(v.abn ?? '').replace(/\s/g, '') });
       if (step.form === 'gst') await patch('/driver/me', { gst_registered: !!v.gst });
       if (step.form === 'bank') await patch('/driver/me', { bank_bsb: String(v.bsb ?? '').replace(/\D/g, ''), bank_account: String(v.account ?? '').replace(/\D/g, '') });
-      if (step.docType && ['licence', 'h', 'doc', 'vehicle'].includes(step.form)) {
+      if (step.docType && ['licence', 'h', 'doc'].includes(step.form)) {
         const file_url = file ? (await uploadFile(file, 'document')).url : undefined;
         await post('/driver/documents', { type: step.docType, number: v.number || undefined, expires_at: v.expires_at || undefined, file_url });
       }
@@ -94,9 +119,9 @@ function StepForm({ step, onSaved }: { step: Step; onSaved: () => void }) {
 
   return (
     <form onSubmit={save} style={{ marginTop: 12 }}>
-      {['licence', 'h', 'doc', 'vehicle'].includes(step.form) && (
+      {['licence', 'h', 'doc'].includes(step.form) && (
         <>
-          <label className="dg-field"><span>{step.form === 'vehicle' ? 'CVL number' : 'Number / reference'}</span><input className="dg-input" value={v.number ?? ''} onChange={set('number')} required={step.form !== 'doc'} /></label>
+          <label className="dg-field"><span>Number / reference</span><input className="dg-input" value={v.number ?? ''} onChange={set('number')} required={step.form !== 'doc'} /></label>
           {step.needsExpiry && <label className="dg-field"><span>Expiry date</span><input className="dg-input" type="date" value={v.expires_at ?? ''} onChange={set('expires_at')} required /></label>}
           <label className="dg-field"><span>Photo or PDF</span><input className="dg-input" type="file" accept="image/*,application/pdf" onChange={(e) => setFile(e.target.files?.[0] ?? null)} required={step.form === 'doc'} /></label>
         </>

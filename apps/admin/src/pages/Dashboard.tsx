@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { get, money, useLoad, Icon, SERVICE_ICON_NAME } from '@dingogo/shared';
-import { Page } from '../ctx';
+import { Page, useOps } from '../ctx';
 import { Bars, ErrorMsg, Loading, Section } from '../ui';
 import { SERVICE_NAME, label } from '../labels';
 
@@ -26,6 +26,7 @@ function Kpi({ value, title, note, tone, to }: { value: ReactNode; title: string
 
 export default function Dashboard() {
   const { data: d, error } = useLoad(() => get('/admin/dashboard'));
+  const { counts } = useOps();
   if (error) return <Page title="Dashboard"><ErrorMsg error={error} /></Page>;
   if (!d) return <Page title="Dashboard"><Loading /></Page>;
   const mixTotal = d.mix.reduce((s: number, m: any) => s + m.n, 0);
@@ -37,11 +38,16 @@ export default function Dashboard() {
     { label: 'Compliance flags', n: d.live.open_flags, to: '/safety', icon: 'flag', urgent: true },
     { label: 'Drivers awaiting approval', n: d.live.pending_drivers, to: '/drivers', icon: 'user' },
     { label: 'Documents to review', n: d.live.pending_docs, to: '/drivers', icon: 'document' },
+    { label: 'Cars to check', n: d.live.pending_vehicles ?? counts.cars ?? 0, to: '/fleet', icon: 'car' },
     { label: 'Driver applications', n: d.live.new_applications, to: '/drivers', icon: 'users' },
     { label: 'Support tickets', n: d.live.open_tickets, to: '/support', icon: 'chat' },
     { label: 'Hire requests', n: d.live.new_hire_requests, to: '/support', icon: 'calendar' },
     { label: 'Scheduled bookings', n: d.live.scheduled, to: '/trips', icon: 'clock' },
   ];
+  // Green-fleet stats: the API may send them at the top level or under lifetime.
+  const greenPct: number | null = d.green_km_pct ?? d.lifetime?.green_km_pct ?? null;
+  const evKm: number = Number(d.ev_km ?? d.lifetime?.ev_km ?? 0);
+  const co2: number = Number(d.co2_saved_kg ?? d.lifetime?.co2_saved_kg ?? d.lifetime?.co2_avoided_kg ?? 0);
   const outstanding = open.filter((o) => o.n > 0 && o.label !== 'Scheduled bookings').length;
 
   return (
@@ -97,10 +103,11 @@ export default function Dashboard() {
         </div>
       </div>
 
-      <Section title="Electric fleet impact" />
+      <Section title="Going electric" />
       <div className="kpis">
-        <Kpi title="Driven on electricity" value={`${d.lifetime.ev_km.toLocaleString('en-AU')} km`} note="All time" />
-        <Kpi title="CO₂ avoided" value={`${d.lifetime.co2_avoided_kg.toLocaleString('en-AU')} kg`} tone="green" note="Compared with an average petrol car" />
+        <Kpi title="Trip km in green cars" value={greenPct != null ? `${Math.round(greenPct)}%` : '—'} tone={greenPct ? 'green' : undefined} note="Electric and hybrid, last 30 days" />
+        <Kpi title="Driven on electricity" value={`${evKm.toLocaleString('en-AU')} km`} note="Fully electric cars only" />
+        <Kpi title="CO₂ avoided" value={`${co2.toLocaleString('en-AU')} kg`} tone={co2 ? 'green' : undefined} note="Trips in electric cars, against an average petrol car" />
         <Kpi title="Average rider rating" value={d.avg_rating_30d ?? '—'} note={d.avg_rating_30d ? 'Last 30 days, out of 5' : 'No ratings in the last 30 days'} />
         <Kpi title="Roof screen plays" value={d.ad_plays_today} note="Today" to="/ads" />
       </div>

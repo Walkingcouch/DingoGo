@@ -2,7 +2,15 @@ import { useEffect, useState } from 'react';
 import { get, patch, post, money, date, dateTime, assetUrl, useLoad } from '@dingogo/shared';
 import { Page } from '../ctx';
 import { Chip, Drawer, ErrorMsg, Table, Tabs, useRun, type Col } from '../ui';
-import { APPLICATION_STATUS, DOC_STATUS, DOC_TYPE, DRIVER_STATUS, DRIVER_STATUS_TONE, FLAG_KIND, FLAG_STATUS, LEDGER_KIND, complianceText, docTone, label } from '../labels';
+import { APPLICATION_STATUS, DOC_STATUS, DOC_TYPE, DRIVER_STATUS, DRIVER_STATUS_TONE, FLAG_KIND, FLAG_STATUS, FUEL, LEDGER_KIND, VEHICLE_STATUS, complianceText, docTone, label } from '../labels';
+
+/** Second line under a driver's rego: car check status if it isn't approved, else charge (cars with a plug) or fuel. */
+function carSub(d: any) {
+  const st = d.vehicle_status;
+  if (st && st !== 'approved') return <span className="sub" style={{ color: st === 'rejected' ? 'var(--earth)' : undefined }}>{label(VEHICLE_STATUS, st)}</span>;
+  if (d.fuel_type && !['electric', 'plug_in_hybrid'].includes(d.fuel_type)) return <span className="sub">{label(FUEL, d.fuel_type)}</span>;
+  return <span className="sub">{d.battery_pct != null ? `${d.battery_pct}% charge` : d.fuel_type ? label(FUEL, d.fuel_type) : 'Charge unknown'}</span>;
+}
 
 
 export default function Drivers() {
@@ -19,7 +27,7 @@ export default function Drivers() {
       ? <span className="issue" title={d.compliance_issues.map(complianceText).join('\n')}><Chip tone="red">Not yet</Chip><span className="sub">{complianceText(d.compliance_issues[0])}{d.compliance_issues.length > 1 && `, and ${d.compliance_issues.length - 1} more`}</span></span>
       : <Chip tone="green">Yes, all current</Chip> },
     { key: 'online', label: 'Online', render: (d) => (d.online ? <Chip tone="green">Online</Chip> : <span className="dg-muted">Offline</span>) },
-    { key: 'rego', label: 'Vehicle', nowrap: true, render: (d) => d.rego ? <>{d.rego}<span className="sub">{d.battery_pct != null ? `${d.battery_pct}% charge` : 'Charge unknown'}</span></> : <span className="dg-muted">None assigned</span> },
+    { key: 'rego', label: 'Vehicle', nowrap: true, render: (d) => d.rego ? <>{d.rego}{carSub(d)}</> : <span className="dg-muted">No car yet</span> },
     { key: 'trips', label: 'Trips', num: true },
     { key: 'rating_avg', label: 'Rating', num: true, render: (d) => d.rating_avg != null ? Number(d.rating_avg).toFixed(1) : <span className="dg-muted">—</span> },
     { key: 'balance_cents', label: 'Balance', num: true, render: (d) => money(d.balance_cents) },
@@ -55,7 +63,8 @@ export default function Drivers() {
 
 function DriverDrawer({ id, onClose }: { id: string; onClose: () => void }) {
   const { data, error, reload } = useLoad(() => get(`/admin/drivers/${id}`), [id]);
-  const vehicles = useLoad(() => get('/admin/vehicles'));
+  const vehicles = useLoad(() => get('/admin/vehicles?status=all'));
+  const regoOf = (id?: string | null) => vehicles.data?.items.find((v: any) => v.id === id)?.rego;
   const run = useRun();
   const [form, setForm] = useState<any>(null);
   const d = data?.driver;
@@ -99,7 +108,7 @@ function DriverDrawer({ id, onClose }: { id: string; onClose: () => void }) {
           {!data.documents.length && <tr><td className="empty">No documents uploaded.</td></tr>}
           {data.documents.map((x: any) => (
             <tr key={x.id}>
-              <td><strong>{label(DOC_TYPE, x.type)}</strong><span className="sub">{[x.number, x.expires_at && `expires ${date(x.expires_at)}`].filter(Boolean).join(', ')}{x.file_url && <> <a href={assetUrl(x.file_url)} target="_blank" rel="noreferrer">View file</a></>}</span>{x.note && <span className="sub">{x.note}</span>}</td>
+              <td><strong>{label(DOC_TYPE, x.type)}</strong>{x.vehicle_id && <span className="sub">Car {regoOf(x.vehicle_id) ?? ''}</span>}<span className="sub">{[x.number, x.expires_at && `expires ${date(x.expires_at)}`].filter(Boolean).join(', ')}{x.file_url && <> <a href={assetUrl(x.file_url)} target="_blank" rel="noreferrer">View file</a></>}</span>{x.note && <span className="sub">{x.note}</span>}</td>
               <td><Chip tone={docTone(x.status)}>{label(DOC_STATUS, x.status)}</Chip></td>
               <td className="num">{x.status === 'pending' && <><button className="dg-btn dg-btn--sm dg-btn--green" onClick={() => review(x.id, 'approved')}>Approve</button> <button className="dg-btn dg-btn--sm dg-btn--ghost" onClick={() => review(x.id, 'rejected')}>Reject</button></>}</td>
             </tr>
@@ -108,10 +117,10 @@ function DriverDrawer({ id, onClose }: { id: string; onClose: () => void }) {
 
         {form && (
           <form className="panel" style={{ marginTop: 18 }} onSubmit={save}>
-            <h3>Status, vehicle and credentials</h3>
+            <h3>Status, car and credentials</h3>
             <div className="form-grid">
               <label className="dg-field"><span>Status</span><select className="dg-select" value={form.status} onChange={(e) => set('status', e.target.value)}>{Object.entries(DRIVER_STATUS).map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select></label>
-              <label className="dg-field"><span>Vehicle</span><select className="dg-select" value={form.vehicle_id} onChange={(e) => set('vehicle_id', e.target.value)}><option value="">None</option>{vehicles.data?.items.map((v: any) => <option key={v.id} value={v.id}>{v.rego} {v.colour}</option>)}</select></label>
+              <label className="dg-field"><span>Car</span><select className="dg-select" value={form.vehicle_id} onChange={(e) => set('vehicle_id', e.target.value)}><option value="">None</option>{vehicles.data?.items.filter((v: any) => (v.status ?? 'approved') === 'approved' || v.id === d.vehicle_id).map((v: any) => <option key={v.id} value={v.id}>{v.rego}, {v.colour} {v.make} {v.model}{v.ownership === 'driver_owned' ? ` (${v.owner?.name ?? 'driver owned'})` : ''}</option>)}</select></label>
               <label className="dg-field"><span>DingoGo service fee (%)</span><input className="dg-input" type="number" min={0} max={50} step={0.5} value={form.commission_pct} onChange={(e) => set('commission_pct', e.target.value)} /></label>
               <label className="dg-field"><span>Licence expiry</span><input className="dg-input" type="date" value={form.licence_expiry} onChange={(e) => set('licence_expiry', e.target.value)} /></label>
               <label className="dg-field"><span>H endorsement expiry</span><input className="dg-input" type="date" value={form.h_endorsement_expiry} onChange={(e) => set('h_endorsement_expiry', e.target.value)} /></label>
