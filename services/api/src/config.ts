@@ -38,6 +38,8 @@ export const config = {
     /** Minimum battery a car must still have after the trip (and getting back to town). */
     reserveKm: Number(env.RANGE_RESERVE_KM ?? 40),
     tickMs: Number(env.DISPATCH_TICK_MS ?? 2000),
+    /** Green cars (electric, plug-in hybrid, hybrid) get trips first: ranked as if this many metres closer to the pickup. */
+    greenBonusM: Number(env.DISPATCH_GREEN_BONUS_M ?? 1500),
   },
   loyalty: {
     pointsPerDollar: 10,         // 10 pts per $1 spent

@@ -125,11 +125,12 @@ export default async function riderRoutes(app: FastifyInstance) {
       receipt: {
         title: 'Tax Invoice', supplier: biz?.value ?? {}, trip_ref: t.ref, date: t.completed_at ?? t.cancelled_at,
         service: t.service, from: t.pickup_address, to: t.dropoff_address,
-        driver: t.driver?.name, vehicle: t.vehicle?.rego,
+        driver: t.driver?.name, vehicle: t.vehicle?.rego, vehicle_fuel_type: t.vehicle?.fuel_type ?? null, vehicle_is_ev: !!t.vehicle?.is_ev,
         lines: t.fare_breakdown.lines, fare_cents: t.final_cents ?? t.cancel_fee_cents, tip_cents: t.tip_cents,
         total_cents: total, gst_cents: Math.round((total - t.tip_cents) / 11), payment_method: t.payment_method,
         distance_km: Math.round((t.actual_distance_m ?? t.est_distance_m) / 100) / 10,
-        co2_saved_kg: Math.round(((t.actual_distance_m ?? t.est_distance_m) / 1000) * 0.18 * 10) / 10, // vs avg petrol car ~180 g/km
+        // CO₂ saved only for trips actually done in an electric car (vs avg petrol car ~180 g/km); null otherwise.
+        co2_saved_kg: t.vehicle?.is_ev ? Math.round(((t.actual_distance_m ?? t.est_distance_m) / 1000) * 0.18 * 10) / 10 : null,
       },
     };
   });

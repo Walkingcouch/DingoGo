@@ -25,6 +25,10 @@ export async function buildServer() {
   app.setErrorHandler((err: any, _req, reply) => {
     if (err instanceof ApiError) return reply.code(err.status).send({ error: err.code, message: err.message, details: err.details });
     if (err.validation) return reply.code(400).send({ error: 'validation_error', message: err.message });
+    // Postgres constraint errors (e.g. from admin CRUD) → 4xx instead of a 500.
+    if (err.code === '23505') return reply.code(409).send({ error: 'duplicate', message: err.detail ?? 'That already exists' });
+    if (err.code === '23514' || err.code === '22P02' || err.code === '23503') return reply.code(400).send({ error: 'invalid_value', message: err.detail ?? err.message });
+    if (err.code === '23502') return reply.code(400).send({ error: 'missing_field', message: `${err.column ?? 'A required field'} is required` });
     if (err.statusCode && err.statusCode < 500) return reply.code(err.statusCode).send({ error: 'request_error', message: err.message });
     console.error(err);
     return reply.code(500).send({ error: 'server_error', message: 'Something went wrong' });

@@ -5,6 +5,7 @@ import { ApiError, bad, conflict, forbidden, notFound } from '../lib/errors.js';
 import { quoteFare, type FareQuote, type FareRule } from '../lib/fares.js';
 import { haversine, route, withinZone, type LatLng } from '../lib/geo.js';
 import { pin4, shareToken, tripRef } from '../lib/ids.js';
+import { isEv, isGreen } from '../lib/vehicles.js';
 import { toOps, toTrip, toUser } from '../realtime.js';
 import { notify, sendSms } from './notify.js';
 import * as pay from './payments.js';
@@ -243,7 +244,8 @@ export async function getTrip(id: string, c: Q = pool) {
     `SELECT t.*,
        CASE WHEN du.id IS NOT NULL THEN json_build_object('id', du.id, 'name', du.name, 'phone', du.phone, 'rating', du.rating_avg,
          'lat', d.lat, 'lng', d.lng, 'heading', d.heading, 'languages', d.languages) END AS driver,
-       CASE WHEN v.id IS NOT NULL THEN json_build_object('rego', v.rego, 'make', v.make, 'model', v.model, 'colour', v.colour, 'battery_pct', v.battery_pct) END AS vehicle,
+       CASE WHEN v.id IS NOT NULL THEN json_build_object('rego', v.rego, 'make', v.make, 'model', v.model, 'colour', v.colour, 'battery_pct', v.battery_pct,
+         'fuel_type', v.fuel_type, 'green', v.fuel_type IN ('electric','plug_in_hybrid','hybrid'), 'is_ev', v.fuel_type = 'electric') END AS vehicle,
        json_build_object('id', ru.id, 'name', ru.name, 'phone', ru.phone, 'rating', ru.rating_avg) AS rider
      FROM trips t
      JOIN users ru ON ru.id = t.rider_id
@@ -280,7 +282,7 @@ export function canView(t: any, u: { id: string; role: string }) {
 
 // ───────────────────────── Dispatch ─────────────────────────
 
-/** Find the best eligible driver and send them an offer. Nearest-first, with EV range checks. */
+/** Find the best eligible driver and send them an offer. Nearest-first with a head start for green (EV/hybrid) cars; range checks for EVs. */
 export async function dispatchTrip(tripId: string): Promise<'offered' | 'waiting' | 'no_drivers' | 'skip'> {
   return tx(async (c) => {
     const t = await one('SELECT * FROM trips WHERE id = $1 FOR UPDATE SKIP LOCKED', [tripId], c);
@@ -296,8 +298,8 @@ export async function dispatchTrip(tripId: string): Promise<'offered' | 'waiting
     }
 
     const candidates = await q(
-      `SELECT d.user_id, d.lat, d.lng, v.id AS vehicle_id, v.battery_pct, v.range_km, v.pet_friendly, v.wheelchair_accessible, v.seats
-       FROM drivers d JOIN vehicles v ON v.id = d.vehicle_id AND v.active
+      `SELECT d.user_id, d.lat, d.lng, v.id AS vehicle_id, v.battery_pct, v.range_km, v.pet_friendly, v.wheelchair_accessible, v.seats, v.fuel_type
+       FROM drivers d JOIN vehicles v ON v.id = d.vehicle_id AND v.active AND v.status = 'approved'
        WHERE d.status = 'approved' AND d.online AND d.lat IS NOT NULL
          AND d.last_seen_at > now() - interval '3 minutes'
          AND ($2::boolean = false OR d.accepts_courier)
@@ -314,13 +316,20 @@ export async function dispatchTrip(tripId: string): Promise<'offered' | 'waiting
     const ranked = candidates
       .map((d) => {
         const toPickup = haversine({ lat: d.lat, lng: d.lng }, pickup) * 1.3;
-        // Remaining range: rated range × battery % × heat derate. Need pickup + trip + return-to-base reserve.
-        const rangeM = (d.range_km * 1000 * (d.battery_pct ?? 100) / 100) * config.dispatch.rangeDerate;
-        const needM = toPickup + t.est_distance_m + config.dispatch.reserveKm * 1000;
-        return { ...d, toPickup, rangeOk: rangeM >= needM };
+        // EVs only: remaining range = rated range × battery % × heat derate. Need pickup + trip + return-to-base reserve.
+        // Hybrids / plug-in hybrids / petrol / diesel can refuel anywhere, so no range check.
+        let rangeOk = true;
+        if (isEv(d.fuel_type) && d.range_km != null) {
+          const rangeM = (d.range_km * 1000 * (d.battery_pct ?? 100) / 100) * config.dispatch.rangeDerate;
+          const needM = toPickup + t.est_distance_m + config.dispatch.reserveKm * 1000;
+          rangeOk = rangeM >= needM;
+        }
+        // Green cars (electric & hybrids) are offered first: their distance counts as greenBonusM shorter.
+        const score = toPickup - (isGreen(d.fuel_type) ? config.dispatch.greenBonusM : 0);
+        return { ...d, toPickup, rangeOk, score };
       })
       .filter((d) => d.toPickup <= config.dispatch.searchRadiusKm * 1000 && d.rangeOk)
-      .sort((a, b) => a.toPickup - b.toPickup);
+      .sort((a, b) => a.score - b.score);
 
     const pick = ranked[0];
     if (!pick) return 'waiting'; // nobody free right now — keep searching until the window closes

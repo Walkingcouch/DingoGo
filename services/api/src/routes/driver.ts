@@ -1,17 +1,20 @@
 import type { FastifyInstance } from 'fastify';
 import { one, q } from '../db.js';
 import { requireUser } from '../auth.js';
-import { bad, conflict, forbidden } from '../lib/errors.js';
+import { bad, conflict, forbidden, notFound } from '../lib/errors.js';
 import { latLng, parse, z } from '../lib/validate.js';
+import { FUEL_TYPES, VEHICLE_DOC_TYPES, isEv, normaliseRego, vehicleAgeRule, vehicleOut } from '../lib/vehicles.js';
 import { toOps } from '../realtime.js';
 import * as trips from '../services/trips.js';
 
 /** Credentials that must be current before a driver can go online (NT CPV rules + DingoGo policy). */
 export async function complianceIssues(driverId: string): Promise<string[]> {
   const d = await one(
-    `SELECT d.*, v.rego, v.cvl_expiry, v.rego_expiry, v.insurance_expiry, v.active AS vehicle_active
+    `SELECT d.*, v.rego, v.cvl_expiry, v.rego_expiry, v.insurance_expiry, v.active AS vehicle_active,
+            v.status AS vehicle_status, v.review_note AS vehicle_review_note, v.year AS vehicle_year
      FROM drivers d LEFT JOIN vehicles v ON v.id = d.vehicle_id WHERE d.user_id = $1`, [driverId]);
   if (!d) return ['Not registered as a driver'];
+  const { min_year } = d.vehicle_id ? await vehicleAgeRule() : { min_year: 0 };
   const issues: string[] = [];
   const today = new Date().toISOString().slice(0, 10);
   const expired = (date: string | null) => !date || date < today;
@@ -22,6 +25,9 @@ export async function complianceIssues(driverId: string): Promise<string[]> {
   if (!d.gst_registered) issues.push('GST registration required (ATO: rideshare drivers register from the first trip)');
   if (!d.vehicle_id) issues.push('No vehicle assigned');
   else {
+    if (d.vehicle_status === 'pending') issues.push(`Your car ${d.rego} is waiting for DingoGo to check it`);
+    else if (d.vehicle_status === 'rejected') issues.push(`Your car ${d.rego} was not approved${d.vehicle_review_note ? `: ${d.vehicle_review_note}` : ''}`);
+    if (d.vehicle_year < min_year) issues.push(`Your car ${d.rego} is too old (${d.vehicle_year}) — rideshare cars must be ${min_year} or newer`);
     if (!d.vehicle_active) issues.push(`Vehicle ${d.rego} is off the road`);
     if (expired(d.cvl_expiry)) issues.push(`Vehicle ${d.rego}: rideshare Commercial Vehicle Licence missing or expired`);
     if (expired(d.rego_expiry)) issues.push(`Vehicle ${d.rego}: registration expired`);
@@ -37,7 +43,8 @@ export default async function driverRoutes(app: FastifyInstance) {
       `SELECT d.*, u.name, u.phone, u.email, u.rating_avg, u.rating_count,
          row_to_json(v.*) AS vehicle
        FROM drivers d JOIN users u ON u.id = d.user_id LEFT JOIN vehicles v ON v.id = d.vehicle_id WHERE d.user_id = $1`, [me.id]);
-    const docs = await q('SELECT id, type, number, expires_at, status, note, created_at FROM driver_documents WHERE driver_id = $1 ORDER BY created_at DESC', [me.id]);
+    if (d) d.vehicle = vehicleOut(d.vehicle);
+    const docs = await q('SELECT id, type, vehicle_id, number, expires_at, status, note, created_at FROM driver_documents WHERE driver_id = $1 ORDER BY created_at DESC', [me.id]);
     const today = await one(
       `SELECT count(*) FILTER (WHERE status = 'completed')::int trips,
               coalesce(sum(final_cents) FILTER (WHERE status = 'completed'), 0)::int gross_cents
@@ -71,13 +78,122 @@ export default async function driverRoutes(app: FastifyInstance) {
   app.post('/driver/documents', async (req) => {
     const me = await requireUser(req, 'driver');
     const b = parse(z.object({
-      type: z.enum(['licence', 'h_endorsement', 'cpvid', 'police_check', 'medical', 'abn', 'gst', 'insurance', 'vehicle_cvl', 'roadworthy', 'first_aid', 'disability_awareness', 'wwcc']),
+      type: z.enum(['licence', 'h_endorsement', 'cpvid', 'police_check', 'medical', 'abn', 'gst', 'insurance', 'vehicle_cvl', 'roadworthy', 'vehicle_rego', 'owner_permission', 'first_aid', 'disability_awareness', 'wwcc']),
       file_url: z.string().max(500).optional(), number: z.string().max(40).optional(), expires_at: z.string().date().optional(),
+      vehicle_id: z.string().uuid().optional(),
     }), req.body);
-    const doc = await one(`INSERT INTO driver_documents (driver_id, type, file_url, number, expires_at) VALUES ($1,$2,$3,$4,$5) RETURNING *`,
-      [me.id, b.type, b.file_url ?? null, b.number ?? null, b.expires_at ?? null]);
-    toOps('driver.document', { driver_id: me.id, type: b.type });
+    let vehicleId: string | null = b.vehicle_id ?? null;
+    if (vehicleId) {
+      const own = await one('SELECT 1 FROM vehicles WHERE id = $1 AND owner_driver_id = $2', [vehicleId, me.id]);
+      if (!own) throw bad('invalid_vehicle', 'You can only add documents for your own car');
+    } else if (VEHICLE_DOC_TYPES.includes(b.type)) {
+      // Car paperwork with no car given: attach to the driver's current car if it is their own.
+      vehicleId = (await one(`SELECT v.id FROM drivers d JOIN vehicles v ON v.id = d.vehicle_id AND v.owner_driver_id = d.user_id WHERE d.user_id = $1`, [me.id]))?.id ?? null;
+    }
+    const doc = await one(`INSERT INTO driver_documents (driver_id, type, file_url, number, expires_at, vehicle_id) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
+      [me.id, b.type, b.file_url ?? null, b.number ?? null, b.expires_at ?? null, vehicleId]);
+    toOps('driver.document', { driver_id: me.id, type: b.type, vehicle_id: vehicleId });
     return { document: doc };
+  });
+
+  // ───────────── Own cars (drivers bring their own vehicle) ─────────────
+  const vehicleBody = z.object({
+    rego: z.string().min(2).max(15), make: z.string().trim().min(1).max(40), model: z.string().trim().min(1).max(40),
+    year: z.number().int().min(1950).max(2100), colour: z.string().trim().min(1).max(30),
+    seats: z.number().int().default(4), doors: z.number().int().default(4),
+    fuel_type: z.enum(FUEL_TYPES), vin: z.string().trim().max(20).nullable().optional(),
+    pet_friendly: z.boolean().optional(), wheelchair_accessible: z.boolean().optional(),
+    range_km: z.number().int().min(10).max(2000).nullable().optional(), battery_kwh: z.number().min(1).max(250).nullable().optional(),
+    registered_owner: z.boolean().default(true),
+  });
+
+  /** Shared checks for add/edit. Returns the normalised fields to write. */
+  async function checkVehicle(b: Partial<z.infer<typeof vehicleBody>>, selfId?: string) {
+    const out: Record<string, unknown> = { ...b };
+    if (b.rego != null) {
+      const rego = normaliseRego(b.rego);
+      if (!/^[A-Z0-9]{2,10}$/.test(rego)) throw bad('rego', 'Enter the number plate using letters and numbers');
+      const taken = await one(`SELECT id FROM vehicles WHERE upper(regexp_replace(rego, '\\s', '', 'g')) = $1 AND id IS DISTINCT FROM $2`, [rego, selfId ?? null]);
+      if (taken) throw conflict('rego_taken', `A car with plate ${rego} is already registered with DingoGo`);
+      out.rego = rego;
+    }
+    if (b.year != null) {
+      const { min_year, max_age_years, current_year } = await vehicleAgeRule();
+      if (b.year < min_year) throw bad('vehicle_too_old', `Cars must be under ${max_age_years} years old (${min_year} or newer)`);
+      if (b.year > current_year + 1) throw bad('year', 'Check the year your car was made');
+    }
+    if (b.doors != null && b.doors < 4) throw bad('doors', 'Rideshare cars need at least 4 doors');
+    if (b.seats != null && (b.seats < 4 || b.seats > 7)) throw bad('seats', 'Cars need 4 to 7 passenger seats');
+    if (b.fuel_type && !isEv(b.fuel_type)) { out.range_km = null; out.battery_kwh = null; }
+    return out;
+  }
+
+  app.get('/driver/vehicles', async (req) => {
+    const me = await requireUser(req, 'driver');
+    const d = await one('SELECT vehicle_id FROM drivers WHERE user_id = $1', [me.id]);
+    const vehicles = await q(
+      `SELECT v.*, coalesce((SELECT json_agg(json_build_object('id', x.id, 'type', x.type, 'number', x.number, 'expires_at', x.expires_at,
+                'status', x.status, 'note', x.note, 'file_url', x.file_url, 'created_at', x.created_at) ORDER BY x.created_at DESC)
+              FROM driver_documents x WHERE x.vehicle_id = v.id AND x.driver_id = $1), '[]') AS documents
+       FROM vehicles v WHERE v.owner_driver_id = $1 OR v.id = $2 ORDER BY v.created_at`, [me.id, d?.vehicle_id ?? null]);
+    const rule = await vehicleAgeRule();
+    return { vehicles: vehicles.map((v) => vehicleOut(v)), current_vehicle_id: d?.vehicle_id ?? null, max_age_years: rule.max_age_years, min_year: rule.min_year };
+  });
+
+  app.post('/driver/vehicles', async (req, reply) => {
+    const me = await requireUser(req, 'driver');
+    const b = parse(vehicleBody, req.body);
+    const v = await checkVehicle(b);
+    const row = await one(
+      `INSERT INTO vehicles (rego, make, model, year, colour, seats, doors, fuel_type, vin, pet_friendly, wheelchair_accessible, range_km, battery_kwh,
+         registered_owner, ownership, owner_driver_id, status)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'driver_owned',$15,'pending') RETURNING *`,
+      [v.rego, b.make, b.model, b.year, b.colour, b.seats, b.doors, b.fuel_type, b.vin ?? null, b.pet_friendly ?? false, b.wheelchair_accessible ?? false,
+        v.range_km ?? null, v.battery_kwh ?? null, b.registered_owner, me.id]);
+    // First car: make it the driver's current car straight away (they stay offline until DingoGo approves it).
+    await q('UPDATE drivers SET vehicle_id = $2 WHERE user_id = $1 AND vehicle_id IS NULL', [me.id, row.id]);
+    toOps('vehicle.new', { id: row.id, rego: row.rego, driver_id: me.id });
+    reply.code(201);
+    return { vehicle: vehicleOut(row) };
+  });
+
+  app.patch('/driver/vehicles/:id', async (req) => {
+    const me = await requireUser(req, 'driver');
+    const id = (req.params as any).id;
+    const cur = await one('SELECT * FROM vehicles WHERE id = $1 AND owner_driver_id = $2', [id, me.id]);
+    if (!cur) throw notFound('Car');
+    const b = parse(vehicleBody.partial().extend({ seats: z.number().int().optional(), doors: z.number().int().optional(), registered_owner: z.boolean().optional() }), req.body);
+    const d = await one('SELECT vehicle_id FROM drivers WHERE user_id = $1', [me.id]);
+    const isCurrent = d?.vehicle_id === id;
+    if (isCurrent) {
+      const live = await one(`SELECT 1 FROM trips WHERE driver_id = $1 AND status IN ('accepted','arrived','in_progress')`, [me.id]);
+      if (live) throw conflict('on_trip', 'Finish your trip before changing your car details');
+    }
+    const fields = await checkVehicle({ ...b, fuel_type: b.fuel_type ?? cur.fuel_type });
+    if (!b.fuel_type) delete fields.fuel_type;
+    const keys = Object.keys(fields).filter((k) => fields[k] !== undefined);
+    if (!keys.length) throw bad('empty');
+    // Any change means DingoGo has to check the car again.
+    const row = await one(
+      `UPDATE vehicles SET ${keys.map((k, i) => `${k} = $${i + 2}`).join(', ')}, status = 'pending', review_note = NULL, reviewed_at = NULL
+       WHERE id = $1 RETURNING *`, [id, ...keys.map((k) => fields[k])]);
+    if (isCurrent) await q('UPDATE drivers SET online = false WHERE user_id = $1', [me.id]);
+    toOps('vehicle.updated', { id, rego: row.rego, driver_id: me.id, status: 'pending' });
+    return { vehicle: vehicleOut(row) };
+  });
+
+  app.post('/driver/vehicles/:id/use', async (req) => {
+    const me = await requireUser(req, 'driver');
+    const id = (req.params as any).id;
+    const v = await one('SELECT * FROM vehicles WHERE id = $1 AND owner_driver_id = $2', [id, me.id]);
+    if (!v) throw notFound('Car');
+    if (v.status !== 'approved' || !v.active) throw bad('not_approved', `${v.rego} has not been approved by DingoGo yet`);
+    const d = await one('SELECT online FROM drivers WHERE user_id = $1', [me.id]);
+    if (d?.online) throw conflict('driver_online', 'Go offline before changing cars');
+    const live = await one(`SELECT 1 FROM trips WHERE driver_id = $1 AND status IN ('accepted','arrived','in_progress')`, [me.id]);
+    if (live) throw conflict('on_trip', 'Finish your trip before changing cars');
+    await q('UPDATE drivers SET vehicle_id = $2 WHERE user_id = $1', [me.id, id]);
+    return { ok: true, current_vehicle_id: id, vehicle: vehicleOut(v) };
   });
 
   app.post('/driver/online', async (req) => {
@@ -86,12 +202,15 @@ export default async function driverRoutes(app: FastifyInstance) {
     if (b.online) {
       const issues = await complianceIssues(me.id);
       if (issues.length) throw bad('not_compliant', issues[0], issues);
-      if (b.battery_pct != null && b.battery_pct < 15) throw bad('battery_low', 'Charge above 15% before going online');
     }
+    const veh = await one('SELECT v.fuel_type FROM drivers d JOIN vehicles v ON v.id = d.vehicle_id WHERE d.user_id = $1', [me.id]);
+    const ev = isEv(veh?.fuel_type);
+    // Battery check only makes sense for fully electric cars.
+    if (b.online && ev && b.battery_pct != null && b.battery_pct < 15) throw bad('battery_low', 'Charge above 15% before going online');
     const d = await one(
       `UPDATE drivers SET online = $2, lat = coalesce($3, lat), lng = coalesce($4, lng), last_seen_at = now() WHERE user_id = $1 RETURNING vehicle_id, online`,
       [me.id, b.online, b.lat ?? null, b.lng ?? null]);
-    if (b.battery_pct != null && d.vehicle_id) {
+    if (b.battery_pct != null && d.vehicle_id && ev) {
       await q('UPDATE vehicles SET battery_pct = $2 WHERE id = $1', [d.vehicle_id, b.battery_pct]);
       await q('INSERT INTO battery_logs (vehicle_id, driver_id, pct) VALUES ($1,$2,$3)', [d.vehicle_id, me.id, b.battery_pct]);
     }
@@ -105,7 +224,7 @@ export default async function driverRoutes(app: FastifyInstance) {
     const d = await one(
       `UPDATE drivers SET lat = $2, lng = $3, heading = $4, last_seen_at = now() WHERE user_id = $1 RETURNING vehicle_id, online`,
       [me.id, b.lat, b.lng, b.heading ?? null]);
-    if (b.battery_pct != null && d?.vehicle_id) await q('UPDATE vehicles SET battery_pct = $2 WHERE id = $1', [d.vehicle_id, b.battery_pct]);
+    if (b.battery_pct != null && d?.vehicle_id) await q(`UPDATE vehicles SET battery_pct = $2 WHERE id = $1 AND fuel_type IN ('electric','plug_in_hybrid')`, [d.vehicle_id, b.battery_pct]);
     await trips.onDriverLocation(me.id, b);
     toOps('driver.location', { driver_id: me.id, lat: b.lat, lng: b.lng, heading: b.heading, battery_pct: b.battery_pct, online: d?.online });
     return { ok: true };
@@ -201,8 +320,9 @@ export default async function driverRoutes(app: FastifyInstance) {
       cost_cents: z.number().int().min(0).optional(), start_pct: z.number().int().min(0).max(100).optional(),
       end_pct: z.number().int().min(0).max(100).optional(), meter_ref: z.string().max(60).optional(),
     }), req.body);
-    const d = await one('SELECT vehicle_id FROM drivers WHERE user_id = $1', [me.id]);
+    const d = await one('SELECT d.vehicle_id, v.fuel_type FROM drivers d LEFT JOIN vehicles v ON v.id = d.vehicle_id WHERE d.user_id = $1', [me.id]);
     if (!d?.vehicle_id) throw conflict('no_vehicle', 'No vehicle assigned');
+    if (!['electric', 'plug_in_hybrid'].includes(d.fuel_type)) throw bad('not_plug_in', 'Charging logs are for electric and plug-in hybrid cars');
     const tariff = b.tariff_cents_per_kwh ?? (await one(`SELECT value FROM settings WHERE key = 'home_tariff_cents_per_kwh'`))?.value ?? 30;
     const cost = b.cost_cents ?? Math.round(b.kwh * Number(tariff));
     const s = await one(

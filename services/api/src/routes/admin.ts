@@ -4,6 +4,7 @@ import { requireUser } from '../auth.js';
 import { bad, notFound } from '../lib/errors.js';
 import { displayKey, referralCode, voucherCode } from '../lib/ids.js';
 import { parse, phone, z } from '../lib/validate.js';
+import { greenSql, vehicleOut } from '../lib/vehicles.js';
 import { stats as wsStats, toOps } from '../realtime.js';
 import { notify } from '../services/notify.js';
 import * as pay from '../services/payments.js';
@@ -18,10 +19,12 @@ async function audit(actorId: string, action: string, entity: string, entityId: 
 }
 
 /** Minimal CRUD for config-style tables. Only whitelisted columns are writable. */
-function crud(app: FastifyInstance, path: string, table: string, cols: string[], opts: { pk?: string; order?: string; idType?: 'uuid' | 'text' } = {}) {
+function crud(app: FastifyInstance, path: string, table: string, cols: string[],
+  opts: { pk?: string; order?: string; idType?: 'uuid' | 'text'; list?: boolean; out?: (row: any) => any } = {}) {
   const pk = opts.pk ?? 'id';
+  const out = opts.out ?? ((r: any) => r);
   const pick = (body: any) => Object.fromEntries(Object.entries(body ?? {}).filter(([k]) => cols.includes(k)));
-  app.get(`/admin/${path}`, async (req) => { await ops(req); return { items: await q(`SELECT * FROM ${table} ORDER BY ${opts.order ?? pk}`) }; });
+  if (opts.list !== false) app.get(`/admin/${path}`, async (req) => { await ops(req); return { items: await q(`SELECT * FROM ${table} ORDER BY ${opts.order ?? pk}`) }; });
   app.post(`/admin/${path}`, async (req, reply) => {
     const me = await admin(req);
     const data = pick(req.body);
@@ -31,7 +34,7 @@ function crud(app: FastifyInstance, path: string, table: string, cols: string[],
       keys.map((k) => (typeof data[k] === 'object' && data[k] !== null && !Array.isArray(data[k]) ? JSON.stringify(data[k]) : data[k])));
     await audit(me.id, 'create', table, String(row[pk]), data);
     reply.code(201);
-    return { item: row };
+    return { item: out(row) };
   });
   app.patch(`/admin/${path}/:id`, async (req) => {
     const me = await admin(req);
@@ -42,7 +45,7 @@ function crud(app: FastifyInstance, path: string, table: string, cols: string[],
       [(req.params as any).id, ...keys.map((k) => (typeof data[k] === 'object' && data[k] !== null && !Array.isArray(data[k]) ? JSON.stringify(data[k]) : data[k]))]);
     if (!row) throw notFound();
     await audit(me.id, 'update', table, String(row[pk]), data);
-    return { item: row };
+    return { item: out(row) };
   });
 }
 
@@ -68,6 +71,7 @@ export default async function adminRoutes(app: FastifyInstance) {
               (SELECT count(*)::int FROM support_tickets WHERE status = 'open') open_tickets,
               (SELECT count(*)::int FROM drivers WHERE status IN ('applied','pending_documents')) pending_drivers,
               (SELECT count(*)::int FROM driver_documents WHERE status = 'pending') pending_docs,
+              (SELECT count(*)::int FROM vehicles WHERE status = 'pending') pending_vehicles,
               (SELECT count(*)::int FROM compliance_flags WHERE status = 'open') open_flags,
               (SELECT count(*)::int FROM hire_requests WHERE status = 'new') new_hire_requests,
               (SELECT count(*)::int FROM driver_applications WHERE status = 'new') new_applications`);
@@ -77,13 +81,25 @@ export default async function adminRoutes(app: FastifyInstance) {
               coalesce((SELECT count(*) FROM trips t WHERE t.status='completed' AND (t.completed_at AT TIME ZONE ${tz})::date = d),0)::int trips
        FROM generate_series((now() AT TIME ZONE ${tz})::date - 13, (now() AT TIME ZONE ${tz})::date, interval '1 day') d`);
     const mix = await q(`SELECT service, count(*)::int n FROM trips WHERE status = 'completed' AND completed_at > now() - interval '30 days' GROUP BY service ORDER BY n DESC`);
-    const green = await one(`SELECT coalesce(sum(coalesce(actual_distance_m, est_distance_m)),0)::bigint m FROM trips WHERE status = 'completed'`);
+    // Going electric: share of completed-trip km done in green cars (EV + hybrids) over 30 days; EV km & CO₂ count electric cars only.
+    const green = await one(
+      `SELECT coalesce(sum(coalesce(t.actual_distance_m, t.est_distance_m)) FILTER (WHERE t.completed_at > now() - interval '30 days'),0)::bigint m30,
+              coalesce(sum(coalesce(t.actual_distance_m, t.est_distance_m)) FILTER (WHERE t.completed_at > now() - interval '30 days' AND ${greenSql('v')}),0)::bigint green_m30,
+              coalesce(sum(coalesce(t.actual_distance_m, t.est_distance_m)) FILTER (WHERE t.completed_at > now() - interval '30 days' AND v.fuel_type = 'electric'),0)::bigint ev_m30,
+              coalesce(sum(coalesce(t.actual_distance_m, t.est_distance_m)) FILTER (WHERE v.fuel_type = 'electric'),0)::bigint ev_m
+       FROM trips t LEFT JOIN vehicles v ON v.id = t.vehicle_id WHERE t.status = 'completed'`);
     const rating = await one(`SELECT round(avg(rider_rating)::numeric, 2) avg FROM trips WHERE rider_rating IS NOT NULL AND completed_at > now() - interval '30 days'`);
     const plays = await one(`SELECT count(*)::int n FROM ad_plays WHERE at >= ${todayStart}`);
-    const zeroKm = Number(green!.m) / 1000;
+    const evKm = Number(green!.ev_m) / 1000;
+    const m30 = Number(green!.m30);
+    const greenPct = m30 > 0 ? Math.round((Number(green!.green_m30) / m30) * 1000) / 10 : 0;
     return {
       today, live, daily, mix, avg_rating_30d: rating?.avg, ad_plays_today: plays!.n,
-      lifetime: { ev_km: Math.round(zeroKm), co2_avoided_kg: Math.round(zeroKm * 0.18) },
+      green_km_pct: greenPct,                                  // % of completed-trip km in green cars, last 30 days
+      ev_km: Math.round(evKm),                                 // lifetime km in electric cars
+      co2_saved_kg: Math.round(evKm * 0.18),                   // lifetime, electric cars only (vs ~180 g/km petrol)
+      green_30d: { total_km: Math.round(m30 / 1000), green_km: Math.round(Number(green!.green_m30) / 1000), ev_km: Math.round(Number(green!.ev_m30) / 1000), green_km_pct: greenPct },
+      lifetime: { ev_km: Math.round(evKm), co2_avoided_kg: Math.round(evKm * 0.18) },
       realtime: wsStats(),
     };
   });
@@ -92,7 +108,8 @@ export default async function adminRoutes(app: FastifyInstance) {
     await ops(req);
     const drivers = await q(
       `SELECT d.user_id AS id, u.name, d.online, d.lat, d.lng, d.heading, d.last_seen_at, d.status,
-              v.rego, v.battery_pct, v.range_km, v.pet_friendly, v.has_roof_display,
+              v.rego, v.battery_pct, v.range_km, v.pet_friendly, v.has_roof_display, v.fuel_type,
+              (v.fuel_type IN ('electric','plug_in_hybrid','hybrid')) AS green, (v.fuel_type = 'electric') AS is_ev,
               (SELECT t.status FROM trips t WHERE t.driver_id = d.user_id AND t.status IN ('accepted','arrived','in_progress') LIMIT 1) AS trip_status
        FROM drivers d JOIN users u ON u.id = d.user_id LEFT JOIN vehicles v ON v.id = d.vehicle_id
        WHERE d.status = 'approved'`);
@@ -242,7 +259,7 @@ export default async function adminRoutes(app: FastifyInstance) {
         if (b.ready_to_drive) {
           const far = new Date(Date.now() + 2 * 365 * 864e5).toISOString().slice(0, 10);
           const today = new Date().toISOString().slice(0, 10);
-          const vehicle = b.vehicle_id ?? (await one('SELECT id FROM vehicles WHERE active ORDER BY rego LIMIT 1', [], c))?.id ?? null;
+          const vehicle = b.vehicle_id ?? (await one(`SELECT id FROM vehicles WHERE active AND status = 'approved' AND ownership <> 'driver_owned' ORDER BY rego LIMIT 1`, [], c))?.id ?? null;
           await c.query(
             `INSERT INTO drivers (user_id, status, vehicle_id, licence_no, licence_expiry, h_endorsement_expiry, cpv_authority_no, abn, gst_registered,
                police_check_date, medical_date, da_training_date, accepts_pets, bio)
@@ -262,7 +279,8 @@ export default async function adminRoutes(app: FastifyInstance) {
   app.get('/admin/drivers', async (req) => {
     await ops(req);
     const rows = await q(
-      `SELECT d.*, u.name, u.phone, u.email, u.rating_avg, u.rating_count, v.rego, v.model, v.battery_pct,
+      `SELECT d.*, u.name, u.phone, u.email, u.rating_avg, u.rating_count, v.rego, v.make, v.model, v.battery_pct, v.fuel_type,
+              v.status AS vehicle_status, v.ownership AS vehicle_ownership,
               (SELECT count(*)::int FROM driver_documents x WHERE x.driver_id = d.user_id AND x.status = 'pending') pending_docs,
               (SELECT coalesce(sum(amount_cents),0)::int FROM driver_ledger l WHERE l.driver_id = d.user_id) balance_cents,
               (SELECT count(*)::int FROM trips t WHERE t.driver_id = d.user_id AND t.status = 'completed') trips
@@ -325,10 +343,66 @@ export default async function adminRoutes(app: FastifyInstance) {
   });
 
   // ───────────── Fleet ─────────────
+  /** Fleet + driver-owned cars. ?status=pending|approved|rejected|all (default all). Each item has owner + that car's documents. */
+  app.get('/admin/vehicles', async (req) => {
+    await ops(req);
+    const { status = 'all' } = req.query as { status?: string };
+    if (!['pending', 'approved', 'rejected', 'all'].includes(status)) throw bad('invalid_status', 'status must be pending, approved, rejected or all');
+    const rows = await q(
+      `SELECT v.*,
+              CASE WHEN ou.id IS NOT NULL THEN json_build_object('id', ou.id, 'name', ou.name, 'phone', ou.phone) END AS owner,
+              (SELECT json_build_object('id', au.id, 'name', au.name) FROM drivers ad JOIN users au ON au.id = ad.user_id WHERE ad.vehicle_id = v.id LIMIT 1) AS assigned_driver,
+              coalesce((SELECT json_agg(json_build_object('id', x.id, 'type', x.type, 'number', x.number, 'expires_at', x.expires_at, 'status', x.status,
+                        'note', x.note, 'file_url', x.file_url, 'driver_id', x.driver_id, 'created_at', x.created_at) ORDER BY x.created_at DESC)
+                        FROM driver_documents x WHERE x.vehicle_id = v.id), '[]') AS documents
+       FROM vehicles v LEFT JOIN users ou ON ou.id = v.owner_driver_id
+       WHERE ($1 = 'all' OR v.status = $1)
+       ORDER BY (v.status = 'pending') DESC, v.rego`, [status]);
+    return { items: rows.map((r) => vehicleOut(r, { keepSecrets: true })) };
+  });
   crud(app, 'vehicles', 'vehicles',
-    ['rego', 'make', 'model', 'year', 'colour', 'seats', 'battery_kwh', 'range_km', 'pet_friendly', 'wheelchair_accessible', 'has_roof_display',
+    ['rego', 'make', 'model', 'year', 'colour', 'seats', 'doors', 'fuel_type', 'vin', 'status', 'review_note', 'registered_owner', 'owner_driver_id',
+      'battery_kwh', 'range_km', 'pet_friendly', 'wheelchair_accessible', 'has_roof_display',
       'ownership', 'lease_weekly_cents', 'rego_expiry', 'inspection_expiry', 'insurance_expiry', 'cvl_number', 'cvl_expiry', 'roadworthy_date', 'active', 'odometer_km'],
-    { order: 'rego' });
+    { order: 'rego', list: false, out: (r) => vehicleOut(r, { keepSecrets: true }) });
+
+  /** Check a driver-owned car: approve (needs CVL, rego and insurance expiries) or reject with a note. */
+  app.post('/admin/vehicles/:id/review', async (req) => {
+    const me = await admin(req);
+    const b = parse(z.object({
+      decision: z.enum(['approve', 'reject']), note: z.string().max(300).optional(),
+      cvl_number: z.string().max(40).optional(), cvl_expiry: z.string().date().optional(), rego_expiry: z.string().date().optional(),
+      insurance_expiry: z.string().date().optional(), roadworthy_date: z.string().date().optional(),
+    }), req.body);
+    const id = (req.params as any).id;
+    const cur = await one('SELECT * FROM vehicles WHERE id = $1', [id]);
+    if (!cur) throw notFound('Vehicle');
+    if (b.decision === 'approve') {
+      const missing = (['cvl_expiry', 'rego_expiry', 'insurance_expiry'] as const).filter((k) => !(b[k] ?? cur[k]));
+      if (missing.length) throw bad('dates_required', `Enter the ${missing.map((k) => k.replace('_expiry', '').replace('cvl', 'CVL')).join(', ')} expiry date${missing.length > 1 ? 's' : ''} before approving`, missing);
+    }
+    const row = await tx(async (c) => {
+      const v = await one(
+        `UPDATE vehicles SET status = $2, review_note = $3, reviewed_at = now(),
+           cvl_number = coalesce($4, cvl_number), cvl_expiry = coalesce($5::date, cvl_expiry), rego_expiry = coalesce($6::date, rego_expiry),
+           insurance_expiry = coalesce($7::date, insurance_expiry), roadworthy_date = coalesce($8::date, roadworthy_date)
+         WHERE id = $1 RETURNING *`,
+        [id, b.decision === 'approve' ? 'approved' : 'rejected', b.note ?? null, b.cvl_number ?? null, b.cvl_expiry ?? null,
+          b.rego_expiry ?? null, b.insurance_expiry ?? null, b.roadworthy_date ?? null], c);
+      if (b.decision === 'approve' && v.owner_driver_id) {
+        await c.query('UPDATE drivers SET vehicle_id = $1 WHERE user_id = $2 AND vehicle_id IS NULL', [id, v.owner_driver_id]);
+      }
+      await c.query('INSERT INTO audit_log (actor_id, action, entity, entity_id, data) VALUES ($1,$2,$3,$4,$5)',
+        [me.id, `vehicle_${b.decision}`, 'vehicle', id, b]);
+      return v;
+    });
+    if (row.owner_driver_id) {
+      void notify(row.owner_driver_id, b.decision === 'approve' ? 'Your car is approved ✅' : 'Your car was not approved',
+        b.decision === 'approve' ? `${row.rego} is good to go. You can drive it on DingoGo.` : `${row.rego}: ${b.note ?? 'please contact DingoGo'}`, { vehicle_id: id }, 'account');
+    }
+    toOps('vehicle.reviewed', { id, status: row.status });
+    return { vehicle: vehicleOut(row, { keepSecrets: true }) };
+  });
   app.post('/admin/vehicles/:id/display-key', async (req) => {
     const me = await admin(req);
     const v = await one('UPDATE vehicles SET display_key = $2, has_roof_display = true WHERE id = $1 RETURNING id, rego, display_key', [(req.params as any).id, displayKey()]);
@@ -433,7 +507,7 @@ export default async function adminRoutes(app: FastifyInstance) {
       `SELECT v.rego, v.battery_pct, v.range_km, v.odometer_km,
               (SELECT round(avg(b.ambient_c)::numeric,1) FROM battery_logs b WHERE b.vehicle_id = v.id AND b.at > now() - interval '7 days') avg_temp_c,
               (SELECT max(b.at) FROM battery_logs b WHERE b.vehicle_id = v.id) last_log
-       FROM vehicles v WHERE v.active ORDER BY v.rego`);
+       FROM vehicles v WHERE v.active AND v.fuel_type IN ('electric','plug_in_hybrid') ORDER BY v.rego`);
     const sessions = await q(`SELECT s.*, v.rego FROM charging_sessions s JOIN vehicles v ON v.id = s.vehicle_id ORDER BY s.started_at DESC LIMIT 100`);
     return { month: m, by_vehicle: by, fleet: efficiency, sessions };
   });
@@ -507,8 +581,8 @@ export default async function adminRoutes(app: FastifyInstance) {
         `SELECT d.user_id, u.name, d.licence_expiry, d.h_endorsement_expiry FROM drivers d JOIN users u ON u.id = d.user_id
          WHERE d.status = 'approved' AND (d.licence_expiry < ${soon} OR d.h_endorsement_expiry < ${soon} OR d.h_endorsement_expiry IS NULL)`),
       expiring_vehicles: await q(
-        `SELECT id, rego, rego_expiry, cvl_expiry, insurance_expiry, inspection_expiry FROM vehicles
-         WHERE active AND (rego_expiry < ${soon} OR cvl_expiry < ${soon} OR insurance_expiry < ${soon} OR cvl_expiry IS NULL)`),
+        `SELECT id, rego, rego_expiry, cvl_expiry, insurance_expiry, inspection_expiry, ownership, owner_driver_id FROM vehicles
+         WHERE active AND status = 'approved' AND (rego_expiry < ${soon} OR cvl_expiry < ${soon} OR insurance_expiry < ${soon} OR cvl_expiry IS NULL)`),
       pending_documents: await q(`SELECT x.*, u.name AS driver_name FROM driver_documents x JOIN users u ON u.id = x.driver_id WHERE x.status = 'pending' ORDER BY x.created_at`),
     };
   });

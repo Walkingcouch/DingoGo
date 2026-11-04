@@ -239,6 +239,9 @@ test('prepaid voucher tops up wallet once', async () => {
 test('admin: dashboard, levy report, phone booking, compliance', async () => {
   const d = await call('GET', '/admin/dashboard', 'admin');
   assert.ok(d.today.requested >= 1);
+  assert.equal(typeof d.green_km_pct, 'number');
+  assert.ok(d.green_km_pct > 0 && d.green_km_pct <= 100);
+  assert.ok(d.ev_km > 0 && d.co2_saved_kg > 0);
   assert.equal(d.daily.length, 14);
   const levy = await call('GET', '/admin/reports/levy', 'admin');
   assert.ok(levy.passenger_trips >= 1);
@@ -260,6 +263,7 @@ test('roof display: playlist + play logging', async () => {
   const p = await app.inject({ method: 'GET', url: '/display/playlist?key=led_demo_vehicle_one_key' });
   const j = JSON.parse(p.body);
   assert.equal(j.mode, 'ads');
+  assert.equal(/100% electric|all-electric/i.test(p.body), false, 'no all-electric claim on the roof');
   assert.ok(j.items.length >= 1);
   const camp = j.items.find((i: any) => !String(i.id).startsWith('house'));
   if (camp) {
@@ -272,4 +276,122 @@ test('roof display: playlist + play logging', async () => {
 test('privacy: data export works', async () => {
   const e = await call('GET', '/me/export', 'rider');
   assert.ok(e.trips.length >= 1);
+});
+
+// ───────────── Own-car driver model ─────────────
+let ownCarId = '';
+const CAMRY = { rego: 'cd 88 pp', make: 'Toyota', model: 'Camry', year: 2018, colour: 'White', seats: 4, doors: 4, fuel_type: 'petrol', registered_owner: true };
+
+test('own car: add petrol car → pending blocks online → admin approves → online → offer (no CO₂ claim)', async () => {
+  // A ready-to-drive test driver with no car yet
+  const u = await call('POST', '/admin/users', 'admin', { phone: '0400 000 777', name: 'Pat Petrol', role: 'driver' });
+  assert.equal(u.status, 201, JSON.stringify(u));
+  assert.equal((await call('PATCH', `/admin/drivers/${u.user.id}`, 'admin', { vehicle_id: null })).ok, true);
+  await login('pd', '+61400000777', 'driver');
+
+  const year = new Date().getFullYear();
+  const old = await call('POST', '/driver/vehicles', 'pd', { ...CAMRY, year: year - 13 });
+  assert.equal(old.status, 400);
+  assert.equal(old.error, 'vehicle_too_old');
+  assert.equal((await call('POST', '/driver/vehicles', 'pd', { ...CAMRY, doors: 2 })).error, 'doors');
+  assert.equal((await call('POST', '/driver/vehicles', 'pd', { ...CAMRY, seats: 8 })).error, 'seats');
+  const dup = await call('POST', '/driver/vehicles', 'pd', { ...CAMRY, rego: 'ca12dg' });
+  assert.equal(dup.status, 409);
+  assert.equal(dup.error, 'rego_taken');
+
+  const add = await call('POST', '/driver/vehicles', 'pd', { ...CAMRY, range_km: 500 });
+  assert.equal(add.status, 201, JSON.stringify(add));
+  ownCarId = add.vehicle.id;
+  assert.equal(add.vehicle.rego, 'CD88PP');
+  assert.equal(add.vehicle.status, 'pending');
+  assert.equal(add.vehicle.ownership, 'driver_owned');
+  assert.equal(add.vehicle.green, false);
+  assert.equal(add.vehicle.is_ev, false);
+  assert.equal(add.vehicle.range_km, null, 'range only stored for EVs');
+
+  const list = await call('GET', '/driver/vehicles', 'pd');
+  assert.equal(list.current_vehicle_id, ownCarId);
+  assert.equal(list.min_year, year - 12);
+  assert.equal(list.max_age_years, 13);
+  assert.ok(list.vehicles.some((v: any) => v.id === ownCarId));
+
+  const doc = await call('POST', '/driver/documents', 'pd', { type: 'vehicle_rego', vehicle_id: ownCarId, number: 'CD88PP' });
+  assert.equal(doc.document.vehicle_id, ownCarId);
+  const fleetCar = await one(`SELECT id FROM vehicles WHERE rego = 'CA 12 DG'`);
+  assert.equal((await call('POST', '/driver/documents', 'pd', { type: 'insurance', vehicle_id: fleetCar.id })).error, 'invalid_vehicle');
+  assert.equal((await call('POST', `/driver/vehicles/${fleetCar.id}/use`, 'pd')).status, 404, "can't use someone else's car");
+  assert.equal((await call('POST', `/driver/vehicles/${ownCarId}/use`, 'pd')).error, 'not_approved');
+
+  const off = await call('POST', '/driver/online', 'pd', { online: true, lat: TODD_MALL.lat, lng: TODD_MALL.lng });
+  assert.equal(off.error, 'not_compliant');
+  assert.ok(off.details.some((m: string) => m.includes('waiting for DingoGo to check it')), JSON.stringify(off.details));
+  const me = await call('GET', '/driver/me', 'pd');
+  assert.equal(me.driver.vehicle.fuel_type, 'petrol');
+  assert.equal(me.driver.vehicle.is_ev, false);
+  assert.equal(me.driver.vehicle.display_key, undefined);
+  assert.ok(me.documents.some((x: any) => x.vehicle_id === ownCarId));
+
+  // Admin queue
+  const pending = await call('GET', '/admin/vehicles?status=pending', 'admin');
+  const item = pending.items.find((v: any) => v.id === ownCarId);
+  assert.ok(item, 'car is in the admin queue');
+  assert.equal(item.owner.name, 'Pat Petrol');
+  assert.equal(item.documents.length, 1);
+  assert.ok(pending.items.some((v: any) => v.rego === 'CB47JP'), 'seeded applicant car awaiting review');
+  assert.ok(pending.items.every((v: any) => v.status === 'pending'));
+  assert.equal((await call('GET', '/admin/vehicles', 'admin')).items.find((v: any) => v.rego === 'CA 12 DG').is_ev, true);
+
+  const noDates = await call('POST', `/admin/vehicles/${ownCarId}/review`, 'admin', { decision: 'approve' });
+  assert.equal(noDates.error, 'dates_required');
+  const exp = new Date(Date.now() + 200 * 864e5).toISOString().slice(0, 10);
+  const ok = await call('POST', `/admin/vehicles/${ownCarId}/review`, 'admin', {
+    decision: 'approve', cvl_number: 'CVL-9001', cvl_expiry: exp, rego_expiry: exp, insurance_expiry: exp, roadworthy_date: new Date().toISOString().slice(0, 10) });
+  assert.equal(ok.vehicle.status, 'approved', JSON.stringify(ok));
+  const audit = await one(`SELECT * FROM audit_log WHERE entity = 'vehicle' AND entity_id = $1`, [ownCarId]);
+  assert.equal(audit.action, 'vehicle_approve');
+
+  // Not an EV: low battery_pct is irrelevant
+  const on = await call('POST', '/driver/online', 'pd', { online: true, lat: TODD_MALL.lat, lng: TODD_MALL.lng, battery_pct: 5 });
+  assert.equal(on.status, 200, JSON.stringify(on));
+  await call('POST', '/driver/online', 'd3', { online: false });
+
+  const t = await call('POST', '/trips', 'rider', { kind: 'ride', service: 'ride', pickup: TODD_MALL, dropoff: HOSPITAL, payment_method: 'card' });
+  assert.equal(t.status, 201, JSON.stringify(t));
+  const offer = await waitForOffer('pd');
+  assert.equal(offer.trip_id, t.trip.id);
+  const acc = await call('POST', `/driver/offers/${t.trip.id}/accept`, 'pd');
+  assert.equal(acc.trip.vehicle.fuel_type, 'petrol');
+  assert.equal(acc.trip.vehicle.green, false);
+  assert.equal(acc.trip.vehicle.is_ev, false);
+  await call('POST', `/driver/trips/${t.trip.id}/arrive`, 'pd');
+  await call('POST', `/driver/trips/${t.trip.id}/start`, 'pd', { pin: t.trip.verify_pin });
+  assert.equal((await call('POST', `/driver/trips/${t.trip.id}/complete`, 'pd', {})).trip.status, 'completed');
+  const r = await call('GET', `/trips/${t.trip.id}/receipt`, 'rider');
+  assert.equal(r.receipt.co2_saved_kg, null, 'no CO₂ saved claim for a petrol car');
+  assert.equal(r.receipt.vehicle_is_ev, false);
+});
+
+test('dispatch: EV preferred over a petrol car less than 1.5 km nearer', async () => {
+  await call('POST', '/driver/location', 'pd', { lat: TODD_MALL.lat, lng: TODD_MALL.lng });
+  // d3 (BYD, electric) ~1 km north of the pickup (~1.3 km road estimate) — within the 1.5 km green head start
+  assert.equal((await call('POST', '/driver/online', 'd3', { online: true, lat: -23.6894, lng: 133.8822, battery_pct: 90 })).status, 200);
+  const t = await call('POST', '/trips', 'rider', { kind: 'ride', service: 'ride', pickup: TODD_MALL, dropoff: HOSPITAL, payment_method: 'card' });
+  assert.equal(t.status, 201, JSON.stringify(t));
+  const offer = await waitForOffer('d3');
+  assert.equal(offer.trip_id, t.trip.id);
+  assert.equal((await call('GET', '/driver/offers', 'pd')).offers.length, 0, 'petrol car not offered first');
+  await call('POST', `/trips/${t.trip.id}/cancel`, 'rider', {});
+});
+
+test('own car: editing sends it back for checking', async () => {
+  await call('POST', '/driver/online', 'pd', { online: false });
+  const e = await call('PATCH', `/driver/vehicles/${ownCarId}`, 'pd', { colour: 'Red' });
+  assert.equal(e.vehicle.status, 'pending');
+  assert.equal(e.vehicle.colour, 'Red');
+  assert.equal((await call('POST', '/driver/online', 'pd', { online: true, lat: TODD_MALL.lat, lng: TODD_MALL.lng })).error, 'not_compliant');
+  const rej = await call('POST', `/admin/vehicles/${ownCarId}/review`, 'admin', { decision: 'reject', note: 'Roadworthy report is unreadable' });
+  assert.equal(rej.vehicle.status, 'rejected');
+  const me = await call('GET', '/driver/me', 'pd');
+  assert.ok(me.compliance_issues.some((m: string) => m.includes('was not approved: Roadworthy report is unreadable')));
+  await call('POST', '/driver/online', 'd3', { online: false });
 });

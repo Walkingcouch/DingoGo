@@ -7,6 +7,7 @@ import { searchPlaces } from '../lib/places.js';
 import { latLng, parse, z } from '../lib/validate.js';
 import { toOps } from '../realtime.js';
 import { zoneFor } from '../services/trips.js';
+import { FUEL_TYPES, vehicleAgeRule } from '../lib/vehicles.js';
 
 export default async function publicRoutes(app: FastifyInstance) {
   app.get('/health', async () => {
@@ -28,6 +29,7 @@ export default async function publicRoutes(app: FastifyInstance) {
     support: (await one(`SELECT value FROM settings WHERE key = 'support'`))?.value ?? {},
     cash_payments: (await one(`SELECT value FROM settings WHERE key = 'cash_payments'`))?.value ?? { ride: false, courier: true },
     cancellation_policy: (await one(`SELECT value FROM settings WHERE key = 'cancellation_policy'`))?.value ?? null,
+    vehicle_rules: { ...(await vehicleAgeRule()), min_doors: 4, seats: { min: 4, max: 7 }, fuel_types: FUEL_TYPES },
   }));
 
   app.get('/public/places', async (req) => ({ places: searchPlaces(String((req.query as any).q ?? '')) }));
@@ -53,7 +55,8 @@ export default async function publicRoutes(app: FastifyInstance) {
     const t = await one(
       `SELECT t.id, t.ref, t.kind, t.status, t.pickup_address, t.pickup_lat, t.pickup_lng, t.dropoff_address, t.dropoff_lat, t.dropoff_lng,
               t.requested_at, t.accepted_at, t.started_at, t.completed_at, t.est_duration_s,
-              split_part(du.name, ' ', 1) AS driver_first_name, v.rego, v.make, v.model, v.colour, d.lat AS driver_lat, d.lng AS driver_lng,
+              split_part(du.name, ' ', 1) AS driver_first_name, v.rego, v.make, v.model, v.colour, v.fuel_type,
+              (v.fuel_type IN ('electric','plug_in_hybrid','hybrid')) AS green, (v.fuel_type = 'electric') AS is_ev, d.lat AS driver_lat, d.lng AS driver_lng,
               split_part(ru.name, ' ', 1) AS rider_first_name
        FROM trips t JOIN users ru ON ru.id = t.rider_id LEFT JOIN users du ON du.id = t.driver_id
        LEFT JOIN drivers d ON d.user_id = t.driver_id LEFT JOIN vehicles v ON v.id = t.vehicle_id

@@ -39,7 +39,7 @@ export default async function displayRoutes(app: FastifyInstance) {
       .filter((c) => !c.budget_cents || !c.cpm_cents || (c.plays * c.cpm_cents) / 1000 < c.budget_cents)
       .map(({ plays, budget_cents, cpm_cents, geo_lat, geo_lng, geo_radius_m, ...c }) => ({ ...c, seconds: 10 }));
     // House content fills gaps — brand + community messages (never "available for hire" style messaging)
-    items.push({ id: 'house-1', headline: 'DingoGo', subline: 'Aboriginal-owned and 100% electric', bg_colour: '#1E1B18', fg_colour: '#F2A541', weight: 1, seconds: 8, advertiser: 'DingoGo' } as any);
+    items.push({ id: 'house-1', headline: 'DingoGo', subline: 'Aboriginal-owned. Going electric.', bg_colour: '#1E1B18', fg_colour: '#F2A541', weight: 1, seconds: 8, advertiser: 'DingoGo' } as any);
     return { vehicle: v.rego, mode: 'ads', refresh_s: 120, items };
   });
 
