@@ -37,8 +37,13 @@ export async function route(a: LatLng, b: LatLng): Promise<Route> {
 async function routeUncached(a: LatLng, b: LatLng): Promise<Route> {
   if (!config.osrmUrl && config.orsKey) {
     try {
-      const url = `https://api.openrouteservice.org/v2/directions/driving-car?start=${a.lng},${a.lat}&end=${b.lng},${b.lat}`;
-      const res = await fetch(url, { headers: { Authorization: config.orsKey, Accept: 'application/geo+json' }, signal: AbortSignal.timeout(3000) });
+      // POST so we can set radiuses: snap each point to the nearest road however far (e.g. Telegraph Station car park).
+      const res = await fetch('https://api.openrouteservice.org/v2/directions/driving-car/geojson', {
+        method: 'POST',
+        headers: { Authorization: config.orsKey, 'Content-Type': 'application/json', Accept: 'application/geo+json' },
+        body: JSON.stringify({ coordinates: [[a.lng, a.lat], [b.lng, b.lat]], radiuses: [-1, -1] }),
+        signal: AbortSignal.timeout(3000),
+      });
       if (!res.ok) lastErr = `ors ${res.status}: ${(await res.text()).slice(0, 200)}`;
       if (res.ok) {
         const j: any = await res.json();
