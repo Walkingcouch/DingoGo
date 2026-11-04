@@ -38,7 +38,7 @@ async function routeUncached(a: LatLng, b: LatLng): Promise<Route> {
   if (!config.osrmUrl && config.orsKey) {
     try {
       // POST so we can set radiuses: snap each point to the nearest road however far (e.g. Telegraph Station car park).
-      const res = await fetch('https://api.openrouteservice.org/v2/directions/driving-car/geojson', {
+      const res = await fetch('https://api.heigit.org/openrouteservice/v2/directions/driving-car/geojson', {
         method: 'POST',
         headers: { Authorization: config.orsKey, 'Content-Type': 'application/json', Accept: 'application/geo+json' },
         body: JSON.stringify({ coordinates: [[a.lng, a.lat], [b.lng, b.lat]], radiuses: [-1, -1] }),
