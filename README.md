@@ -14,6 +14,17 @@ This repository is the whole platform: one API and database, five apps and the p
 | Roof LED display player | `apps/roof-display` | 5178 | screen in each car |
 | Shared code, brand, map, icons | `packages/shared` | — | all apps |
 
+## Live
+
+| | URL |
+| --- | --- |
+| Website | https://dingogo-steel.vercel.app |
+| Rider / driver / admin / partner apps | `/rider`, `/driver`, `/admin`, `/partner` on the same domain |
+| API | `/api` (Vercel function, region syd1) → Supabase Postgres `dingogo` (ap-southeast-2) |
+| Android test builds | GitHub release `android-latest` (built by `.github/workflows/android.yml` on every push) |
+
+Deploy = `node scripts/build-vercel.mjs` (Vercel runs it). Database changes go in `services/api/migrations/` and are applied to Supabase.
+
 ## Quick start (local)
 
 Needs Node 22+ and PostgreSQL 14+ (or `docker compose` — see Deploy).
