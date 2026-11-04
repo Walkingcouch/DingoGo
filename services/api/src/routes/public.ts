@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { one, q } from '../db.js';
 import { notFound } from '../lib/errors.js';
 import { quoteFare } from '../lib/fares.js';
-import { route } from '../lib/geo.js';
+import { lastRouteError, route } from '../lib/geo.js';
 import { searchPlaces } from '../lib/places.js';
 import { latLng, parse, z } from '../lib/validate.js';
 import { toOps } from '../realtime.js';
@@ -12,6 +12,12 @@ export default async function publicRoutes(app: FastifyInstance) {
   app.get('/health', async () => {
     await q('SELECT 1');
     return { ok: true, service: 'dingogo-api', time: new Date().toISOString() };
+  });
+
+  /** Is road routing working? Telegraph Station → Todd Mall. source 'estimate' means the routing provider isn't answering. */
+  app.get('/health/routing', async () => {
+    const r = await route({ lat: -23.6665, lng: 133.8865 }, { lat: -23.6988, lng: 133.8823 });
+    return { source: r.source, distance_m: r.distance_m, duration_s: r.duration_s, points: r.geometry?.length ?? 0, ...(r.source === 'estimate' ? { last_error: lastRouteError() } : {}) };
   });
 
   app.get('/public/config', async () => ({

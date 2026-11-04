@@ -19,6 +19,9 @@ export interface Route { distance_m: number; duration_s: number; source: 'osrm' 
  * Road distance/time. Uses OSRM when OSRM_URL is configured (self-hosted recommended),
  * otherwise a calibrated estimate: straight-line × 1.3 road factor; 38 km/h in town, 90 km/h for long legs.
  */
+let lastErr = '';
+export const lastRouteError = () => lastErr;
+
 const cache = new Map<string, { at: number; r: Route }>();
 
 export async function route(a: LatLng, b: LatLng): Promise<Route> {
@@ -36,6 +39,7 @@ async function routeUncached(a: LatLng, b: LatLng): Promise<Route> {
     try {
       const url = `https://api.openrouteservice.org/v2/directions/driving-car?start=${a.lng},${a.lat}&end=${b.lng},${b.lat}`;
       const res = await fetch(url, { headers: { Authorization: config.orsKey, Accept: 'application/geo+json' }, signal: AbortSignal.timeout(3000) });
+      if (!res.ok) lastErr = `ors ${res.status}: ${(await res.text()).slice(0, 200)}`;
       if (res.ok) {
         const j: any = await res.json();
         const f = j.features?.[0];
@@ -45,7 +49,7 @@ async function routeUncached(a: LatLng, b: LatLng): Promise<Route> {
           geometry: f.geometry?.coordinates?.map(([lng, lat]: number[]) => [lat, lng]),
         };
       }
-    } catch { /* fall through to estimate */ }
+    } catch (e) { lastErr = `ors ${(e as Error).message}`; }
   }
   if (config.osrmUrl) {
     try {
