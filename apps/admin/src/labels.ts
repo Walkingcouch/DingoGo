@@ -23,13 +23,18 @@ export const PAYMENT_KIND: Map = { fare: 'Fare', tip: 'Tip', refund: 'Refund', c
 export const DOC_TYPE: Map = {
   licence: 'Driver licence', h_endorsement: 'H endorsement', cpvid: 'CPV identity card', police_check: 'Police check', medical: 'Medical certificate',
   abn: 'ABN', gst: 'GST registration', insurance: 'Insurance', vehicle_cvl: 'Vehicle CVL', roadworthy: 'Roadworthy', first_aid: 'First aid',
-  disability_awareness: 'Disability awareness training', wwcc: 'Working with children (Ochre card)',
-  vehicle_rego: 'Registration papers', owner_permission: 'Owner’s written permission',
+  disability_awareness: 'Disability awareness training', wwcc: 'Working with children check',
+  vehicle_rego: 'Registration papers', owner_permission: 'Owner’s written permission', compliance_plate: 'Compliance plate photo',
+  sa_driver_accreditation: 'SA driver accreditation', sa_operator_accreditation: 'SA operator accreditation', sa_inspection: 'SA annual inspection',
+  ctp_spv: 'CTP (small passenger vehicle)', public_liability: 'Public liability insurance',
 };
+export const STATE_NAME: Map = { NT: 'Northern Territory', SA: 'South Australia' };
+/** Where staff confirmed the year the car was built. */
+export const VERIFIED_SOURCE: Map = { vin: 'VIN', compliance_plate: 'Compliance plate', rego_papers: 'Rego papers', plate_lookup: 'Paid plate lookup', other: 'Other' };
 export const DOC_STATUS: Map = { pending: 'Waiting for review', approved: 'Approved', rejected: 'Rejected', expired: 'Expired' };
 export const docTone = (s: string) => (s === 'approved' ? 'green' : s === 'pending' ? 'ochre' : 'red');
 
-export const FLAG_KIND: Map = { assistance_animal_refusal: 'Assistance animal refusal', doc_expired: 'Document expired', route_deviation: 'Route deviation', levy: 'NT levy' };
+export const FLAG_KIND: Map = { assistance_animal_refusal: 'Assistance animal refusal', doc_expired: 'Document expired', route_deviation: 'Route deviation', levy: 'Passenger levy' };
 export const FLAG_STATUS: Map = { open: 'Open', reviewing: 'Reviewing', reviewed: 'Reviewed', actioned: 'Action taken', resolved: 'Resolved', dismissed: 'Dismissed' };
 export const SOS_STATUS: Map = { open: 'Open', acknowledged: 'Acknowledged', resolved: 'Resolved' };
 export const TICKET_STATUS: Map = { open: 'Open', pending: 'Waiting on customer', resolved: 'Resolved', closed: 'Closed', new: 'New', contacted: 'Contacted', quoted: 'Quoted', booked: 'Booked', confirmed: 'Confirmed', replied: 'Replied', declined: 'Declined' };

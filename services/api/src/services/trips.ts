@@ -29,8 +29,12 @@ export async function loadRule(service: string, c: Q = pool): Promise<FareRule> 
   return r;
 }
 
+/** Active zone containing the point, in a state DingoGo operates in (an active zone in a hidden state stays unavailable).
+ *  Includes the zone's state levy (jurisdiction). */
 export async function zoneFor(p: LatLng, c: Q = pool) {
-  const zones = await q('SELECT * FROM zones WHERE active ORDER BY radius_km', [], c);
+  const zones = await q(
+    `SELECT z.*, j.levy_cents AS state_levy_cents, j.levy_label AS state_levy_label, j.active AS state_active
+     FROM zones z LEFT JOIN jurisdictions j ON j.code = z.state WHERE z.active AND coalesce(j.active, true) ORDER BY z.radius_km`, [], c);
   return zones.find((z) => withinZone(p, z)) ?? null;
 }
 
@@ -109,6 +113,7 @@ export async function buildQuote(userId: string | null, input: QuoteInput, c: Q 
     pointsToRedeem: input.redeem_points,
     availablePoints: user?.loyalty_points ?? 0,
     fixedPriceCents,
+    levy: zone.state_levy_cents != null ? { cents: Number(zone.state_levy_cents), label: zone.state_levy_label } : null,
   });
   return { quote, route: r, zone, rule, promo };
 }
@@ -309,8 +314,10 @@ export async function dispatchTrip(tripId: string): Promise<'offered' | 'waiting
          AND ($6::boolean = false OR d.female_driver)
          AND NOT EXISTS (SELECT 1 FROM trips x WHERE x.driver_id = d.user_id AND x.status IN ('accepted','arrived','in_progress'))
          AND NOT EXISTS (SELECT 1 FROM trip_offers o WHERE o.driver_id = d.user_id AND o.status = 'offered' AND o.expires_at > now())
-         AND NOT EXISTS (SELECT 1 FROM trip_offers o WHERE o.driver_id = d.user_id AND o.trip_id = $1)`,
-      [tripId, t.kind === 'courier', t.has_pet, t.needs_wheelchair, t.passengers, t.women_driver_pref], c);
+         AND NOT EXISTS (SELECT 1 FROM trip_offers o WHERE o.driver_id = d.user_id AND o.trip_id = $1)
+         -- Drivers only get trips in their own state (accreditation is per state).
+         AND d.state = coalesce((SELECT z.state FROM zones z WHERE z.id = $7), 'NT')`,
+      [tripId, t.kind === 'courier', t.has_pet, t.needs_wheelchair, t.passengers, t.women_driver_pref, t.zone_id], c);
 
     const pickup = { lat: t.pickup_lat, lng: t.pickup_lng };
     const ranked = candidates

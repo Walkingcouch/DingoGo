@@ -280,7 +280,8 @@ test('privacy: data export works', async () => {
 
 // ───────────── Own-car driver model ─────────────
 let ownCarId = '';
-const CAMRY = { rego: 'cd 88 pp', make: 'Toyota', model: 'Camry', year: 2018, colour: 'White', seats: 4, doors: 4, fuel_type: 'petrol', registered_owner: true };
+// VIN position 10 'J' = 2018 model year
+const CAMRY = { rego: 'cd 88 pp', make: 'Toyota', model: 'Camry', year: 2018, colour: 'White', seats: 4, doors: 4, fuel_type: 'petrol', vin: 'JTNBF3EK1J3001234', registered_owner: true };
 
 test('own car: add petrol car → pending blocks online → admin approves → online → offer (no CO₂ claim)', async () => {
   // A ready-to-drive test driver with no car yet
@@ -345,7 +346,8 @@ test('own car: add petrol car → pending blocks online → admin approves → o
   assert.equal(noDates.error, 'dates_required');
   const exp = new Date(Date.now() + 200 * 864e5).toISOString().slice(0, 10);
   const ok = await call('POST', `/admin/vehicles/${ownCarId}/review`, 'admin', {
-    decision: 'approve', cvl_number: 'CVL-9001', cvl_expiry: exp, rego_expiry: exp, insurance_expiry: exp, roadworthy_date: new Date().toISOString().slice(0, 10) });
+    decision: 'approve', cvl_number: 'CVL-9001', cvl_expiry: exp, rego_expiry: exp, insurance_expiry: exp, roadworthy_date: new Date().toISOString().slice(0, 10),
+    verified_year: 2018, verified_source: 'compliance_plate', rego_checked: true, ppsr_clear: true });
   assert.equal(ok.vehicle.status, 'approved', JSON.stringify(ok));
   const audit = await one(`SELECT * FROM audit_log WHERE entity = 'vehicle' AND entity_id = $1`, [ownCarId]);
   assert.equal(audit.action, 'vehicle_approve');
@@ -394,4 +396,154 @@ test('own car: editing sends it back for checking', async () => {
   const me = await call('GET', '/driver/me', 'pd');
   assert.ok(me.compliance_issues.some((m: string) => m.includes('was not approved: Roadworthy report is unreadable')));
   await call('POST', '/driver/online', 'd3', { online: false });
+});
+
+// ───────────── States (NT live, SA hidden) + rego/age checks ─────────────
+const YEAR_CODES = 'ABCDEFGHJKLMNPRSTVWXY123456789';
+/** A syntactically valid VIN whose position-10 code decodes to `year`. */
+const vinFor = (year: number, serial = '301234') => `JTNBF3EK1${YEAR_CODES[(year - 1980) % 30]}${serial.padStart(7, '3')}`;
+let saDriverId = '';
+
+test('public config + driver vehicles expose per-state rules; SA hidden with 5 regional zones', async () => {
+  const c = await call('GET', '/public/config');
+  const nt = c.jurisdictions.find((j: any) => j.code === 'NT');
+  const sa = c.jurisdictions.find((j: any) => j.code === 'SA');
+  assert.equal(nt.active, true);
+  assert.equal(nt.vehicle_max_age_years, 13);
+  assert.equal(nt.levy_cents, 100);
+  assert.ok(nt.vehicle_docs.includes('compliance_plate'));
+  assert.equal(sa.active, false);
+  assert.equal(sa.vehicle_max_age_years, 8);
+  assert.equal(sa.levy_cents, 0);
+  assert.equal(sa.inspection_months, 12);
+  assert.equal(sa.min_year, new Date().getFullYear() - 7);
+  assert.ok(sa.driver_docs.includes('sa_operator_accreditation'));
+  assert.deepEqual(sa.zones.map((z: any) => z.id).sort(), ['coober-pedy', 'mount-gambier', 'port-augusta', 'port-pirie', 'whyalla']);
+  assert.ok(sa.zones.every((z: any) => !z.active && z.launch_note.startsWith('Coming soon')));
+  assert.equal(c.zones.find((z: any) => z.id === 'whyalla').state, 'SA');
+  assert.equal(c.document_types.compliance_plate.label, 'Compliance plate');
+  // SA town is not bookable while SA is hidden
+  const q = await call('POST', '/quotes', 'rider', { service: 'ride', pickup: { lat: -32.4925, lng: 137.7656 }, dropoff: { lat: -32.50, lng: 137.78 } });
+  assert.equal(q.error, 'outside_service_area');
+});
+
+test('SA driver cannot go online while SA is inactive', async () => {
+  const u = await call('POST', '/admin/users', 'admin', { phone: '0400 000 778', name: 'Sam Southern', role: 'driver', state: 'SA' });
+  assert.equal(u.status, 201, JSON.stringify(u));
+  saDriverId = u.user.id;
+  await login('sa', '+61400000778', 'driver');
+  const r = await call('POST', '/driver/online', 'sa', { online: true, lat: TODD_MALL.lat, lng: TODD_MALL.lng });
+  assert.equal(r.error, 'not_compliant');
+  assert.ok(r.details.some((m: string) => m.includes("isn't operating in SA")), JSON.stringify(r.details));
+  const v = await call('GET', '/driver/vehicles', 'sa');
+  assert.equal(v.state, 'SA');
+  assert.equal(v.rules.code, 'SA');
+  assert.equal(v.max_age_years, 8);
+  assert.equal(v.jurisdictions.length, 2);
+  // Approved drivers can't change their own state
+  assert.equal((await call('PATCH', '/driver/me', 'sa', { state: 'NT' })).error, 'state_locked');
+  // Applicants can
+  assert.equal((await call('PATCH', '/driver/me', 'applicant', { state: 'SA' })).ok, true);
+  assert.equal((await call('PATCH', '/driver/me', 'applicant', { state: 'NT' })).ok, true);
+});
+
+let ntOldCarId = '';
+test('vehicle age by state: SA car 9 years old rejected, NT 9-year-old ok; VIN required and checked', async () => {
+  const y9 = new Date().getFullYear() - 9;
+  const base = { ...CAMRY, year: y9 };
+  const noVin = await call('POST', '/driver/vehicles', 'pd', { ...base, rego: 'SA9OLD', vin: undefined });
+  assert.equal(noVin.status, 400, 'VIN required for driver-added cars');
+  assert.equal((await call('POST', '/driver/vehicles', 'pd', { ...base, rego: 'SA9OLD', vin: 'JTNBF3EO1J3001234' })).error, 'vin');
+  const sa = await call('POST', '/driver/vehicles', 'pd', { ...base, rego: 'SA9OLD', rego_state: 'SA', vin: vinFor(y9) });
+  assert.equal(sa.status, 400);
+  assert.equal(sa.error, 'vehicle_too_old');
+  const nt = await call('POST', '/driver/vehicles', 'pd', { ...base, rego: 'NT9OLD', rego_state: 'NT', vin: vinFor(y9 - 3) });
+  assert.equal(nt.status, 201, JSON.stringify(nt));
+  ntOldCarId = nt.vehicle.id;
+  assert.equal(nt.vehicle.rego_state, 'NT');
+  assert.equal(nt.vehicle.vin_year, y9 - 3);
+  assert.equal(nt.checks.vin_year_mismatch, true, 'VIN year differs from claimed year by > 1');
+  assert.equal(nt.vehicle.checks.vin_year_mismatch, true);
+  // Moving the car to SA re-applies the SA age limit
+  assert.equal((await call('PATCH', `/driver/vehicles/${ntOldCarId}`, 'pd', { rego_state: 'SA' })).error, 'vehicle_too_old');
+});
+
+test('admin review: verified year + rego check required; too-old verified year rejected; lookup off without key', async () => {
+  const exp = new Date(Date.now() + 200 * 864e5).toISOString().slice(0, 10);
+  const dates = { cvl_expiry: exp, rego_expiry: exp, insurance_expiry: exp };
+  const url = `/admin/vehicles/${ntOldCarId}/review`;
+  assert.equal((await call('POST', url, 'admin', { decision: 'approve', ...dates, rego_checked: true })).error, 'verified_year_required');
+  const y = new Date().getFullYear();
+  const old = await call('POST', url, 'admin', { decision: 'approve', ...dates, verified_year: y - 13, verified_source: 'compliance_plate', rego_checked: true });
+  assert.equal(old.error, 'vehicle_too_old');
+  assert.equal((await call('POST', url, 'admin', { decision: 'approve', ...dates, verified_year: y - 9 })).error, 'rego_check_required');
+  assert.equal((await call('POST', url, 'admin', { decision: 'approve', ...dates, verified_year: y - 9, rego_checked: true, ppsr_clear: false })).error, 'ppsr_not_clear');
+  const ok = await call('POST', url, 'admin', { decision: 'approve', ...dates, verified_year: y - 9, verified_source: 'compliance_plate', rego_checked: true, ppsr_clear: true });
+  assert.equal(ok.vehicle.status, 'approved', JSON.stringify(ok));
+  assert.equal(ok.vehicle.verified_year, y - 9);
+  assert.equal(ok.vehicle.verified_source, 'compliance_plate');
+  assert.ok(ok.vehicle.rego_checked_at && ok.vehicle.ppsr_checked_at);
+  assert.equal(ok.vehicle.ppsr_clear, true);
+  assert.equal(ok.vehicle.state_rules.min_year, y - 12);
+  const list = await call('GET', '/admin/vehicles?status=pending', 'admin');
+  const camry = list.items.find((v: any) => v.rego === 'CB47JP');
+  assert.equal(camry.vin_year, 2019);
+  assert.equal(camry.checks.vin_year_mismatch, false);
+  assert.ok(camry.documents.some((d: any) => d.type === 'compliance_plate'));
+  assert.match(camry.state_rules.rego_check_url, /nt\.gov\.au/);
+  assert.equal(list.ppsr_url, 'https://www.ppsr.gov.au/carcheck');
+
+  const lk = await call('POST', `/admin/vehicles/${ntOldCarId}/lookup`, 'admin');
+  assert.equal(lk.status, 501);
+  assert.equal(lk.error, 'lookup_not_configured');
+  assert.equal((await call('GET', '/admin/integrations', 'admin')).plate_lookup, 'not_configured');
+});
+
+test('levy by pickup state: $0 in an SA town (SA active), $1 NT', async () => {
+  assert.equal((await call('PATCH', '/admin/jurisdictions/SA', 'admin', { active: true })).item.active, true);
+  // Active state but zone still "coming soon" → not bookable
+  const pa = { lat: -32.4925, lng: 137.7656 }; const pa2 = { lat: -32.5050, lng: 137.7800 };
+  assert.equal((await call('POST', '/quotes', 'rider', { service: 'ride', pickup: pa, dropoff: pa2 })).error, 'outside_service_area');
+  assert.equal((await call('PATCH', '/admin/zones/port-augusta', 'admin', { active: true })).item.active, true);
+  try {
+    const sa = await call('POST', '/quotes', 'rider', { service: 'ride', pickup: pa, dropoff: pa2 });
+    assert.equal(sa.status, 200, JSON.stringify(sa));
+    assert.equal(sa.zone.id, 'port-augusta');
+    assert.equal(sa.quote.levy_cents, 0);
+    assert.equal(sa.quote.lines.some((l: any) => /levy/i.test(l.label)), false);
+    const nt = await call('POST', '/quotes', 'rider', { service: 'ride', pickup: TODD_MALL, dropoff: HOSPITAL });
+    assert.equal(nt.quote.levy_cents, 100);
+    assert.ok(nt.quote.lines.some((l: any) => l.label === 'NT passenger levy' && l.cents === 100));
+    // SA levy is configurable (e.g. if a metro zone is ever added)
+    await call('PATCH', '/admin/jurisdictions/SA', 'admin', { levy_cents: 200 });
+    const sa2 = await call('POST', '/quotes', 'rider', { service: 'ride', pickup: pa, dropoff: pa2 });
+    assert.ok(sa2.quote.lines.some((l: any) => l.label === 'SA passenger levy' && l.cents === 200));
+    const est = await call('POST', '/public/estimate', undefined, { service: 'ride', pickup: pa, dropoff: pa2 });
+    assert.equal(est.quote.levy_cents, 200);
+  } finally {
+    await call('PATCH', '/admin/jurisdictions/SA', 'admin', { levy_cents: 0, active: false });
+    await call('PATCH', '/admin/zones/port-augusta', 'admin', { active: false });
+  }
+});
+
+test('dispatch: an NT trip is not offered to an SA driver', async () => {
+  await call('PATCH', '/admin/jurisdictions/SA', 'admin', { active: true });
+  try {
+    for (const w of ['d1', 'd2', 'd3', 'pd']) await call('POST', '/driver/online', w, { online: false });
+    // SA driver parked right at the NT pickup (forced online: their car isn't SA-registered)
+    await pool.query(`UPDATE drivers SET online = true, lat = $2, lng = $3, last_seen_at = now() WHERE user_id = $1`, [saDriverId, TODD_MALL.lat, TODD_MALL.lng]);
+    const t = await call('POST', '/trips', 'rider', { kind: 'ride', service: 'ride', pickup: TODD_MALL, dropoff: HOSPITAL, payment_method: 'card' });
+    assert.equal(t.status, 201, JSON.stringify(t));
+    await wait(500);
+    assert.equal((await call('GET', '/driver/offers', 'sa')).offers.length, 0, 'SA driver not offered an NT trip');
+    // Control: the same driver in NT does get it
+    await pool.query(`UPDATE drivers SET state = 'NT' WHERE user_id = $1`, [saDriverId]);
+    await call('POST', `/admin/trips/${t.trip.id}/redispatch`, 'admin');
+    const offer = await waitForOffer('sa');
+    assert.equal(offer.trip_id, t.trip.id);
+    await call('POST', `/trips/${t.trip.id}/cancel`, 'rider', {});
+  } finally {
+    await pool.query(`UPDATE drivers SET state = 'SA', online = false WHERE user_id = $1`, [saDriverId]);
+    await call('PATCH', '/admin/jurisdictions/SA', 'admin', { active: false });
+  }
 });

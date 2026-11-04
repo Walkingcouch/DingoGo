@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { ApiError, connectRealtime, get, post, useGeolocation } from '@dingogo/shared';
 import { hasPlug, minYearFallback } from './vehicle';
+import { findJ, jurisdictionList, type Jurisdiction } from './rules';
 
 export const PLACES = [
   { name: 'Todd Mall', lat: -23.6984, lng: 133.8822 },
@@ -15,11 +16,15 @@ export const PLACES = [
 
 export type Pos = { lat: number; lng: number; heading: number | null };
 /** GET /driver/vehicles: the driver's own cars (plus their fleet car, if any). */
-export type Cars = { vehicles: any[]; current_vehicle_id: string | null; min_year: number; max_age_years: number };
+export type Cars = { vehicles: any[]; current_vehicle_id: string | null; min_year: number; max_age_years: number; jurisdictions?: any[]; rules?: any; state?: string };
 
 interface Ctx {
   me: any | null; reloadMe: () => Promise<void>;
   cars: Cars | null;
+  /** NT and SA rules (from the API, over built-in defaults) and the driver's own state. */
+  states: Jurisdiction[]; myState: Jurisdiction;
+  /** Local pick before the API has saved it (or an older API that ignores it). */
+  setStatePick: (code: string) => void;
   online: boolean; setOnline: (v: boolean) => void;
   battery: number; setBattery: (v: number) => void;
   pos: Pos | null; simulated: Pos | null; setSimulated: (p: Pos | null) => void; geoDenied: boolean;
@@ -42,6 +47,7 @@ export function DriverProvider({ children }: { children: React.ReactNode }) {
   const [offer, setOffer] = useState<any>(null);
   const [trip, setTrip] = useState<any>(null);
   const [toast, setToast] = useState<string | null>(null);
+  const [statePick, setStatePick] = useState<string | null>(null);
   const geo = useGeolocation(true);
   const pos: Pos | null = simulated ?? (geo.pos ? { lat: geo.pos.lat, lng: geo.pos.lng, heading: geo.pos.heading } : null);
   const posRef = useRef(pos); posRef.current = pos;
@@ -119,9 +125,12 @@ export function DriverProvider({ children }: { children: React.ReactNode }) {
   }, [online, !!trip]);
 
   const setOnline = (v: boolean) => setOnlineState(v);
+  const rawStates = cars?.jurisdictions ?? me?.jurisdictions ?? [];
+  const states = jurisdictionList(cars?.rules?.code ? [...rawStates.filter((j: any) => j?.code !== cars.rules.code), cars.rules] : rawStates);
+  const myState = findJ(states, me?.driver?.state ?? cars?.state ?? statePick ?? 'NT');
   const clearOffer = () => setOffer(null);
 
-  return <C.Provider value={{ me, reloadMe, cars, online, setOnline, battery, setBattery, pos, simulated, setSimulated, geoDenied: geo.denied || !geo.pos,
+  return <C.Provider value={{ me, reloadMe, cars, states, myState, setStatePick, online, setOnline, battery, setBattery, pos, simulated, setSimulated, geoDenied: geo.denied || !geo.pos,
     offer, clearOffer, trip, reloadTrip, setTrip, toast, showToast }}>{children}</C.Provider>;
 }
 

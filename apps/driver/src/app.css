@@ -200,3 +200,15 @@ body { overscroll-behavior: none; }
 }
 .trip-sheet form { display: grid; gap: 8px; }
 .trip-sheet form .dg-field, .trip-sheet form p { margin: 0; }
+
+/* State choice + VIN hint */
+.state-pick { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-md); padding: 12px; margin-bottom: 12px; }
+.state-pick .panel-label { margin-bottom: 8px; }
+.state-pick .choice-grid button { min-height: 56px; padding: 6px 10px; }
+.state-pick .choice-grid button:disabled { cursor: progress; }
+.state-pick__name { display: grid; gap: 2px; text-align: center; line-height: 1.2; }
+.state-pick__name small { color: var(--muted); font-weight: 700; font-size: var(--fs-xs, .75rem); }
+.state-pick__fixed { display: flex; align-items: center; gap: 8px; margin: 0; font-weight: 700; }
+.state-pick__fixed svg { color: var(--ochre); }
+.dg-input.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .04em; }
+.field-hint.good { color: var(--saltbush); font-weight: 700; display: inline-flex; align-items: center; gap: 4px; }

@@ -8,6 +8,7 @@ import { latLng, parse, z } from '../lib/validate.js';
 import { toOps } from '../realtime.js';
 import { zoneFor } from '../services/trips.js';
 import { FUEL_TYPES, vehicleAgeRule } from '../lib/vehicles.js';
+import { DOCUMENT_TYPES, listJurisdictions } from '../lib/jurisdictions.js';
 
 export default async function publicRoutes(app: FastifyInstance) {
   app.get('/health', async () => {
@@ -23,13 +24,16 @@ export default async function publicRoutes(app: FastifyInstance) {
 
   app.get('/public/config', async () => ({
     services: await q('SELECT service, label, base_cents, per_km_cents, per_min_cents, booking_fee_cents, min_fare_cents, cancel_fee_cents, free_wait_min, night_pct, levy_cents, description FROM fare_rules WHERE active ORDER BY min_fare_cents'),
-    zones: await q('SELECT id, name, centre_lat, centre_lng, radius_km, active, launch_note FROM zones ORDER BY active DESC, name'),
+    zones: await q('SELECT id, name, state, centre_lat, centre_lng, radius_km, active, launch_note FROM zones ORDER BY active DESC, state, name'),
     plans: await q('SELECT * FROM plans WHERE active ORDER BY price_cents'),
     business: (await one(`SELECT value FROM settings WHERE key = 'business'`))?.value ?? {},
     support: (await one(`SELECT value FROM settings WHERE key = 'support'`))?.value ?? {},
     cash_payments: (await one(`SELECT value FROM settings WHERE key = 'cash_payments'`))?.value ?? { ride: false, courier: true },
     cancellation_policy: (await one(`SELECT value FROM settings WHERE key = 'cancellation_policy'`))?.value ?? null,
-    vehicle_rules: { ...(await vehicleAgeRule()), min_doors: 4, seats: { min: 4, max: 7 }, fuel_types: FUEL_TYPES },
+    // NT rules (back-compat); per-state rules are in `jurisdictions`.
+    vehicle_rules: { ...(await vehicleAgeRule('NT')), min_doors: 4, seats: { min: 4, max: 7 }, fuel_types: FUEL_TYPES },
+    jurisdictions: await listJurisdictions(),
+    document_types: DOCUMENT_TYPES,
   }));
 
   app.get('/public/places', async (req) => ({ places: searchPlaces(String((req.query as any).q ?? '')) }));
@@ -41,7 +45,8 @@ export default async function publicRoutes(app: FastifyInstance) {
     if (!rule) throw notFound('Service');
     const zone = await zoneFor(b.pickup);
     const r = await route(b.pickup, b.dropoff);
-    const quote = quoteFare(rule, { distance_m: r.distance_m, duration_s: r.duration_s, at: new Date(), zoneMultiplier: Number(zone?.demand_multiplier ?? 1) });
+    const quote = quoteFare(rule, { distance_m: r.distance_m, duration_s: r.duration_s, at: new Date(), zoneMultiplier: Number(zone?.demand_multiplier ?? 1),
+      levy: zone?.state_levy_cents != null ? { cents: Number(zone.state_levy_cents), label: zone.state_levy_label } : null });
     return { quote, in_service_area: !!zone, zone: zone?.name ?? null };
   });
 

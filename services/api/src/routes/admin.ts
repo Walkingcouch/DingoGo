@@ -4,7 +4,11 @@ import { requireUser } from '../auth.js';
 import { bad, notFound } from '../lib/errors.js';
 import { displayKey, referralCode, voucherCode } from '../lib/ids.js';
 import { parse, phone, z } from '../lib/validate.js';
-import { greenSql, vehicleOut } from '../lib/vehicles.js';
+import { VERIFIED_SOURCES, greenSql, normaliseRego, vehicleAgeRule, vehicleOut } from '../lib/vehicles.js';
+import { STATES, ageRule, getJurisdiction, listJurisdictions } from '../lib/jurisdictions.js';
+import { decodeVin, normaliseVin } from '../lib/vin.js';
+import { lookupPlate, plateLookupConfigured } from '../lib/plateLookup.js';
+import { config } from '../config.js';
 import { stats as wsStats, toOps } from '../realtime.js';
 import { notify } from '../services/notify.js';
 import * as pay from '../services/payments.js';
@@ -20,15 +24,18 @@ async function audit(actorId: string, action: string, entity: string, entityId: 
 
 /** Minimal CRUD for config-style tables. Only whitelisted columns are writable. */
 function crud(app: FastifyInstance, path: string, table: string, cols: string[],
-  opts: { pk?: string; order?: string; idType?: 'uuid' | 'text'; list?: boolean; out?: (row: any) => any } = {}) {
+  opts: { pk?: string; order?: string; idType?: 'uuid' | 'text'; list?: boolean; out?: (row: any) => any;
+    /** Validate / derive fields before writing. `id` is set on update. */
+    prepare?: (data: Record<string, any>, id?: string) => Promise<Record<string, any>> } = {}) {
   const pk = opts.pk ?? 'id';
   const out = opts.out ?? ((r: any) => r);
   const pick = (body: any) => Object.fromEntries(Object.entries(body ?? {}).filter(([k]) => cols.includes(k)));
   if (opts.list !== false) app.get(`/admin/${path}`, async (req) => { await ops(req); return { items: await q(`SELECT * FROM ${table} ORDER BY ${opts.order ?? pk}`) }; });
   app.post(`/admin/${path}`, async (req, reply) => {
     const me = await admin(req);
-    const data = pick(req.body);
+    let data = pick(req.body);
     if (!Object.keys(data).length) throw bad('empty');
+    if (opts.prepare) data = await opts.prepare(data);
     const keys = Object.keys(data);
     const row = await one(`INSERT INTO ${table} (${keys.join(',')}) VALUES (${keys.map((_, i) => `$${i + 1}`).join(',')}) RETURNING *`,
       keys.map((k) => (typeof data[k] === 'object' && data[k] !== null && !Array.isArray(data[k]) ? JSON.stringify(data[k]) : data[k])));
@@ -38,15 +45,52 @@ function crud(app: FastifyInstance, path: string, table: string, cols: string[],
   });
   app.patch(`/admin/${path}/:id`, async (req) => {
     const me = await admin(req);
-    const data = pick(req.body);
+    let data = pick(req.body);
+    if (!Object.keys(data).length) throw bad('empty');
+    if (opts.prepare) data = await opts.prepare(data, (req.params as any).id);
     const keys = Object.keys(data);
-    if (!keys.length) throw bad('empty');
     const row = await one(`UPDATE ${table} SET ${keys.map((k, i) => `${k} = $${i + 2}`).join(', ')} WHERE ${pk} = $1 RETURNING *`,
       [(req.params as any).id, ...keys.map((k) => (typeof data[k] === 'object' && data[k] !== null && !Array.isArray(data[k]) ? JSON.stringify(data[k]) : data[k]))]);
     if (!row) throw notFound();
     await audit(me.id, 'update', table, String(row[pk]), data);
     return { item: out(row) };
   });
+}
+
+const PPSR_URL = 'https://www.ppsr.gov.au/carcheck';
+/** What the admin "Checks" panel needs for a car's state. */
+function stateRules(j: any) {
+  if (!j) return null;
+  const r = ageRule(j.vehicle_max_age_years);
+  return { code: j.code, name: j.name, max_age_years: r.max_age_years, min_year: r.min_year, inspection_months: j.inspection_months,
+    rego_check_url: j.rego_check_url, ppsr_url: PPSR_URL, vehicle_docs: j.vehicle_docs, active: j.active };
+}
+
+/** Admin fleet create/edit: normalise VIN + decode vin_year, normalise rego state, apply the state's age limit when year/state change. */
+async function prepareAdminVehicle(data: Record<string, any>, id?: string) {
+  const out = { ...data };
+  if (out.vin === '' ) out.vin = null;
+  if (out.vin != null) {
+    const r = decodeVin(String(out.vin));
+    if (!r.valid) throw bad('vin', r.note);
+    out.vin = normaliseVin(String(out.vin));
+    out.vin_year = r.year;
+  } else if ('vin' in out) out.vin_year = null;
+  if (out.rego_state != null) {
+    out.rego_state = String(out.rego_state).toUpperCase();
+    if (!(STATES as readonly string[]).includes(out.rego_state)) throw bad('rego_state', 'rego_state must be NT or SA');
+  }
+  if (out.verified_source != null && !(VERIFIED_SOURCES as readonly string[]).includes(out.verified_source)) throw bad('verified_source', `verified_source must be one of ${VERIFIED_SOURCES.join(', ')}`);
+  if (out.year != null || out.rego_state != null || out.verified_year != null) {
+    const cur = id ? await one('SELECT year, verified_year, rego_state FROM vehicles WHERE id = $1', [id]) : null;
+    const state = out.rego_state ?? cur?.rego_state ?? 'NT';
+    const year = out.verified_year ?? cur?.verified_year ?? out.year ?? cur?.year;
+    if (year != null) {
+      const rule = await vehicleAgeRule(state);
+      if (year < rule.min_year) throw bad('vehicle_too_old', `${state} rideshare cars must be ${rule.min_year} or newer (under ${rule.max_age_years} years old)`);
+    }
+  }
+  return out;
 }
 
 export default async function adminRoutes(app: FastifyInstance) {
@@ -245,6 +289,7 @@ export default async function adminRoutes(app: FastifyInstance) {
       partner_id: z.string().uuid().nullable().optional(),
       vehicle_id: z.string().uuid().nullable().optional(),
       ready_to_drive: z.boolean().default(true),
+      state: z.enum(STATES).default('NT'),
       wallet_cents: z.number().int().min(0).max(100000).default(0),
       loyalty_points: z.number().int().min(0).max(100000).default(0),
     }), req.body);
@@ -262,11 +307,17 @@ export default async function adminRoutes(app: FastifyInstance) {
           const vehicle = b.vehicle_id ?? (await one(`SELECT id FROM vehicles WHERE active AND status = 'approved' AND ownership <> 'driver_owned' ORDER BY rego LIMIT 1`, [], c))?.id ?? null;
           await c.query(
             `INSERT INTO drivers (user_id, status, vehicle_id, licence_no, licence_expiry, h_endorsement_expiry, cpv_authority_no, abn, gst_registered,
-               police_check_date, medical_date, da_training_date, accepts_pets, bio)
-             VALUES ($1,'approved',$2,'TEST',$3,$3,'TEST','00000000000',true,$4,$4,$4,true,'Test driver account')`,
-            [u.id, vehicle, far, today]);
+               police_check_date, medical_date, da_training_date, accepts_pets, bio, state)
+             VALUES ($1,'approved',$2,'TEST',$3,$3,'TEST','00000000000',true,$4,$4,$4,true,'Test driver account',$5)`,
+            [u.id, vehicle, far, today, b.state]);
+          // Test credentials on file: every document the state requires, approved.
+          const j = await getJurisdiction(b.state, c);
+          for (const type of j?.driver_docs ?? []) {
+            await c.query(`INSERT INTO driver_documents (driver_id, type, number, expires_at, status, reviewer_id, reviewed_at) VALUES ($1,$2,'TEST',$3,'approved',$4,now())`,
+              [u.id, type, far, me.id]);
+          }
         } else {
-          await c.query(`INSERT INTO drivers (user_id) VALUES ($1)`, [u.id]);
+          await c.query(`INSERT INTO drivers (user_id, state) VALUES ($1,$2)`, [u.id, b.state]);
         }
       }
       return u;
@@ -314,12 +365,13 @@ export default async function adminRoutes(app: FastifyInstance) {
       police_check_date: z.string().date().optional(), medical_date: z.string().date().optional(),
       da_training_date: z.string().date().optional(), gst_registered: z.boolean().optional(), abn: z.string().optional(),
       accepts_pets: z.boolean().optional(), female_driver: z.boolean().optional(), zone_id: z.string().optional(),
+      state: z.enum(STATES).optional(),
     }), req.body);
     const id = (req.params as any).id;
     const keys = Object.keys(b);
     if (!keys.length) throw bad('empty');
     await q(`UPDATE drivers SET ${keys.map((k, i) => `${k} = $${i + 2}`).join(', ')} WHERE user_id = $1`, [id, ...keys.map((k) => (b as any)[k])]);
-    if (b.status === 'suspended') await q('UPDATE drivers SET online = false WHERE user_id = $1', [id]);
+    if (b.status === 'suspended' || b.state) await q('UPDATE drivers SET online = false WHERE user_id = $1', [id]);
     if (b.status === 'approved') void notify(id, 'You’re approved! 🎉', 'Welcome to DingoGo. You can now go online and accept trips.', {}, 'account');
     await audit(me.id, 'update', 'driver', id, b);
     return { ok: true, compliance_issues: await complianceIssues(id) };
@@ -358,37 +410,60 @@ export default async function adminRoutes(app: FastifyInstance) {
        FROM vehicles v LEFT JOIN users ou ON ou.id = v.owner_driver_id
        WHERE ($1 = 'all' OR v.status = $1)
        ORDER BY (v.status = 'pending') DESC, v.rego`, [status]);
-    return { items: rows.map((r) => vehicleOut(r, { keepSecrets: true })) };
+    const states = Object.fromEntries((await listJurisdictions()).map((j) => [j.code, j]));
+    return { items: rows.map((r) => ({ ...vehicleOut(r, { keepSecrets: true }), state_rules: stateRules(states[r.rego_state]) })), ppsr_url: PPSR_URL };
   });
   crud(app, 'vehicles', 'vehicles',
     ['rego', 'make', 'model', 'year', 'colour', 'seats', 'doors', 'fuel_type', 'vin', 'status', 'review_note', 'registered_owner', 'owner_driver_id',
       'battery_kwh', 'range_km', 'pet_friendly', 'wheelchair_accessible', 'has_roof_display',
-      'ownership', 'lease_weekly_cents', 'rego_expiry', 'inspection_expiry', 'insurance_expiry', 'cvl_number', 'cvl_expiry', 'roadworthy_date', 'active', 'odometer_km'],
-    { order: 'rego', list: false, out: (r) => vehicleOut(r, { keepSecrets: true }) });
+      'ownership', 'lease_weekly_cents', 'rego_expiry', 'inspection_expiry', 'insurance_expiry', 'cvl_number', 'cvl_expiry', 'roadworthy_date', 'active', 'odometer_km',
+      'rego_state', 'verified_year', 'verified_source'],
+    { order: 'rego', list: false, out: (r) => vehicleOut(r, { keepSecrets: true }), prepare: prepareAdminVehicle });
 
-  /** Check a driver-owned car: approve (needs CVL, rego and insurance expiries) or reject with a note. */
+  /** Check a driver-owned car. Approve needs: the state's expiry dates (CVL for NT, inspection for SA, rego, insurance),
+   *  a verified year of manufacture within the state's age limit, and rego_checked=true (checked on the state gov site). */
   app.post('/admin/vehicles/:id/review', async (req) => {
     const me = await admin(req);
     const b = parse(z.object({
       decision: z.enum(['approve', 'reject']), note: z.string().max(300).optional(),
       cvl_number: z.string().max(40).optional(), cvl_expiry: z.string().date().optional(), rego_expiry: z.string().date().optional(),
       insurance_expiry: z.string().date().optional(), roadworthy_date: z.string().date().optional(),
+      inspection_expiry: z.string().date().optional(),
+      verified_year: z.number().int().min(1950).max(2100).optional(), verified_source: z.enum(VERIFIED_SOURCES).optional(),
+      rego_checked: z.boolean().optional(), ppsr_clear: z.boolean().optional(),
     }), req.body);
     const id = (req.params as any).id;
     const cur = await one('SELECT * FROM vehicles WHERE id = $1', [id]);
     if (!cur) throw notFound('Vehicle');
+    const j = await getJurisdiction(cur.rego_state);
     if (b.decision === 'approve') {
-      const missing = (['cvl_expiry', 'rego_expiry', 'insurance_expiry'] as const).filter((k) => !(b[k] ?? cur[k]));
-      if (missing.length) throw bad('dates_required', `Enter the ${missing.map((k) => k.replace('_expiry', '').replace('cvl', 'CVL')).join(', ')} expiry date${missing.length > 1 ? 's' : ''} before approving`, missing);
+      const need: string[] = ['rego_expiry', 'insurance_expiry'];
+      if (!j || j.vehicle_docs.includes('vehicle_cvl')) need.unshift('cvl_expiry');
+      if (j?.inspection_months) need.push('inspection_expiry');
+      const names: Record<string, string> = { cvl_expiry: 'CVL', rego_expiry: 'rego', insurance_expiry: 'insurance', inspection_expiry: `${cur.rego_state} inspection` };
+      const missing = need.filter((k) => !((b as any)[k] ?? cur[k]));
+      if (missing.length) throw bad('dates_required', `Enter the ${missing.map((k) => names[k]).join(', ')} expiry date${missing.length > 1 ? 's' : ''} before approving`, missing);
+      const year = b.verified_year ?? cur.verified_year;
+      if (year == null) throw bad('verified_year_required', 'Enter the year of manufacture you checked (compliance plate, rego papers or VIN) before approving');
+      const rule = ageRule(j?.vehicle_max_age_years ?? 13);
+      if (year < rule.min_year) throw bad('vehicle_too_old', `${cur.rego} was made in ${year} — ${cur.rego_state} rideshare cars must be ${rule.min_year} or newer (under ${rule.max_age_years} years old)`);
+      if (b.rego_checked !== true) throw bad('rego_check_required', `Check the registration is current on the ${cur.rego_state} government rego check, then tick "Rego is current"`);
+      if (b.ppsr_clear === false || (b.ppsr_clear == null && cur.ppsr_clear === false)) throw bad('ppsr_not_clear', 'PPSR shows a problem (stolen, written off or similar) — this car cannot be approved');
     }
+    const verifiedSource = b.verified_year != null ? (b.verified_source ?? (cur.vin_year === b.verified_year ? 'vin' : 'other')) : (b.verified_source ?? null);
     const row = await tx(async (c) => {
       const v = await one(
         `UPDATE vehicles SET status = $2, review_note = $3, reviewed_at = now(),
            cvl_number = coalesce($4, cvl_number), cvl_expiry = coalesce($5::date, cvl_expiry), rego_expiry = coalesce($6::date, rego_expiry),
-           insurance_expiry = coalesce($7::date, insurance_expiry), roadworthy_date = coalesce($8::date, roadworthy_date)
+           insurance_expiry = coalesce($7::date, insurance_expiry), roadworthy_date = coalesce($8::date, roadworthy_date),
+           inspection_expiry = coalesce($9::date, inspection_expiry),
+           verified_year = coalesce($10::int, verified_year), verified_source = coalesce($11, verified_source),
+           rego_checked_at = CASE WHEN $12::boolean THEN now() ELSE rego_checked_at END,
+           ppsr_clear = coalesce($13::boolean, ppsr_clear), ppsr_checked_at = CASE WHEN $13::boolean IS NOT NULL THEN now() ELSE ppsr_checked_at END
          WHERE id = $1 RETURNING *`,
         [id, b.decision === 'approve' ? 'approved' : 'rejected', b.note ?? null, b.cvl_number ?? null, b.cvl_expiry ?? null,
-          b.rego_expiry ?? null, b.insurance_expiry ?? null, b.roadworthy_date ?? null], c);
+          b.rego_expiry ?? null, b.insurance_expiry ?? null, b.roadworthy_date ?? null, b.inspection_expiry ?? null,
+          b.verified_year ?? null, verifiedSource, b.rego_checked === true, b.ppsr_clear ?? null], c);
       if (b.decision === 'approve' && v.owner_driver_id) {
         await c.query('UPDATE drivers SET vehicle_id = $1 WHERE user_id = $2 AND vehicle_id IS NULL', [id, v.owner_driver_id]);
       }
@@ -406,7 +481,65 @@ export default async function adminRoutes(app: FastifyInstance) {
         b.decision === 'approve' ? `${row.rego} is good to go. You can drive it on DingoGo.` : `${row.rego}: ${b.note ?? 'please contact DingoGo'}`, { vehicle_id: id }, 'account');
     }
     toOps('vehicle.reviewed', { id, status: row.status });
-    return { vehicle: vehicleOut(row, { keepSecrets: true }) };
+    return { vehicle: { ...vehicleOut(row, { keepSecrets: true }), state_rules: stateRules(j) } };
+  });
+
+  /** Paid plate lookup (each call costs a provider credit) — admin-triggered only. 501 until REGCHECK_USERNAME is set. */
+  app.post('/admin/vehicles/:id/lookup', async (req, reply) => {
+    const me = await admin(req);
+    const id = (req.params as any).id;
+    const v = await one('SELECT id, rego, rego_state FROM vehicles WHERE id = $1', [id]);
+    if (!v) throw notFound('Vehicle');
+    // Both `error` (house style) and `code` (contract) carry the code.
+    if (!plateLookupConfigured()) return reply.code(501).send({ error: 'lookup_not_configured', code: 'lookup_not_configured', message: 'Paid plate lookup not set up — add a provider key (REGCHECK_USERNAME)' });
+    const lookup = await lookupPlate(normaliseRego(v.rego), v.rego_state);
+    const row = await one('UPDATE vehicles SET lookup = $2, lookup_at = now() WHERE id = $1 RETURNING lookup_at', [id, JSON.stringify(lookup)]);
+    await audit(me.id, 'plate_lookup', 'vehicle', id, { rego: v.rego, state: v.rego_state });
+    return { lookup, lookup_at: row!.lookup_at };
+  });
+
+  app.get('/admin/integrations', async (req) => {
+    await ops(req);
+    const on = (x: boolean) => (x ? 'configured' : 'not_configured');
+    return {
+      plate_lookup: on(plateLookupConfigured()),
+      payments: on(!!config.stripeSecretKey), sms: on(!!(config.twilio.sid && config.twilio.token)),
+      routing: on(!!(config.orsKey || config.osrmUrl)),
+    };
+  });
+
+  // ───────────── States (jurisdictions) ─────────────
+  app.get('/admin/jurisdictions', async (req) => { await ops(req); return { items: await listJurisdictions() }; });
+  app.get('/admin/jurisdictions/:code', async (req) => {
+    await ops(req);
+    const item = (await listJurisdictions()).find((j) => j.code === String((req.params as any).code).toUpperCase());
+    if (!item) throw notFound('State');
+    return { item };
+  });
+  app.patch('/admin/jurisdictions/:code', async (req) => {
+    const me = await admin(req);
+    const code = String((req.params as any).code).toUpperCase();
+    const b = parse(z.object({
+      name: z.string().min(2).max(60).optional(),
+      vehicle_max_age_years: z.number().int().min(1).max(50).optional(),
+      levy_cents: z.number().int().min(0).max(2000).optional(), levy_label: z.string().min(2).max(60).optional(),
+      inspection_months: z.number().int().min(1).max(60).nullable().optional(),
+      rego_check_url: z.string().url().max(300).nullable().optional(), regulator: z.string().max(200).nullable().optional(),
+      driver_docs: z.array(z.string().max(40)).max(20).optional(), vehicle_docs: z.array(z.string().max(40)).max(20).optional(),
+      notes: z.string().max(3000).nullable().optional(), active: z.boolean().optional(),
+    }), req.body);
+    const keys = Object.keys(b);
+    if (!keys.length) throw bad('empty');
+    const vals = keys.map((k) => (['driver_docs', 'vehicle_docs'].includes(k) ? JSON.stringify((b as any)[k]) : (b as any)[k]));
+    const row = await one(`UPDATE jurisdictions SET ${keys.map((k, i) => `${k} = $${i + 2}`).join(', ')}, updated_at = now() WHERE code = $1 RETURNING code`, [code, ...vals]);
+    if (!row) throw notFound('State');
+    // Keep the old global setting in step with NT (older clients read it).
+    if (code === 'NT' && b.vehicle_max_age_years != null) {
+      await q(`INSERT INTO settings (key, value) VALUES ('vehicle_max_age_years', $1) ON CONFLICT (key) DO UPDATE SET value = $1`, [JSON.stringify(b.vehicle_max_age_years)]);
+    }
+    if (b.active === false) await q(`UPDATE drivers SET online = false WHERE state = $1`, [code]);
+    await audit(me.id, 'update', 'jurisdictions', code, b);
+    return { item: (await listJurisdictions()).find((j) => j.code === code) };
   });
   app.post('/admin/vehicles/:id/display-key', async (req) => {
     const me = await admin(req);
@@ -435,7 +568,7 @@ export default async function adminRoutes(app: FastifyInstance) {
     ['service', 'label', 'base_cents', 'per_km_cents', 'per_min_cents', 'booking_fee_cents', 'min_fare_cents', 'cancel_fee_cents', 'free_wait_min',
       'wait_per_min_cents', 'night_pct', 'holiday_pct', 'levy_cents', 'active', 'description'],
     { pk: 'service', order: 'service' });
-  crud(app, 'zones', 'zones', ['id', 'name', 'centre_lat', 'centre_lng', 'radius_km', 'active', 'demand_multiplier', 'launch_note'], { order: 'name' });
+  crud(app, 'zones', 'zones', ['id', 'name', 'centre_lat', 'centre_lng', 'radius_km', 'active', 'demand_multiplier', 'launch_note', 'state', 'timezone'], { order: 'state, name' });
   crud(app, 'promos', 'promo_codes',
     ['code', 'kind', 'value', 'max_discount_cents', 'max_uses', 'per_user_limit', 'first_trip_only', 'valid_from', 'valid_to', 'active', 'description'],
     { pk: 'code', order: 'code' });
@@ -601,18 +734,24 @@ export default async function adminRoutes(app: FastifyInstance) {
   /** NT passenger services levy: $1 per completed passenger trip, lodged monthly by the dispatch network. */
   app.get('/admin/reports/levy', async (req) => {
     await ops(req);
-    const { month } = req.query as { month?: string };
+    const { month, state: st = 'NT' } = req.query as { month?: string; state?: string };
     const m = month && /^\d{4}-\d{2}$/.test(month) ? month : new Date().toISOString().slice(0, 7);
+    const state = String(st).toUpperCase();
+    // Trips are counted against the state of their pickup zone (trips without a zone are NT, as before states existed).
+    const inState = `coalesce((SELECT z.state FROM zones z WHERE z.id = t.zone_id), 'NT') = $2`;
     const r = await one(
       `SELECT count(*)::int trips, coalesce(sum((fare_breakdown->>'levy_cents')::int),0)::int levy_collected_cents
-       FROM trips WHERE status = 'completed' AND kind = 'ride'
-         AND to_char(completed_at AT TIME ZONE 'Australia/Darwin', 'YYYY-MM') = $1`, [m]);
+       FROM trips t WHERE status = 'completed' AND kind = 'ride'
+         AND to_char(completed_at AT TIME ZONE 'Australia/Darwin', 'YYYY-MM') = $1 AND ${inState}`, [m, state]);
     const perDriver = await q(
       `SELECT u.name, count(*)::int trips FROM trips t JOIN users u ON u.id = t.driver_id
-       WHERE t.status = 'completed' AND t.kind = 'ride' AND to_char(t.completed_at AT TIME ZONE 'Australia/Darwin', 'YYYY-MM') = $1 GROUP BY u.name ORDER BY trips DESC`, [m]);
-    const levyRate = await one(`SELECT value FROM settings WHERE key = 'nt_levy_cents'`);
-    const rate = Number(levyRate?.value ?? 100);
-    return { month: m, passenger_trips: r!.trips, levy_rate_cents: rate, levy_payable_cents: r!.trips * rate, levy_collected_cents: r!.levy_collected_cents, per_driver: perDriver };
+       WHERE t.status = 'completed' AND t.kind = 'ride' AND to_char(t.completed_at AT TIME ZONE 'Australia/Darwin', 'YYYY-MM') = $1 AND ${inState}
+       GROUP BY u.name ORDER BY trips DESC`, [m, state]);
+    const j = await getJurisdiction(state);
+    const levyRate = state === 'NT' ? await one(`SELECT value FROM settings WHERE key = 'nt_levy_cents'`) : null;
+    const rate = Number(levyRate?.value ?? j?.levy_cents ?? 100);
+    return { month: m, state, levy_label: j?.levy_label ?? 'NT passenger levy', passenger_trips: r!.trips, levy_rate_cents: rate,
+      levy_payable_cents: r!.trips * rate, levy_collected_cents: r!.levy_collected_cents, per_driver: perDriver };
   });
 
   app.get('/admin/reports/gst', async (req) => {
@@ -672,6 +811,10 @@ export default async function adminRoutes(app: FastifyInstance) {
     const me = await admin(req);
     const b = parse(z.object({ value: z.any() }), req.body);
     const row = await one(`INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2 RETURNING *`, [(req.params as any).key, JSON.stringify(b.value)]);
+    // Legacy setting: the NT max age now lives on the NT jurisdiction — keep them in step.
+    if (row.key === 'vehicle_max_age_years' && Number(b.value) >= 1 && Number(b.value) <= 50) {
+      await q(`UPDATE jurisdictions SET vehicle_max_age_years = $1, updated_at = now() WHERE code = 'NT'`, [Math.round(Number(b.value))]);
+    }
     await audit(me.id, 'setting', 'settings', row.key, b.value);
     return { item: row };
   });

@@ -65,8 +65,8 @@ await user('+61400000002', 'Dispatch Desk', 'dispatcher');
 
 // ── Vehicles: DingoGo fleet — 3 × BYD Dolphin (60.5 kWh Extended Range, ~427 km WLTP), electric, approved
 const veh = async (rego: string, colour: string, extra: Record<string, unknown>) => (await one(
-  `INSERT INTO vehicles (rego, make, model, fuel_type, battery_kwh, range_km, status, year, colour, battery_pct, odometer_km, rego_expiry, inspection_expiry, insurance_expiry, cvl_number, cvl_expiry, roadworthy_date, ${Object.keys(extra).join(',')})
-   VALUES ($1, 'BYD', 'Dolphin', 'electric', 60.5, 427, 'approved', 2026, $2, $3, $4, $5, $5, $5, $6, $5, $7, ${Object.keys(extra).map((_, i) => `$${i + 8}`).join(',')}) RETURNING *`,
+  `INSERT INTO vehicles (rego, make, model, fuel_type, battery_kwh, range_km, status, year, rego_state, verified_year, verified_source, colour, battery_pct, odometer_km, rego_expiry, inspection_expiry, insurance_expiry, cvl_number, cvl_expiry, roadworthy_date, ${Object.keys(extra).join(',')})
+   VALUES ($1, 'BYD', 'Dolphin', 'electric', 60.5, 427, 'approved', 2026, 'NT', 2026, 'rego_papers', $2, $3, $4, $5, $5, $5, $6, $5, $7, ${Object.keys(extra).map((_, i) => `$${i + 8}`).join(',')}) RETURNING *`,
   [rego, colour, 80 + Math.floor(Math.random() * 15), 1200 + Math.floor(Math.random() * 3000), plusDays(300), `CVL-${rego}`, plusDays(-20), ...Object.values(extra)]))!;
 const v1 = await veh('CA 12 DG', 'Atlantis Grey', { pet_friendly: true, has_roof_display: true, display_key: 'led_demo_vehicle_one_key', ownership: 'fleet' });
 const v2 = await veh('CA 34 DG', 'Surf Blue', { has_roof_display: true, display_key: displayKey(), ownership: 'leased_to_driver', lease_weekly_cents: 11333 });
@@ -86,9 +86,10 @@ for (const d of drivers) {
     [u.id, d.v.id, `NT${Math.floor(1e6 + Math.random() * 9e6)}`, plusDays(700), `H${Math.floor(1e5 + Math.random() * 9e5)}`,
       String(51824753556 + Math.floor(Math.random() * 1000)), d.langs, d.pets, d.female, plusDays(-30), d.lat, d.lng,
       `Local driver, ${d.langs.join(' & ')} speaker.`]);
-  for (const type of ['licence', 'h_endorsement', 'police_check', 'medical', 'abn', 'disability_awareness']) {
+  // NT driver documents (jurisdictions.driver_docs for NT) + disability awareness
+  for (const type of ['licence', 'h_endorsement', 'cpvid', 'police_check', 'medical', 'abn', 'gst', 'disability_awareness']) {
     await q(`INSERT INTO driver_documents (driver_id, type, number, expires_at, status, reviewer_id, reviewed_at) VALUES ($1,$2,$3,$4,'approved',$5, now())`,
-      [u.id, type, 'on file', ['licence', 'h_endorsement'].includes(type) ? plusDays(700) : null, admin.id]);
+      [u.id, type, 'on file', ['licence', 'h_endorsement', 'cpvid'].includes(type) ? plusDays(700) : null, admin.id]);
   }
   driverRows.push(u);
 }
@@ -98,12 +99,15 @@ await q(`INSERT INTO drivers (user_id, status, licence_no, abn) VALUES ($1, 'pen
 await q(`INSERT INTO driver_documents (driver_id, type, number, expires_at) VALUES ($1, 'licence', 'NT7712345', $2), ($1, 'police_check', 'NPC-2026-1188', NULL)`, [applicant.id, plusDays(900)]);
 // …bringing their own car, waiting for DingoGo to check it (so the admin "Cars to check" queue isn't empty)
 const ownCar = await one(
-  `INSERT INTO vehicles (rego, make, model, year, colour, seats, doors, fuel_type, ownership, owner_driver_id, status, registered_owner, rego_expiry, roadworthy_date)
-   VALUES ('CB47JP', 'Toyota', 'Camry Hybrid', 2019, 'Silver Pearl', 4, 4, 'hybrid', 'driver_owned', $1, 'pending', true, $2, $3) RETURNING *`,
+  `INSERT INTO vehicles (rego, make, model, year, colour, seats, doors, fuel_type, ownership, owner_driver_id, status, registered_owner, rego_expiry, roadworthy_date,
+     rego_state, vin, vin_year)
+   VALUES ('CB47JP', 'Toyota', 'Camry Hybrid', 2019, 'Silver Pearl', 4, 4, 'hybrid', 'driver_owned', $1, 'pending', true, $2, $3,
+     'NT', 'JTNBZ3HK9K3012345', 2019) RETURNING *`,
   [applicant.id, plusDays(200), plusDays(-10)]);
 await q('UPDATE drivers SET vehicle_id = $2 WHERE user_id = $1', [applicant.id, ownCar.id]);
 await q(`INSERT INTO driver_documents (driver_id, vehicle_id, type, number, expires_at) VALUES
-  ($1, $2, 'vehicle_rego', 'CB47JP', $3), ($1, $2, 'insurance', 'TPP-55102', $4), ($1, $2, 'roadworthy', 'RW-2026-3391', NULL)`,
+  ($1, $2, 'vehicle_rego', 'CB47JP', $3), ($1, $2, 'insurance', 'TPP-55102', $4), ($1, $2, 'roadworthy', 'RW-2026-3391', NULL),
+  ($1, $2, 'compliance_plate', 'Built 03/2019', NULL)`,
   [applicant.id, ownCar.id, plusDays(200), plusDays(320)]);
 
 const rider = await user('+61400000100', 'Demo Rider', 'rider', { email: 'rider@example.com', loyalty_points: 1250, wallet_cents: 1500, marketing_opt_in: true,

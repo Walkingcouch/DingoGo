@@ -2,18 +2,12 @@ import { useState } from 'react';
 import { ApiError, Icon, date, patch, post } from '@dingogo/shared';
 import { Link } from 'react-router-dom';
 import { useDriver } from '../state';
-import { CarStatus, FuelChip, carName, minYearFallback } from '../vehicle';
+import { CarStatus, FuelChip, carName } from '../vehicle';
+import { DOC_LABEL } from '../rules';
 import { AddCarForm, CarExpiries, CarPapers, CarRules } from './Car';
 
-const DOC_LABEL: Record<string, string> = {
-  licence: 'Driver licence', h_endorsement: 'H endorsement', cpvid: 'CPV identity card', police_check: 'Police check', medical: 'Medical',
-  abn: 'ABN', gst: 'GST', insurance: 'Car insurance', vehicle_cvl: 'Car rideshare licence (CVL)', roadworthy: 'Roadworthy report', first_aid: 'First aid',
-  vehicle_rego: 'Car registration', owner_permission: 'Owner’s permission',
-  disability_awareness: 'Disability awareness', wwcc: 'Working with children (Ochre Card)',
-};
-
 export function Profile({ onSignOut }: { onSignOut: () => void }) {
-  const { me, reloadMe, cars, online, showToast } = useDriver();
+  const { me, reloadMe, cars, myState, online, showToast } = useDriver();
   const [adding, setAdding] = useState(false);
   const [papersFor, setPapersFor] = useState<{ car: any; ownerNeeded?: boolean } | null>(null);
   const [carErr, setCarErr] = useState<string | null>(null);
@@ -22,7 +16,6 @@ export function Profile({ onSignOut }: { onSignOut: () => void }) {
   const [theme, setTheme] = useState<string>(() => document.documentElement.dataset.theme ?? 'auto');
   if (!me) return null;
   const d = me.driver; const v = d?.vehicle;
-  const minYear = cars?.min_year ?? minYearFallback();
   const others = (cars?.vehicles ?? []).filter((c) => c.id !== v?.id);
   const regoOf = (c: any) => (me.documents ?? []).filter((x: any) => x.vehicle_id === c.id);
 
@@ -46,7 +39,7 @@ export function Profile({ onSignOut }: { onSignOut: () => void }) {
   return (
     <div className="screen">
       <h1>{d?.name}</h1>
-      <p className="dg-muted" style={{ marginTop: 0 }}>{d?.phone}{d?.rating_avg ? `, rated ${Number(d.rating_avg).toFixed(2)} from ${d.rating_count} trips` : ''}</p>
+      <p className="dg-muted" style={{ marginTop: 0 }}>{d?.phone}{d?.state ? `, ${myState.name}` : ''}{d?.rating_avg ? `, rated ${Number(d.rating_avg).toFixed(2)} from ${d.rating_count} trips` : ''}</p>
 
       <section className="panel">
         <h2 style={{ marginTop: 0 }}>Your car</h2>
@@ -59,7 +52,7 @@ export function Profile({ onSignOut }: { onSignOut: () => void }) {
           <CarExpiries v={v} />
           {Number(v.lease_weekly_cents) > 0 && <div className="info-row"><span className="dg-muted">Lease</span><strong>${(v.lease_weekly_cents / 100).toFixed(2)} a week</strong></div>}
           {v.ownership === 'driver_owned' && <button className="dg-btn dg-btn--ghost dg-btn--block" style={{ marginTop: 8 }} onClick={() => setPapersFor({ car: v })}><Icon name="document" size={18} />Car papers</button>}
-        </>) : <p className="dg-muted" style={{ margin: '0 0 12px' }}>No car yet. Add the car you’ll drive. It can be any fuel type, under 13 years old.</p>}
+        </>) : <p className="dg-muted" style={{ margin: '0 0 12px' }}>No car yet. Add the car you’ll drive. It can be any fuel type, under {myState.vehicle_max_age_years} years old.</p>}
 
         {others.length > 0 && (<>
           <p className="panel-label" style={{ marginTop: 16 }}>Your other cars</p>
@@ -125,8 +118,8 @@ export function Profile({ onSignOut }: { onSignOut: () => void }) {
         <div className="overlay" onClick={(e) => e.target === e.currentTarget && setAdding(false)}>
           <div className="sheet" role="dialog" aria-modal="true" aria-labelledby="add-car-h">
             <h2 id="add-car-h">Add a car</h2>
-            <CarRules minYear={minYear} />
-            <AddCarForm minYear={minYear} onCancel={() => setAdding(false)} onSaved={async (c, registeredOwner) => {
+            <CarRules j={myState} />
+            <AddCarForm onCancel={() => setAdding(false)} onSaved={async (c, registeredOwner) => {
               setAdding(false); await reloadMe(); setPapersFor({ car: c, ownerNeeded: !registeredOwner }); showToast('Car added. Now upload its papers.');
             }} />
           </div>

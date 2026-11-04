@@ -29,6 +29,9 @@ export interface FareContext {
   pointsToRedeem?: number;          // 100 points = $1, capped at 50% of fare
   availablePoints?: number;
   fixedPriceCents?: number;         // tours: package price replaces metered fare
+  /** Passenger levy of the pickup zone's state (jurisdictions.levy_cents / levy_label). Applies only to services whose
+   *  fare rule carries a levy (passenger services); replaces rule.levy_cents. Omit to use rule.levy_cents ("NT passenger levy"). */
+  levy?: { cents: number; label: string } | null;
 }
 
 export interface FareLine { label: string; cents: number }
@@ -101,7 +104,9 @@ export function quoteFare(rule: FareRule, ctx: FareContext): FareQuote {
   }
   if (ctx.plan?.waive_booking_fee) booking = 0;
 
-  const levy = rule.levy_cents ?? 0;
+  const ruleLevy = rule.levy_cents ?? 0;
+  const levy = ruleLevy > 0 && ctx.levy ? Math.max(0, ctx.levy.cents) : ruleLevy;
+  const levyLabel = ruleLevy > 0 && ctx.levy ? ctx.levy.label : 'NT passenger levy';
   const subtotal = trip + booking;  // discountable amount (levy added after discounts)
   let discount = 0;
 
@@ -140,7 +145,7 @@ export function quoteFare(rule: FareRule, ctx: FareContext): FareQuote {
     }
   }
 
-  if (levy) lines.push({ label: 'NT passenger levy', cents: levy });
+  if (levy) lines.push({ label: levyLabel, cents: levy });
   const total = Math.max(0, round5(subtotal - discount)) + levy;
   return {
     service: rule.service,

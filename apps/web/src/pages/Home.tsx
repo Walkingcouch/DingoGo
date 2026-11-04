@@ -167,6 +167,7 @@ export default function Home() {
               <details><summary>What does it cost to cancel?</summary><p>Nothing within 2 minutes of a driver accepting. After that, or once your driver has waited a few minutes, a small fee applies, and most of it goes to the driver. Tours are free to cancel up to 48 hours before.</p></details>
               <details><summary>Can I bring my dog?</summary><p>Choose Ride with a pet and we'll send a car set up for animals. Assistance animals ride on every service, every time, at no cost.</p></details>
               <details><summary>Do you go to Yulara or Tennant Creek?</summary><p>Not yet. We're starting in Alice Springs, then Tennant Creek and Yulara, then Darwin.</p></details>
+              <details><summary>Are you coming to South Australia?</summary><p>Yes, to regional towns: Port Augusta, Coober Pedy, Whyalla, Port Pirie and Mount Gambier. Coming soon, once we're accredited in SA.</p></details>
             </div>
             <Link to="/help" className="text-link">All help topics</Link>
           </div>

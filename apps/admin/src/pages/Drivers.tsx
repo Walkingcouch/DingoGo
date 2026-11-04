@@ -21,7 +21,7 @@ export default function Drivers() {
   const run = useRun();
 
   const cols: Col<any>[] = [
-    { key: 'name', label: 'Driver', nowrap: true, render: (d) => <><strong>{d.name || 'No name'}</strong><span className="sub">{d.phone}</span></> },
+    { key: 'name', label: 'Driver', nowrap: true, render: (d) => <><strong>{d.name || 'No name'}</strong><span className="sub">{d.phone}{d.state && d.state !== 'NT' ? `, ${d.state}` : ''}</span></> },
     { key: 'status', label: 'Status', render: (d) => <Chip tone={DRIVER_STATUS_TONE[d.status]}>{label(DRIVER_STATUS, d.status)}</Chip> },
     { key: 'compliance', label: 'Can drive?', render: (d) => d.compliance_issues.length
       ? <span className="issue" title={d.compliance_issues.map(complianceText).join('\n')}><Chip tone="red">Not yet</Chip><span className="sub">{complianceText(d.compliance_issues[0])}{d.compliance_issues.length > 1 && `, and ${d.compliance_issues.length - 1} more`}</span></span>

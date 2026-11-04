@@ -208,6 +208,56 @@ battery_pct, range_km, battery_kwh, cvl_number, cvl_expiry, rego_expiry, insuran
 - `POST /public/driver-applications` ignores unknown fields (they are dropped, not rejected) — send car details inside `message`.
 - Dispatch: only approved cars; EV range check only for `fuel_type='electric'`; ranking = road distance to pickup − `DISPATCH_GREEN_BONUS_M` (default 1500 m) for green cars.
 
+## States + rego/age checks (Nov 2026)
+
+States live in table `jurisdictions` (NT live; SA regional towns built but hidden, `active=false`, until DingoGo's SA accreditation).
+**Jurisdiction JSON**: `{ code ('NT'|'SA'), name, vehicle_max_age_years (NT 13, SA 8), max_age_years, min_year, current_year, levy_cents (NT 100, SA 0),
+levy_label, inspection_months (SA 12, NT null), rego_check_url, regulator, driver_docs: string[], vehicle_docs: string[], notes, active, updated_at,
+zones: [{ id, name, active, launch_note }] }`. `min_year = current_year − (max_age − 1)`.
+- NT `driver_docs`: licence, h_endorsement, cpvid, police_check, medical, abn, gst · `vehicle_docs`: vehicle_rego, insurance, vehicle_cvl, roadworthy, compliance_plate.
+- SA `driver_docs`: licence, sa_driver_accreditation, sa_operator_accreditation, wwcc, police_check, medical, abn, gst · `vehicle_docs`: vehicle_rego, ctp_spv, insurance, sa_inspection, public_liability, compliance_plate.
+- SA zones (inactive, "Coming soon — awaiting SA accreditation"): port-augusta, coober-pedy, whyalla, port-pirie, mount-gambier. A zone is bookable only if the zone **and** its state are active.
+
+**Public**: `GET /public/config` adds `jurisdictions: Jurisdiction[]`, `document_types: { [type]: { label, help, vehicle? } }`, and `zones[].state`.
+`vehicle_rules` stays (NT). Quotes/estimates: the levy line uses the pickup zone's state (`levy_cents`, `levy_label`) for services whose fare rule has a levy
+(passenger services); `fare_rules.levy_cents` is the fallback when there is no zone. SA regional = $0 (no levy line).
+
+**Vehicle JSON** adds `rego_state, vin_year, verified_year, verified_source ('vin'|'compliance_plate'|'rego_papers'|'plate_lookup'|'other'), rego_checked_at,
+ppsr_checked_at, ppsr_clear, lookup, lookup_at` and computed `compliance_year` (= `verified_year ?? year`, used for the age rule) and
+`checks: { vin_year, vin_year_mismatch }` (mismatch = VIN year and `year` differ by > 1; never blocks).
+
+**Driver**
+- `PATCH /driver/me` accepts `state: 'NT'|'SA'` while status is `applied`/`pending_documents` (else 409 `state_locked`).
+- `GET /driver/vehicles` → `{ vehicles, current_vehicle_id, state, max_age_years, min_year (for my state), rules: Jurisdiction (my state), jurisdictions: Jurisdiction[] }`.
+- `POST /driver/vehicles` body adds **`vin` (required, 17 chars, no I/O/Q; spaces/dashes stripped)** and `rego_state?` (default: my state). Age limit = the car's
+  `rego_state`. Response `{ vehicle, checks: { vin_valid, vin_year, vin_note, vin_year_mismatch } }`. Errors add 400 `vin` (message says what is wrong).
+- `PATCH /driver/vehicles/:id` accepts `vin`, `rego_state` (changing state re-applies that state's age limit). Changing year/VIN clears `verified_*`;
+  changing rego/state clears `rego_checked_at`; changing VIN clears PPSR. Same `{ vehicle, checks }` response. Existing cars without a VIN stay valid.
+- `POST /driver/documents` types add `compliance_plate, sa_driver_accreditation, sa_operator_accreditation, sa_inspection, ctp_spv, public_liability`
+  (car types: compliance_plate, ctp_spv, sa_inspection, public_liability attach to the car).
+- `compliance_issues` (go-online check) now per state: "DingoGo isn't operating in SA yet — South Australia is coming soon"; each `driver_docs` type must have an
+  approved, unexpired document ("{Label}: document missing, expired or not yet approved"); H endorsement only where required (NT); car `rego_state` must equal
+  driver state; car age by the car's state using `verified_year ?? year`; CVL only where `vehicle_docs` has `vehicle_cvl` (NT); inspection (`inspection_expiry`)
+  where `inspection_months` is set (SA).
+- Dispatch only offers trips to drivers whose `state` equals the pickup zone's `state`.
+
+**Admin**
+- `GET /admin/vehicles` items add `state_rules: { code, name, max_age_years, min_year, inspection_months, rego_check_url, ppsr_url, vehicle_docs, active }`; response adds `ppsr_url`.
+- `POST /admin/vehicles/:id/review` body adds `verified_year?, verified_source?, rego_checked?: boolean, ppsr_clear?: boolean, inspection_expiry?`.
+  Approve checks, in order: 400 `dates_required` (rego + insurance; CVL for NT; inspection for SA) → 400 `verified_year_required` (unless already verified) →
+  400 `vehicle_too_old` (verified year below the car's state limit) → 400 `rego_check_required` (`rego_checked` must be `true` on this request) →
+  400 `ppsr_not_clear` (if `ppsr_clear` is false). `rego_checked:true` stamps `rego_checked_at`; `ppsr_clear` stamps `ppsr_checked_at`.
+  `verified_source` defaults to `vin` when the verified year equals `vin_year`, else `other`. Response `{ vehicle (with state_rules) }`.
+- `POST /admin/vehicles/:id/lookup` (admin; paid, one credit per call) → `{ lookup: { year, make, model, vin, description, expiry, raw }, lookup_at }`;
+  501 `{ error: 'lookup_not_configured', code: 'lookup_not_configured', message }` when `REGCHECK_USERNAME` is unset; 502 `lookup_failed` on provider errors. Stored on the car (`lookup`, `lookup_at`).
+- `GET /admin/integrations` → `{ plate_lookup, payments, sms, routing }` each `'configured'|'not_configured'`.
+- `GET /admin/jurisdictions` → `{ items: Jurisdiction[] }`; `GET /admin/jurisdictions/:code` → `{ item }`; `PATCH /admin/jurisdictions/:code` (admin) body any of
+  `{ name, vehicle_max_age_years, levy_cents, levy_label, inspection_months (null = none), rego_check_url, regulator, driver_docs, vehicle_docs, notes, active }`
+  → `{ item }`. Deactivating a state takes its drivers offline. NT max age is mirrored to setting `vehicle_max_age_years` (and vice versa).
+- `/admin/zones` accepts `state`, `timezone`. `/admin/vehicles` create/edit accept `rego_state, verified_year, verified_source`; `vin` is validated and `vin_year` derived.
+  `POST /admin/users` accepts `state` (test drivers get approved docs for that state's `driver_docs`). `PATCH /admin/drivers/:id` accepts `state`.
+- `GET /admin/reports/levy?state=NT|SA` (default NT) counts trips by pickup-zone state; adds `state`, `levy_label`.
+
 ## Partner portal
 
 | Method | Path |

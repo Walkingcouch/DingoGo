@@ -25,7 +25,10 @@ export const config = {
   },
   expoPushEnabled: env.EXPO_PUSH_ENABLED === 'true',
   orsKey: env.ORS_API_KEY ?? '',                             // openrouteservice.org free key (2,000 routes/day)
-  osrmUrl: env.OSRM_URL ?? '',                               // e.g. https://router.project-osrm.org (self-host for prod)
+  osrmUrl: env.OSRM_URL ?? '',
+  /** Paid plate lookup (regcheck.org.uk "CheckAustralia"). Empty = off; admin lookup returns 501 lookup_not_configured. */
+  regcheckUsername: env.REGCHECK_USERNAME ?? '',
+  regcheckUrl: env.REGCHECK_URL ?? 'https://www.regcheck.org.uk/api/reg.asmx/CheckAustralia',                               // e.g. https://router.project-osrm.org (self-host for prod)
   dispatch: {
     offerTimeoutS: Number(env.OFFER_TIMEOUT_S ?? 20),
     maxAttempts: Number(env.DISPATCH_MAX_ATTEMPTS ?? 5),

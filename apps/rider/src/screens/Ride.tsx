@@ -74,8 +74,11 @@ export function RideScreen() {
     if (me && !parcel.sender_name) setParcel((p) => ({ ...p, sender_name: me.user.name, sender_phone: me.user.phone }));
   }, [me]); // eslint-disable-line
 
-  const cashCfg = useLoad(() => get('/public/config').then((c: any) => c.cash_payments ?? { ride: false, courier: true }), []);
+  const cfg = useLoad(() => get('/public/config'), []);
+  const cashCfg = { data: cfg.data ? cfg.data.cash_payments ?? { ride: false, courier: true } : null };
   const cashOk = !!cashCfg.data?.[mode === 'courier' ? 'courier' : 'ride'];
+  // A pickup in a town we've built but not opened (e.g. regional SA) gets "coming soon", not "outside our area".
+  const soonZone = pickup ? comingSoonZone(cfg.data?.zones, pickup) : null;
   useEffect(() => { if (!cashOk && pay.method === 'cash') setPay({ method: 'card' }); }, [cashOk]); // eslint-disable-line
   const service = mode === 'courier' ? SIZES.find((s) => s.id === size)!.service : mode === 'pet' ? 'pet' : 'ride';
   const quotable = (mode === 'ride' || mode === 'pet' || mode === 'courier') && pickup && dropoff;
@@ -293,7 +296,8 @@ export function RideScreen() {
               </div>
             </fieldset>
 
-            <QuoteBox quote={quote} loading={qLoading} error={qError} />
+            <QuoteBox quote={quote} loading={qLoading} error={qError && soonZone ? null : qError} />
+            {qError && soonZone && <p className="dg-note" role="status"><strong>Coming soon to {soonZone.name}.</strong> DingoGo isn’t taking bookings there yet.</p>}
             {error && <p className="dg-error" role="alert">{error}</p>}
             <div className="requestbar">
             {!pickup || !dropoff ? <p className="requestbar__hint">Add a pickup and drop-off to see your price</p> : null}
@@ -319,4 +323,16 @@ function PayOpt({ on, onClick, title, sub, icon }: { on: boolean; onClick: () =>
       <span className="payopt__r" aria-hidden="true" />
     </button>
   );
+}
+
+/** The inactive service area a point falls in, if any (zones from /public/config). */
+function comingSoonZone(zones: any[] | undefined, p: { lat: number; lng: number }) {
+  const R = 6371, rad = (d: number) => (d * Math.PI) / 180;
+  const km = (z: any) => {
+    const lat = Number(z.centre_lat), lng = Number(z.centre_lng);
+    const dLat = rad(lat - p.lat), dLng = rad(lng - p.lng);
+    const a = Math.sin(dLat / 2) ** 2 + Math.cos(rad(p.lat)) * Math.cos(rad(lat)) * Math.sin(dLng / 2) ** 2;
+    return 2 * R * Math.asin(Math.sqrt(a));
+  };
+  return (zones ?? []).find((z) => !z.active && z.centre_lat != null && z.centre_lng != null && km(z) <= Number(z.radius_km)) ?? null;
 }

@@ -421,3 +421,14 @@ p { text-wrap: pretty; }
 
 .wrap.section { padding-left: var(--gutter); padding-right: var(--gutter); }
 .page-head + .section { padding-top: calc(var(--sec) * .7); }
+
+/* Coming-soon row and secondary collapsible (Drive: where we operate) */
+.checks li.soon::before { content: ''; background: transparent; box-shadow: inset 0 0 0 2px var(--ochre); }
+.more { margin-top: 16px; border: 1px solid var(--hairline); border-radius: var(--r-md); background: var(--gum-2); padding: 0 16px; }
+.more summary { cursor: pointer; padding: 14px 0; font-weight: 700; list-style: none; display: flex; justify-content: space-between; gap: 12px; }
+.more summary::-webkit-details-marker { display: none; }
+.more summary::after { content: '+'; flex: none; color: var(--ochre-deep); font-size: 1.2rem; line-height: 1; }
+.more[open] summary::after { content: '−'; }
+.more__cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(240px, 100%), 1fr)); gap: 8px 24px; }
+.more__cols ul { margin: 6px 0 0; padding-left: 20px; display: grid; gap: 4px; color: var(--muted); }
+.more > p { margin: 12px 0 16px; font-size: .92rem; }

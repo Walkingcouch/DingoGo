@@ -212,3 +212,29 @@ dl.kv dd { margin: 0; }
 .review__doc .sub { display: block; color: var(--muted); font-size: .82rem; }
 .review__form { margin-top: var(--sp-2); }
 @media (max-width: 720px) { .review-list { grid-template-columns: 1fr; } }
+
+/* Car review: checks */
+.review__state { font-size: .78rem; font-weight: 800; color: var(--muted); border: 1px solid var(--line); border-radius: var(--r-sm); padding: 1px 5px; vertical-align: 2px; }
+.review__need { display: flex; align-items: flex-start; gap: 6px; color: var(--muted); font-size: .86rem; margin: 8px 0 0; }
+.review__need svg { margin-top: 2px; flex: none; }
+.checks { border-top: 1px solid var(--line); padding-top: var(--sp-2); margin-top: var(--sp-2); display: grid; gap: var(--sp-2); }
+.checks .review__sub { margin-top: 0; }
+.checks__kv dd .sub { display: block; color: var(--muted); font-size: .82rem; }
+.checks__row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+.checks__vin { font-family: ui-monospace, monospace; font-size: .86rem; background: var(--bg); border: 1px solid var(--line); border-radius: var(--r-sm); padding: 1px 6px; letter-spacing: .03em; word-break: break-all; }
+.checks__links { display: flex; flex-wrap: wrap; gap: 8px; }
+.checks__links .dg-btn { display: inline-flex; align-items: center; gap: 6px; text-decoration: none; }
+.checks__lookup { background: var(--bg); border: 1px solid var(--line); border-radius: var(--r-md); padding: var(--sp-3); }
+.checks__lookup .panel-label { margin: 0 0 6px; color: var(--muted); font-weight: 700; font-size: .86rem; }
+.checks__ticks { display: grid; }
+.checks__ticks .dg-check { padding: .3rem 0; }
+.checks__ticks small { display: block; }
+.linkish { background: none; border: 0; padding: 0; font: inherit; color: var(--ochre-deep); text-decoration: underline; cursor: pointer; }
+
+/* States */
+.state-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(420px, 100%), 1fr)); gap: var(--sp-4); }
+.state-card { display: grid; gap: var(--sp-2); align-content: start; }
+.state-card__head { display: flex; align-items: center; gap: var(--sp-2); }
+.state-card__head h3 { margin: 0; flex: 1; }
+.state-card .dg-note { margin: 0; }
+.state-card__docs { font-size: .86rem; color: var(--muted); margin: 0; }

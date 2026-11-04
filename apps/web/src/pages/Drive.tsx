@@ -4,12 +4,14 @@ import { Area, Field, formData, Sent, useSubmit } from '../forms';
 import { useMeta } from '../meta';
 
 const FUELS = ['Electric', 'Plug-in hybrid', 'Hybrid', 'Petrol', 'Diesel'];
+const SA_TOWNS = 'Port Augusta, Coober Pedy, Whyalla, Port Pirie and Mount Gambier';
 
 /** The API's driver-application schema has no car fields (unknown keys are dropped), so car details go at the top of `message`. */
 function withCar(raw: Record<string, unknown>) {
-  const { car_make_model, car_year, car_fuel, car_owner, message, ...rest } = raw;
+  const { car_make_model, car_year, car_fuel, car_owner, drive_state, message, ...rest } = raw;
   const car = [car_make_model, car_year, car_fuel].filter(Boolean).join(', ');
   const lines = [
+    drive_state === 'SA' ? `Wants to drive in: South Australia (${SA_TOWNS})` : '',
     car ? `Car: ${car}. Registered owner: ${car_owner ? 'yes' : 'no'}` : 'Car: not given',
     typeof message === 'string' ? message : '',
   ].filter(Boolean);
@@ -17,12 +19,49 @@ function withCar(raw: Record<string, unknown>) {
 }
 
 export default function Drive() {
-  useMeta('Drive with us', 'Drive your own car for DingoGo in Alice Springs. What the NT requires of you and your car, how we help you get accredited, and how earnings work.');
+  useMeta('Drive with us', 'Drive your own car for DingoGo in Alice Springs, and soon in regional South Australia. What the NT requires of you and your car, how we help you get accredited, and how earnings work.');
   const f = useSubmit('/public/driver-applications');
   return (
     <>
       <PageHead title="Drive with DingoGo">Drive your own car around your own town, with a local team behind you. Here's exactly what it takes.</PageHead>
       <section className="section">
+        <div className="wrap split">
+          <div><h2>Where we operate</h2></div>
+          <div>
+            <ul className="checks">
+              <li><div><b>Northern Territory, now</b><span>Starting in Alice Springs (Mparntwe). The rules below are for the NT.</span></div></li>
+              <li className="soon"><div><b>South Australia, coming soon</b><span>Regional towns only: {SA_TOWNS}. Sign up now and we'll be in touch once DingoGo is accredited in SA.</span></div></li>
+            </ul>
+            <details className="more">
+              <summary>What SA rules ask of drivers and cars</summary>
+              <div className="more__cols">
+                <div>
+                  <b>You</b>
+                  <ul>
+                    <li>SA driver accreditation (every 3 years, paid yearly) and operator accreditation (every 5 years)</li>
+                    <li>Working with children check and a national police certificate</li>
+                    <li>Commercial vehicle driver medical, less than 3 months old</li>
+                    <li>Unrestricted licence held for at least 6 months</li>
+                    <li>An ABN, and GST registration</li>
+                  </ul>
+                </div>
+                <div>
+                  <b>Your car</b>
+                  <ul>
+                    <li>Under 8 years old, with 4 doors and seats for 4 passengers</li>
+                    <li>Inspected every year at an approved station (RAA or Rightway)</li>
+                    <li>SA registration, with CTP upgraded to “small passenger vehicle”</li>
+                    <li>Third-party property insurance, plus $5 million public liability</li>
+                  </ul>
+                </div>
+              </div>
+              <p className="dg-muted">We'll help you through each step when we launch. There's no SA passenger levy on trips in these towns.</p>
+            </details>
+          </div>
+        </div>
+      </section>
+
+      <section className="section" style={{ paddingTop: 0 }}>
         <div className="wrap split">
           <div>
             <h2>What the NT requires of you</h2>
@@ -92,7 +131,13 @@ export default function Drive() {
                 <Field label="Full name" name="name" required autoComplete="name" />
                 <Field label="Mobile" name="phone" type="tel" required autoComplete="tel" />
                 <Field label="Email" name="email" type="email" required autoComplete="email" />
-                <Field label="Suburb" name="suburb" autoComplete="address-level2" />
+                <Field label="Suburb or town" name="suburb" autoComplete="address-level2" />
+                <label className="dg-field full"><span>Where will you drive?</span>
+                  <select className="dg-select" name="drive_state" defaultValue="NT">
+                    <option value="NT">Northern Territory (Alice Springs)</option>
+                    <option value="SA">South Australia, regional towns (coming soon)</option>
+                  </select>
+                </label>
                 <Field label="Years holding a full licence" name="has_licence_years" type="number" min={0} max={70} />
                 <Field label="Languages you speak" name="languages" placeholder="English, Arrernte…" />
                 <Field label="Your car: make and model" name="car_make_model" placeholder="Toyota Camry" maxLength={80} />

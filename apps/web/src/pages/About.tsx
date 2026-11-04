@@ -33,6 +33,7 @@ export default function About() {
           <div><h2>Where we're going</h2><p className="section-intro">We'll only open in a new town once we have local drivers there, and a plan for charging as our electric fleet grows.</p></div>
           <ol className="steps">
             <li><div><b>Alice Springs</b><span>Launching with local drivers in their own cars: rides, parcels, pet rides, tours and event hire. Electric fleet next.</span></div></li>
+            <li><div><b>Regional South Australia</b><span>Port Augusta, Coober Pedy, Whyalla, Port Pirie and Mount Gambier. Coming soon, once DingoGo is accredited in SA.</span></div></li>
             <li><div><b>Tennant Creek and Yulara</b><span>The next communities. Yulara is about 450 km from Alice, beyond a single charge for most electric cars, so going electric there needs charging along the way.</span></div></li>
             <li><div><b>Darwin and other regional towns</b><span>Bringing what we've learned to the Top End.</span></div></li>
           </ol>
