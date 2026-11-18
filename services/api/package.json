@@ -9,6 +9,9 @@
     "build": "tsc",
     "typecheck": "tsc --noEmit",
     "db:migrate": "tsx scripts/migrate.ts",
+    "db:status": "tsx scripts/migrate.ts --status",
+    "db:bootstrap": "tsx scripts/bootstrap.ts",
+    "db:backup": "tsx scripts/backup.ts",
     "db:reset": "tsx scripts/migrate.ts --reset && tsx scripts/seed.ts --force",
     "db:seed": "tsx scripts/seed.ts",
     "vapid": "tsx scripts/vapid-keys.ts",
@@ -25,6 +28,7 @@
     "jsonwebtoken": "^9.0.3",
     "nanoid": "^5.1.16",
     "pg": "^8.23.1",
+    "pino": "^10.4.0",
     "zod": "^4.6.7"
   },
   "devDependencies": {

@@ -1,3 +1,4 @@
+import { logError } from '../lib/log.js';
 import type pg from 'pg';
 import { config } from '../config.js';
 import { one, pool, q, tx, type Q } from '../db.js';
@@ -278,7 +279,7 @@ export async function createTrip(userId: string, input: CreateTripInput) {
     throw e;
   }).then(async (trip) => {
     toOps('trip.created', { id: trip.id, ref: trip.ref, status: trip.status });
-    if (trip.status === 'requested') await dispatchTrip(trip.id).catch((e) => console.error('dispatch', e));
+    if (trip.status === 'requested') await dispatchTrip(trip.id).catch((e) => logError('dispatch', e));
     if (input.kind === 'courier') {
       const p = await one('SELECT * FROM parcels WHERE trip_id = $1', [trip.id]);
       void sendSmsT(p.recipient_phone, 'parcel_recipient',
@@ -567,21 +568,21 @@ export async function dispatchTick() {
       await tx(async (c) => {
         const t = await one(`SELECT * FROM trips WHERE id = $1 FOR UPDATE SKIP LOCKED`, [m.id], c);
         if (t?.status === 'scheduled') await failNoDrivers(c, t, 'missed');
-      }).catch((e) => console.error('missed booking', e));
+      }).catch((e) => logError('missed booking', e));
     }
 
     const due = await q(
       `SELECT id FROM trips WHERE status = 'scheduled' AND scheduled_for <= now() + make_interval(mins => $1)
          AND scheduled_for >= now() - make_interval(mins => $2) ORDER BY scheduled_for LIMIT 50`,
       [config.dispatch.scheduledLeadMin, config.dispatch.scheduledMissedMin]);
-    for (const d of due) await releaseBooking(d.id).catch((e) => console.error('release booking', e));
+    for (const d of due) await releaseBooking(d.id).catch((e) => logError('release booking', e));
 
-    await watchDrivers().catch((e) => console.error('watch drivers', e));
-    await autoEarningsFloor().catch((e) => console.error('earnings floor', e));
-    await sendDocExpiryReminders().catch((e) => console.error('document reminders', e));
+    await watchDrivers().catch((e) => logError('watch drivers', e));
+    await autoEarningsFloor().catch((e) => logError('earnings floor', e));
+    await sendDocExpiryReminders().catch((e) => logError('document reminders', e));
 
     const open = await q(`SELECT id FROM trips WHERE status = 'requested' ORDER BY requested_at LIMIT 50`);
-    for (const t of open) await dispatchTrip(t.id).catch((e) => console.error('dispatch', e));
+    for (const t of open) await dispatchTrip(t.id).catch((e) => logError('dispatch', e));
   } finally {
     ticking = false;
   }
@@ -648,7 +649,7 @@ async function watchDrivers() {
        WHERE t.status = 'accepted' AND greatest(d.last_seen_at, t.accepted_at) < now() - make_interval(mins => $1)`, [reassignMin]);
     for (const g of gone) {
       await reassignTrip(g.id, { by: 'auto', actorId: null, reason: 'lost_contact', note: 'No signal from the driver' })
-        .catch((e) => { if (!(e instanceof ApiError)) console.error('auto reassign', e); });
+        .catch((e) => { if (!(e instanceof ApiError)) logError('auto reassign', e); });
     }
   }
 
@@ -674,7 +675,7 @@ export async function withdrawOffers(driverId: string) {
   for (const o of r) {
     await event(pool, o.trip_id, 'offer_withdrawn', driverId, { driver_id: driverId });
     toUser(driverId, 'offer.expired', { trip_id: o.trip_id });
-    await dispatchTrip(o.trip_id).catch((e) => console.error('dispatch', e));
+    await dispatchTrip(o.trip_id).catch((e) => logError('dispatch', e));
   }
   return r.length;
 }
@@ -819,7 +820,7 @@ async function afterRelease(t: any, driverId: string, r: ReleaseBy) {
   toOps('trip.updated', slim);
   void send(t.rider_id, 'finding_another_driver', { ref: t.ref }, { trip: t });
   if (r.by !== 'driver') void send(driverId, 'trip_given_away', { ref: t.ref }, { data: { trip_id: t.id } });
-  await dispatchTrip(t.id).catch((e) => console.error('dispatch', e));
+  await dispatchTrip(t.id).catch((e) => logError('dispatch', e));
 }
 
 /** Ops "give to another driver" (or the automatic lost-signal check): the trip goes back to the search. */
@@ -843,7 +844,7 @@ export async function declineOffer(driverId: string, tripId: string) {
   if (!r.length) return { ok: true };
   await flagAssistanceAnimal(tripId, driverId, 'declined offer');
   await event(pool, tripId, 'declined', driverId);
-  await dispatchTrip(tripId).catch((e) => console.error('dispatch', e));
+  await dispatchTrip(tripId).catch((e) => logError('dispatch', e));
   return { ok: true };
 }
 

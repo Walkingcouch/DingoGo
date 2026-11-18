@@ -13,6 +13,7 @@ import { disconnectUser, stats as wsStats, toOps } from '../realtime.js';
 import { notify, send, sendSmsT } from '../services/notify.js';
 import { replyableSender, smsConfigured } from '../services/sms.js';
 import { pushProviders } from '../services/push.js';
+import { integrationStatus } from './health.js';
 import { gsmFriendly, render, smsSegments } from '../lib/messages.js';
 import * as pay from '../services/payments.js';
 import * as trips from '../services/trips.js';
@@ -636,15 +637,7 @@ export default async function adminRoutes(app: FastifyInstance) {
 
   app.get('/admin/integrations', async (req) => {
     await ops(req);
-    const on = (x: boolean) => (x ? 'configured' : 'not_configured');
-    return {
-      plate_lookup: on(plateLookupConfigured()),
-      payments: on(!!config.stripe.secretKey), payments_webhook: on(!!config.stripe.webhookSecret), card_elements: on(!!config.stripe.publishableKey), sms: on(!!(config.twilio.sid && config.twilio.token)),
-      routing: on(!!(config.orsKey || config.osrmUrl)),
-      // Round 9
-      sms_replies: on(!!config.twilio.token && !!replyableSender()), sms_relay: on(!!(config.twilio.relayNumber && config.twilio.sid && config.twilio.token)),
-      push_fcm: on(pushProviders().fcm), push_web: on(pushProviders().web), push_expo: on(config.expoPushEnabled),
-    };
+    return integrationStatus();
   });
 
   // ───────────── States (jurisdictions) ─────────────

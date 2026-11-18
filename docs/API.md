@@ -1,6 +1,6 @@
 # DingoGo API reference
 
-Base URL: `http://localhost:4000` in development. Auth: `Authorization: Bearer <JWT>` from `/auth/otp/verify`. Errors: `{ error, message, details? }`. Money in integer cents (AUD, GST-inclusive).
+Base URL: `http://localhost:4000` in development. Auth: `Authorization: Bearer <JWT>` from `/auth/otp/verify`. Errors: `{ error, message, details?, request_id? }`; every response has an `X-Request-Id` header. Money in integer cents (AUD, GST-inclusive).
 
 
 ## Public (no sign-in)
@@ -8,6 +8,7 @@ Base URL: `http://localhost:4000` in development. Auth: `Authorization: Bearer <
 | Method | Path |
 | --- | --- |
 | GET | `/health` |
+| GET | `/health/deep` (Round 10: database, schema version, pending migrations, integrations; details for admins / `X-Health-Token`) |
 | GET | `/public/config` |
 | GET | `/public/places` |
 | POST | `/public/estimate` |
@@ -583,3 +584,38 @@ settings fall back to the defaults, chat answers 503 `migration_pending`, nothin
   sender (409 `sms_marketing_unavailable`), at most 2 text parts (400 `sms_too_long`), text `DingoGo: <message> Reply STOP to opt out.`, skips opted-out
   numbers. Sent 10 at a time. `GET /me/export` adds `messages`, `marketing_consents`, `notification_prefs`.
 - **Category changes.** `referral_bonus` is now `account` (was `promo`, so it was hidden from riders who hadn't opted in to offers); tips are `account`.
+
+## Operations (Round 10)
+
+- **`GET /health/deep`** → `{ ok, status: 'ok'|'degraded'|'down', release, time, db: { ok, ms }, schema: { version, up_to_date }, problems[] }`.
+  `problems`: `database_unreachable`, `migrations_pending`, `schema_unreadable`, `base_data_missing`, `base_data_unreadable`, `auto_migrate_failed`.
+  Admins/dispatchers (bearer token) and callers sending `X-Health-Token: <HEALTH_TOKEN>` also get `environment`, `serverless`, `db.error/code`,
+  `schema: { version, expected, applied, pending[], unknown[] }` (`unknown` = applied in the database but not in this code: an older deploy),
+  `auto_migrate: { enabled, last: { at, ms, applied[], pending[], busy, fresh, error, security?, seeded? } }`,
+  `base_data: { active_zones, fare_rules, active_jurisdictions, admins, ok }`, `security: { tables_without_rls[], client_role_grants[] }` and
+  `integrations` (same as `GET /admin/integrations`, plus `error_reporting`). 200 unless the database is down (503). `Cache-Control: no-store`.
+  On Vercel `/health*` is answered even when the database can't be reached (everything else gets the 503 below).
+- **Request ids.** `X-Request-Id` on every response: the caller's own id if it matches `[A-Za-z0-9._:-]{8,64}`, else a new UUID. 500/503 bodies carry
+  `request_id`; the apps show the first 8 characters as "(ref …)" on 500s so support can find the log line.
+- **Errors on our side.** Database unreachable (connection refused/reset/timeout, admin shutdown, too many connections) → **503 `db_unavailable`**
+  with `Retry-After: 30` (was a 500, or "Service is starting up" on Vercel). A missing table or column (code ahead of the schema) → **503
+  `migration_pending`** with `Retry-After: 60` (was a 500). Neither changed anything, so a write with an `Idempotency-Key` can be sent again; the
+  driver app's outbox keeps taps on these 503s. Shared client: reads retry on `db_unavailable` (0.8 s, 2.5 s), then the app shows "DingoGo is having
+  a problem on our side" until a request gets through (`isServiceUp`/`onServiceChange`/`useServiceUp`, `ServiceNotice`, `isTemporary(e)`).
+- **Logs.** JSON lines (pino) on stdout: `level`, `time`, `service`, `release`, `request_id`, and one `request` line per request with `method`, `route`
+  (the route pattern, e.g. `/public/track/:token` — never the raw URL or query string), `status`, `ms`, `user_id`/`role` when signed in and
+  `vercel_id` on Vercel. Authorization headers, cookies and any `token`/`code`/`password` fields are redacted. `LOG_LEVEL` (default `info` in production
+  and on Vercel, `warn` elsewhere). Errors outside requests (dispatch tick, background sends, auto-migrate, unhandled rejections) are logged with `where`.
+- **Error reporting.** `SENTRY_DSN` (optional; `SENTRY_ENVIRONMENT`, `SENTRY_TIMEOUT_MS`): unhandled 500s, `db_unavailable`/`migration_pending`,
+  failed auto-migrations and errors outside requests are sent to Sentry's envelope endpoint (no SDK). Events carry the error, stack, `release`
+  (`GIT_SHA` or `VERCEL_GIT_COMMIT_SHA`), tags `where`/`route`/`method`/`request_id`/`pg_code` and the account id only — no request bodies, headers,
+  phone numbers or names. Off without the DSN.
+- **Migrations.** `npm run db:migrate` (`--status` to list), `npm run db:bootstrap` (`--check`), `AUTO_MIGRATE=true` at cold start: one runner
+  (`src/lib/migrator.ts`), each file in its own transaction behind `pg_try_advisory_xact_lock(0x44474d47)` and a re-read of `schema_migrations`, so
+  concurrent runners apply each file once; `lock_timeout` (`MIGRATE_LOCK_TIMEOUT_MS`, 5 s at cold start / 10 s from the CLI) so a migration never
+  queues live traffic behind it; at cold start also `statement_timeout` (`AUTO_MIGRATE_STATEMENT_TIMEOUT_MS`, 20 s) and at most
+  `AUTO_MIGRATE_WAIT_MS` (10 s) waiting for another instance. A failed migration is rolled back, logged, reported and shown in `/health/deep`; the API
+  keeps serving. After applying anything, RLS/grants are re-applied (new tables). On a brand-new empty database AUTO_MIGRATE also adds the base data
+  and `BOOTSTRAP_ADMIN_PHONE`. Migrations use `MIGRATION_DATABASE_URL` when set (owner), else `DATABASE_URL`. The Vercel function ships the SQL files.
+- **Scripts.** `db:reset` refuses a non-local database unless `ALLOW_DB_RESET=yes`; the demo seed refuses one unless `DEMO_DATA=true`.
+  `npm run db:backup` (`--json`, `--out`). See `docs/OPERATIONS.md`.

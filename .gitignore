@@ -6,3 +6,5 @@ uploads
 .vercel
 apps/*/screenshots
 apps/*/screenshots-v2
+backups
+*.dump

@@ -509,3 +509,101 @@ Ideas for next rounds:
 - Driver "arriving in 2 minutes" automatic message from GPS distance, and a "can't find you" flow that sends the rider's pin photo/landmark.
 - Privacy retention job (messages, comms log, GPS tracks, OTP and rate events) with admin-visible schedule and policy text.
 - Notification analytics for ops: push reach (devices per user, last success), texts per day and cost, STOP rate per campaign.
+
+### Round 10 — operability and resilience (fresh-database bootstrap, safe migrations, health, logs, errors)
+Scan: the live database was lost (Supabase project deleted). Read `scripts/migrate.ts`, `scripts/seed.ts`, `src/db.ts`, `src/vercel.ts`, `src/index.ts`,
+every migration, the Vercel build, the Dockerfile, CI, the shared API client and the apps' offline bars. Found: the only way to set up a database was
+`db:setup` = migrations + **demo** data (fictional drivers, cafés, promo codes, demo accounts that accept 000000, roof screens on); without the demo seed a
+fresh database had no NT zone, no fares and no admin, so nobody could sign in to fix it; `db:reset` drops `public` on whatever `DATABASE_URL` points at
+(no guard against a production URL); migrations run only from a machine with direct DB access (the Vercel bundle doesn't even contain the SQL files) and
+the runner has no lock (two runners can apply the same file); Supabase exposes `public` tables to the `anon`/`authenticated` roles over its REST API
+and no table had RLS; `/health` says only "ok"; logging is off unless `LOG_LEVEL` is set, there are no request ids, raw `console.error` everywhere and
+no error reporting; a dropped database gives "Service is starting up" on Vercel and a bare 500 elsewhere, a missing table (migration lag) is a 500; the
+apps show the same generic error for "our database is down" as for any other failure, and the driver app drops a queued tap on a 503.
+
+Suggested:
+1. [add] `npm run db:bootstrap`: all migrations, database security (RLS on every `public` table, Supabase `anon`/`authenticated` locked out, optional
+   least-privilege API role with grants and policies), a prod-safe base seed (zones, fare rules, jurisdictions, settings with roof screens off, plans,
+   public holidays, tours) and the first admin from `BOOTSTRAP_ADMIN_PHONE`; demo data only with `DEMO_DATA=true`; idempotent; `--check` reports only.
+2. [add] One migrator with a transaction-level advisory lock (safe through the Supabase pooler, safe when several instances start at once), used by
+   `db:migrate`, `db:bootstrap` and `AUTO_MIGRATE=true` at cold start (Vercel and the long-running server); statement timeout; a failed migration is
+   rolled back and recorded while the API keeps serving; migrations bundled into the Vercel function. A fresh empty database also gets the base seed.
+3. [add] `GET /health/deep`: database latency, schema version, pending and unknown migrations, last auto-migrate result, RLS coverage, base data present,
+   integrations configured (no secrets); summary for anyone, details for admins or `HEALTH_TOKEN`; 503 when the database is down.
+4. [add] Structured logging: JSON (pino) with a request id per request (honours a valid `X-Request-Id`, else Vercel's id, else a UUID; echoed back), one
+   line per request with the route pattern (no query strings, tokens or share links), auth headers redacted, `request_id` in 500 bodies; every
+   `console.error` moved to the logger.
+5. [add] Error reporting hook: `SENTRY_DSN` (Sentry envelope API over fetch, no SDK, no personal data, request id and route as tags) for unhandled 500s,
+   dispatch tick and background failures and unhandled rejections; off without the DSN.
+6. [fix] Database down / schema lag: connection failures are 503 `db_unavailable` with `Retry-After` (was 500, or "starting up" on Vercel), a missing
+   table/column is 503 `migration_pending`; health endpoints still answer on Vercel when the database is unreachable.
+7. [add] Apps: shared service status from 503s — rider, driver, admin and partner show "DingoGo is having a problem on our side" (rider: "In an
+   emergency call 000"), reads retry on 503, the bar clears when a request gets through; the driver outbox keeps taps on a 503 and replays them.
+8. [fix] Guards on destructive scripts: `db:reset` and the demo seed refuse a non-local database unless explicitly allowed.
+9. [add] Backups: `npm run db:backup` (pg_dump custom format; JSON export per table when pg_dump isn't installed) and `docs/OPERATIONS.md` (bootstrap a new
+   Supabase project, restore, auto-migrate, health checks, logs, Sentry, backup schedule); README, API.md, `.env.example`; CI bootstraps a fresh database.
+
+Done (all 9). No migration this round (no schema changes; the security step is code that runs after migrations). Tests: 83 → 90 (new
+`test/ops.test.ts`, on its own scratch databases created and dropped by the test so it runs alongside the e2e file: bootstrap of an empty database —
+every migration, base data values (fares, roof screens off, SA hidden), no demo rows, admin by env with audit row, RLS on every table, `anon`/
+`authenticated` refused, API role reads/writes but can't create or drop tables, re-run inserts nothing and keeps admin edits, demo-number and
+invalid admins refused, an existing rider promoted; migrator — four concurrent runners apply each file once, a held lock → busy, a broken migration
+rolled back whole and later files not run, `lock_timeout` 55P03 instead of queueing behind a reader; AUTO_MIGRATE + `/health/deep` — summary vs
+details (admin token, `X-Health-Token`, wrong token), pending migration listed, applied once per process with RLS on the new table, failed
+migration → degraded + reported + still serving; AUTO_MIGRATE on a brand-new database through `MIGRATION_DATABASE_URL` → schema, RLS, base data and
+admin; logging — request id honoured/replaced/echoed, one JSON line per request with the route pattern, no share token/query/bearer in any line,
+500 with `request_id`, Sentry envelope with tags and stack and no token, `db_unavailable` 503 with Retry-After, `migration_pending` 503 for a missing
+table, errors outside requests reported, DSN parsing; the Vercel entry in a child process with an unreachable database → 503 `db_unavailable` with
+request id, `/health/deep` 503 "down"; scripts — `db:reset` and demo seed refuse a Supabase URL, bootstrap CLI with `DEMO_DATA=true` + `--check`,
+JSON backup with manifest, pg_dump backup readable by owner only and listable by pg_restore). Also checked by hand: the built Vercel function
+(`.vercel/output/functions/api.func`, migrations bundled) pointed at an empty database with `AUTO_MIGRATE=true` migrates, secures and seeds it on
+the first request and `/api/health/deep` reports `ok`; shared API client with a fake fetch (reads retried 3 times on `db_unavailable`, writes
+not retried, service state false → true, 500 message carries "(ref …)").
+- API: new `src/lib/migrator.ts` (advisory-locked runner, `schemaStatus`, `isLocalDatabase`), `src/lib/dbSecurity.ts` (`applyDbSecurity`,
+  `securityStatus`), `src/lib/baseSeed.ts` (`seedBase`, `baseDataStatus`), `src/lib/bootstrap.ts` (`bootstrapDatabase`, `autoMigrateOnce`,
+  `lastAutoMigrate`), `src/lib/log.ts` (pino logger, `requestId`, `safePath`, `reportError`/`logError`, Sentry envelope client, `setErrorReporter`),
+  `src/routes/health.ts` (`/health/deep`, `integrationStatus` now shared with `/admin/integrations`); `src/index.ts` (logger + LogController,
+  request ids, per-request line, `isDbDown`/`isSchemaLag` → 503s, 500 with `request_id` + report, auto-migrate and crash handlers in the long-running
+  server); `src/vercel.ts` (health answered when the DB is down, clear 503 with request id, auto-migrate at cold start); every `console.error` moved
+  to `logError`/`log.warn` (push failures are warnings, not error reports); `config.ts` (`ops.*`); scripts `bootstrap.ts`, `backup.ts`,
+  `migrate.ts` (shared runner, `--status`, reset guard), `seed.ts` (base data from `seedBase`, demo extras only, non-local guard, demo detection by
+  the demo admin row); `package.json` (`db:bootstrap`, `db:status`, `db:backup`, pino); Dockerfile runs bootstrap before start;
+  `scripts/build-vercel.mjs` ships the migrations with the function.
+- Shared: `api.ts` (service state, `isTemporary`, read retries on `db_unavailable`, "(ref …)" on 500s), `hooks.ts` (`useServiceUp` with a /health
+  check every 20 s while down), new `ServiceNotice.tsx`, `brand.css`. Rider: notice under the offline bar ("In an emergency call 000"), live trip
+  keeps showing with "DingoGo is having a problem on our side. Showing your trip as it was …". Driver: signal bar says so and counts saved taps; the
+  outbox keeps taps on 503 `db_unavailable`/`migration_pending`. Admin: notice in the console, Reports → System health (status, schema version and
+  pending, base data, RLS, auto-migrate, Sentry). Partner: notice.
+- Docs: new `docs/OPERATIONS.md` (bootstrap a new Supabase project step by step, the no-DB-access path via AUTO_MIGRATE, optional API role,
+  migrations, health, logs, Sentry, backups and restore, checklist before deleting anything); API.md "Operations (Round 10)"; README; `.env.example`.
+- Behaviour changes to note: the API now logs JSON at `info` in production/Vercel (one line per request); 500 bodies include `request_id`; database
+  connection failures are 503 `db_unavailable` (were 500) and missing tables/columns 503 `migration_pending` (were 500); the Vercel "Service is
+  starting up" message is now "DingoGo can’t reach its database right now"; `/admin/integrations` adds `error_reporting`; `db:setup`/`db:seed` and
+  `db:reset` refuse non-local databases without `DEMO_DATA=true` / `ALLOW_DB_RESET=yes`; the demo seed counts as "already loaded" only when the demo
+  admin exists (a bootstrapped database can take demo data on top); a fresh database's roof screens start `off` (demo turns them on); CLI
+  migrations give up on a table lock after 10 s (`MIGRATE_LOCK_TIMEOUT_MS`).
+- Deploy: no migration, no required env vars. To rebuild the lost database: `npm ci`, then `MIGRATION_DATABASE_URL=<Supabase session pooler URL>
+  BOOTSTRAP_ADMIN_PHONE=<mobile> npm run db:bootstrap` (check with `-- --check`); in Vercel set `DATABASE_URL` (transaction pooler), `AUTO_MIGRATE=true`,
+  `BOOTSTRAP_ADMIN_PHONE`, `HEALTH_TOKEN` (and optionally `SENTRY_DSN`), redeploy, check `/api/health/deep` with `X-Health-Token`. Without direct DB
+  access: just the Vercel variables — the first request bootstraps the empty database. Uploaded files and admin edits from the old database are gone.
+
+Deferred:
+- Restoring from the JSON export (only pg_dump/pg_restore is a real restore path): a loader would need table order, sequences and bytea handling;
+  pg_dump is available everywhere Postgres is.
+- Scheduled off-site backups (GitHub Action running `db:backup` nightly to an encrypted bucket): needs a bucket, an encryption key and a secret for
+  the database URL in GitHub — the coordinator's call; documented the schedule instead.
+- Uploads still live in Postgres (`bytea`), so a lost database also loses driver documents; moving them to Supabase Storage/S3 (Round 2 deferral)
+  would at least keep them out of the database's blast radius.
+- OpenTelemetry tracing / metrics (request latency histograms, pool saturation): logs carry `ms` per request for now.
+- Running the e2e suite as the least-privilege API role (it renames tables in a few tests, which only the owner can do); the API's runtime queries
+  were checked for DDL (none).
+
+Ideas for next rounds:
+- Nightly backup GitHub Action (pg_dump → age/GPG-encrypted → private bucket, 7/4/12 retention) plus a monthly restore drill into a scratch
+  database that runs `db:bootstrap -- --check` and a smoke sign-in.
+- Uptime and alerting: a `/health/deep` monitor (Better Stack / UptimeRobot) with the token, and an ops push/SMS to the admin when it turns
+  `degraded` or `down` (also when auto-migrate fails).
+- Uploads to Supabase Storage with presigned URLs (removes bytea from backups and the database, keeps documents if the database is lost).
+- Privacy retention job (still open from Rounds 2 and 9): purge OTP/rate events, old GPS tracks, chat and comms logs on a schedule shown in admin.
+- Admin "maintenance mode" switch (read-only banner and bookings paused with a clear message) for planned database work.
+- Run `scripts/a11y-check.mjs` and the ops tests in CI with a Postgres service (CI already runs `npm test`, which now includes the bootstrap tests).

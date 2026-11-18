@@ -3,6 +3,7 @@
  * Every text is logged in `comms_log` by template and the last 3 digits of the number only — never the text (codes, PINs).
  * Numbers that replied STOP (table `sms_opt_outs`) get only essential texts. Works before migration 015 (no log, no opt-outs).
  */
+import { logError, log } from '../lib/log.js';
 import crypto from 'node:crypto';
 import { config } from '../config.js';
 import { one, q } from '../db.js';
@@ -15,7 +16,7 @@ const missing = (e: any) => e?.code === '42P01' || e?.code === '42703';
 let warned = false;
 function tolerate(e: any) {
   if (!missing(e)) throw e;
-  if (!warned) { warned = true; console.error('comms tables missing — run migration 015 (SMS log, opt-outs, chat are off)'); }
+  if (!warned) { warned = true; log.warn('comms tables missing — run migration 015 (SMS log, opt-outs, chat are off)'); }
 }
 
 export const smsConfigured = () => !!(config.twilio.sid && config.twilio.token && (config.twilio.from || config.twilio.messagingServiceSid));
@@ -55,7 +56,7 @@ export async function logComms(row: { channel: 'sms' | 'push' | 'call'; template
     await q(`INSERT INTO comms_log (channel, template, to_tail, user_id, trip_id, status, provider, provider_ref, error) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
       [row.channel, row.template ?? null, row.to ? tail(row.to) : null, row.userId ?? null, row.tripId ?? null, row.status, row.provider ?? null, row.ref ?? null,
         row.error ? String(row.error).slice(0, 300) : null]);
-  } catch (e: any) { if (missing(e)) tolerate(e); else console.error('comms_log', e); }
+  } catch (e: any) { if (missing(e)) tolerate(e); else logError('comms_log', e); }
 }
 
 /** Send one text now. Use `sendSms` from notify.ts for fire-and-forget (tracked so it finishes on serverless). */

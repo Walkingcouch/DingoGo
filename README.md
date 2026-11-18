@@ -23,7 +23,10 @@ This repository is the whole platform: one API and database, five apps and the p
 | API | `/api` (Vercel function, region syd1) → Supabase Postgres `dingogo` (ap-southeast-2) |
 | Android test builds | GitHub release `android-latest` (built by `.github/workflows/android.yml` on every push) |
 
-Deploy = `node scripts/build-vercel.mjs` (Vercel runs it). Database changes go in `services/api/migrations/` and are applied to Supabase.
+Deploy = `node scripts/build-vercel.mjs` (Vercel runs it). Database changes go in `services/api/migrations/`; with `AUTO_MIGRATE=true` the API applies
+them at cold start (advisory-locked), or run `npm run db:migrate`. **New or lost database:** `npm run db:bootstrap` (migrations, RLS, production base
+data, first admin from `BOOTSTRAP_ADMIN_PHONE`; no demo data) — see `docs/OPERATIONS.md` for the full runbook, health checks
+(`/api/health/deep`), logs, Sentry and backups (`npm run db:backup`).
 
 ## Quick start (local)
 
@@ -33,10 +36,10 @@ Needs Node 22+ and PostgreSQL 14+ (or `docker compose` — see Deploy).
 createdb dingogo                                   # or use any Postgres URL
 export DATABASE_URL=postgres://USER:PASS@localhost:5432/dingogo
 npm install
-npm run db:setup                                   # migrations + demo data
+npm run db:setup                                   # migrations + demo data (local databases only)
 npm run dev:api                                    # http://localhost:4000
 npm run dev:web    # and/or dev:rider, dev:driver, dev:admin, dev:partner, dev:roof
-npm test                                           # 83 API tests (needs a throwaway DB: they reset it)
+npm test                                           # 90 API tests (needs a throwaway DB: they reset it, and create/drop scratch databases)
 node scripts/a11y-check.mjs                        # WCAG 2.2 AA check (axe-core + Playwright) of the website and rider app; needs api, web and rider running
 ```
 
@@ -112,5 +115,6 @@ They also install from the browser as web apps (PWA) — useful for testing befo
 ## Docs
 
 - `docs/API.md` — every endpoint and realtime event.
+- `docs/OPERATIONS.md` — bootstrap a new database, migrations, health checks, logs and error reporting, backups and restore.
 - `docs/screenshots/` — cross-app run (driver accepts in-app, rider sees it live, admin map, website tracking, roof screen).
 - `apps/*/screenshots/` — every screen of every app.

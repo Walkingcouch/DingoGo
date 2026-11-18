@@ -11,3 +11,4 @@ export type { ChatMessage } from './Chat';
 export { enablePush, refreshPush, disablePush, pushState, pushKind } from './push';
 export type { PushState } from './push';
 export { NotifySettings } from './NotifySettings';
+export { ServiceNotice } from './ServiceNotice';

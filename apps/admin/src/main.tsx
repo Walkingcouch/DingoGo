@@ -3,7 +3,7 @@ import ReactDOM from 'react-dom/client';
 import { BrowserRouter, NavLink, Navigate, Route, Routes, useLocation, useNavigate, Link } from 'react-router-dom';
 import '@dingogo/shared/brand.css';
 import './admin.css';
-import { Login, connectRealtime, get, getToken, initAuth, setToken, Icon, type Msg } from '@dingogo/shared';
+import { Login, connectRealtime, get, getToken, initAuth, setToken, Icon, ServiceNotice, type Msg } from '@dingogo/shared';
 import { ROLE, label } from './labels';
 import mascot from '@dingogo/shared/assets/mascot.png';
 import { AskProvider, Modal, ToastProvider } from './ui';
@@ -120,6 +120,7 @@ function Shell({ me, onSignOut }: { me: any; onSignOut: () => void }) {
         </aside>
         {menu && <div className="scrim" style={{ zIndex: 1100 }} onClick={() => setMenu(false)} />}
         <main className="main" id="main" tabIndex={-1}>
+          <ServiceNotice extra="Check /api/health/deep and docs/OPERATIONS.md. Drivers keep their trip taps on their phones until it is back." />
           <div className="opsbar">
             <button className="dg-btn dg-btn--ghost dg-btn--sm menu-btn" onClick={() => setMenu(true)} aria-label="Open menu"><Icon name="list" size={18} /> Menu</button>
             <GlobalSearch ref={searchRef} />

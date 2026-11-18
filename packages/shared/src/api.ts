@@ -35,6 +35,17 @@ if (typeof window !== 'undefined') {
   window.addEventListener('offline', () => setOnline(false));
 }
 
+/** Service state shared by every screen: false while the API says it can't reach its database (503 db_unavailable),
+ *  true again after the next request gets through. Apps show a "problem on our side" notice from it (useServiceUp, ServiceNotice). */
+let serviceUp = true;
+const serviceListeners = new Set<(up: boolean) => void>();
+function setServiceUp(up: boolean) { if (up !== serviceUp) { serviceUp = up; serviceListeners.forEach((f) => f(up)); } }
+export const isServiceUp = () => serviceUp;
+export function onServiceChange(f: (up: boolean) => void) { serviceListeners.add(f); return () => { serviceListeners.delete(f); }; }
+/** The API answered but couldn't do the work for a reason on our side that clears by itself (database down, update running).
+ *  Nothing was saved, so a write with an Idempotency-Key can be sent again. */
+export const isTemporary = (e: unknown) => e instanceof ApiError && e.status === 503 && (e.code === 'db_unavailable' || e.code === 'migration_pending');
+
 /** Reads (GET) give up after this long so a weak signal doesn't leave a spinner forever, then retry. Writes are never
  *  retried or timed out here: a booking or payment that may have gone through must not be sent twice. */
 const READ_TIMEOUT_MS = 15000;
@@ -62,22 +73,33 @@ export interface ApiOpts {
 export async function api<T = any>(method: string, path: string, body?: unknown, opts: ApiOpts = {}): Promise<T> {
   const read = method === 'GET';
   let res: Response | null = null;
+  let text = '';
+  let json: any = {};
   for (let attempt = 0; ; attempt++) {
-    try { res = await send(method, path, body, opts.timeoutMs ?? (read ? READ_TIMEOUT_MS : null), opts.headers); break; }
+    try { res = await send(method, path, body, opts.timeoutMs ?? (read ? READ_TIMEOUT_MS : null), opts.headers); }
     catch {
       if (read && attempt < READ_RETRIES.length) { await sleep(READ_RETRIES[attempt]); continue; }
       setOnline(false);
       throw new ApiError(0, 'offline', 'No signal. Check your connection and try again.');
     }
+    setOnline(true);
+    text = await res.text();
+    try { json = text ? JSON.parse(text) : {}; } catch { json = {}; }
+    // Database briefly unreachable: reads try again (nothing was changed); writes come back to the app to decide.
+    if (res.status === 503 && json.error === 'db_unavailable' && read && attempt < READ_RETRIES.length) { await sleep(READ_RETRIES[attempt]); continue; }
+    break;
   }
-  setOnline(true);
-  const text = await res.text();
-  let json: any = {};
-  try { json = text ? JSON.parse(text) : {}; } catch { json = {}; }
+  if (res.status === 503 && json.error === 'db_unavailable') {
+    setServiceUp(false);
+    throw new ApiError(503, 'db_unavailable', 'DingoGo is having a problem on our side. Please try again in a few minutes.', json.request_id);
+  }
+  setServiceUp(true);
   if (!res.ok) {
     if (res.status === 401) setToken(null);
     // Gateways in front of the API answer 502-504 when the connection drops mid-request: treat like no signal.
     if (!json.error && res.status >= 502 && res.status <= 504) throw new ApiError(res.status, 'offline', 'The connection dropped. Try again in a moment.');
+    // 500s carry a request id: put it in the message so support can find the error in the logs.
+    if (res.status >= 500 && json.request_id && !json.details) throw new ApiError(res.status, json.error ?? 'error', `${json.message ?? 'Something went wrong'} (ref ${String(json.request_id).slice(0, 8)})`, { request_id: json.request_id });
     throw new ApiError(res.status, json.error ?? 'error', json.message ?? 'Something went wrong', json.details);
   }
   return json as T;

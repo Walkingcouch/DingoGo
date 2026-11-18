@@ -3,6 +3,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom';
 import {
   Icon,
   ApiError, ChatThread, REALTIME, COURIER_STATUS_LABEL, useTripChat, STATUS_LABEL, ago, connectRealtime, date, dateTime, get, km, money, onNetworkChange, post, statusTone, time, useInterval, Ranges,
+  isTemporary,
 } from '@dingogo/shared';
 import { DgMap, type MapMarker } from '@dingogo/shared/map';
 import { ACTIVE, shareUrl, useMe } from '../ctx';
@@ -31,7 +32,7 @@ export function TripScreen() {
   const [cached] = useState(() => (id ? readCachedTrip(id) : null));
   const [trip, setTrip] = useState<any | null>(cached?.trip ?? null);
   const [syncedAt, setSyncedAt] = useState<number | null>(cached?.at ?? null);
-  const [stale, setStale] = useState(false);
+  const [stale, setStale] = useState<false | 'signal' | 'service'>(false);
   const [err, setErr] = useState<string | null>(null);
   const [carPos, setCarPos] = useState<{ lat: number; lng: number; heading?: number | null } | null>(null);
   const tripRef = useRef(trip); tripRef.current = trip;
@@ -44,7 +45,9 @@ export function TripScreen() {
       if (r.trip.driver?.lat) setCarPos((p) => p ?? { lat: r.trip.driver.lat, lng: r.trip.driver.lng, heading: r.trip.driver.heading });
     } catch (e) {
       // No signal: keep showing what we have and say how old it is. Only a real answer from DingoGo replaces the screen.
-      if (e instanceof ApiError && e.code === 'offline' && tripRef.current) setStale(true);
+      if (e instanceof ApiError && e.code === 'offline' && tripRef.current) setStale('signal');
+      // DingoGo's side is down (database): same idea — keep the trip on screen and say why it isn't updating.
+      else if (isTemporary(e) && tripRef.current) setStale('service');
       else setErr(e instanceof ApiError ? e.message : 'Could not load trip');
     }
   }, [id]);
@@ -68,19 +71,22 @@ export function TripScreen() {
   if (err && !trip) return <div className="page"><p className="dg-error" role="alert">{err}</p><button className="dg-btn" onClick={() => { setErr(null); void load(); }}>Try again</button> <Link to="/" className="dg-btn dg-btn--ghost">Back to home</Link></div>;
   if (!trip) return <div className="page"><Spinner label="Loading trip" /></div>;
 
-  const net = stale ? <StaleNote at={syncedAt} /> : null;
+  const net = stale ? <StaleNote at={syncedAt} kind={stale} /> : null;
   if (live) return <LiveTrip trip={trip} carPos={carPos} reload={load} onClose={() => nav('/')} net={net} />;
   return <TripDetail trip={trip} reload={load} net={net} />;
 }
 
 /** "Last updated 3 min ago" while the phone has no signal. */
-function StaleNote({ at }: { at: number | null }) {
+function StaleNote({ at, kind = 'signal' }: { at: number | null; kind?: 'signal' | 'service' }) {
   const [, tick] = useState(0);
   useInterval(() => tick((n) => n + 1), 30000);
+  const asOf = at ? `Showing your trip as it was ${ago(new Date(at)) === 'just now' ? 'a moment ago' : ago(new Date(at))}.` : 'Showing your trip as we last saw it.';
   return (
     <p className="netbar" role="status">
       <Icon name="alert" size={18} />
-      <span><strong>No signal.</strong> {at ? `Showing your trip as it was ${ago(new Date(at)) === 'just now' ? 'a moment ago' : ago(new Date(at))}.` : 'Showing your trip as we last saw it.'} We'll update it when you're back in range.</span>
+      {kind === 'service'
+        ? <span><strong>DingoGo is having a problem on our side.</strong> {asOf} Your driver can still see your trip. In an emergency call 000.</span>
+        : <span><strong>No signal.</strong> {asOf} We'll update it when you're back in range.</span>}
     </p>
   );
 }

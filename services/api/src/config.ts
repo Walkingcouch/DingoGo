@@ -125,4 +125,28 @@ export const config = {
     redemptionValidDays: 30,
   },
   timezone: 'Australia/Darwin',
+  /** Operations (Round 10): migrations at cold start, health checks, database roles. */
+  ops: {
+    /** Apply pending migrations when the API starts (advisory lock; safe with many instances). A fresh empty database also gets the base data. */
+    autoMigrate: env.AUTO_MIGRATE === 'true',
+    /** Owner connection for migrations when DATABASE_URL is a least-privilege role. Default: DATABASE_URL. */
+    migrationDatabaseUrl: env.MIGRATION_DATABASE_URL ?? '',
+    /** At cold start, wait this long for another instance that is already migrating, then serve on. */
+    autoMigrateWaitMs: Number(env.AUTO_MIGRATE_WAIT_MS ?? 10000),
+    /** Per-statement limit for migrations run at cold start (serverless functions stop at 30 s). */
+    autoMigrateStatementTimeoutMs: Number(env.AUTO_MIGRATE_STATEMENT_TIMEOUT_MS ?? 20000),
+    /** A migration that can't get its table locks this fast gives up (instead of queueing every request behind it). */
+    migrateLockTimeoutMs: Number(env.MIGRATE_LOCK_TIMEOUT_MS ?? 5000),
+    /** Lets a monitor read the full /health/deep report without an admin sign-in (send as X-Health-Token). */
+    healthToken: env.HEALTH_TOKEN ?? '',
+    /** Optional least-privilege role for the API (rows only, no schema changes), created by db:bootstrap. */
+    apiRole: env.DB_API_ROLE ?? '',
+    apiRolePassword: env.DB_API_ROLE_PASSWORD ?? '',
+    /** Row Level Security on every public table (Supabase REST API locked out). Default on. */
+    rls: env.DB_RLS !== 'off',
+    /** First admin for a fresh database (db:bootstrap, or AUTO_MIGRATE on an empty database). */
+    adminPhone: env.BOOTSTRAP_ADMIN_PHONE ?? '',
+    adminName: env.BOOTSTRAP_ADMIN_NAME ?? '',
+    adminEmail: env.BOOTSTRAP_ADMIN_EMAIL ?? '',
+  },
 };

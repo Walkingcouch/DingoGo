@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import ReactDOM from 'react-dom/client';
 import '@dingogo/shared/brand.css';
 import './partner.css';
-import { ApiError, Icon, Login, Ranges, get, getToken, initAuth, money, post, setToken, dateTime, time, useLoad } from '@dingogo/shared';
+import { ApiError, Icon, Login, Ranges, ServiceNotice, get, getToken, initAuth, money, post, setToken, dateTime, time, useLoad } from '@dingogo/shared';
 import mascot from '@dingogo/shared/assets/mascot.png';
 
 initAuth('partner');
@@ -121,6 +121,7 @@ function Home({ onSignOut }: { onSignOut: () => void }) {
         </nav>
       </header>
       <main className="p-main">
+        <ServiceNotice extra="Codes can't be checked until it's back: ask the customer to keep their code." />
         {me.error && <p className="dg-error">{me.error}</p>}
         {tab === 'redeem' && <Redeem onDone={refresh} />}
         {tab === 'history' && me.data && (<>

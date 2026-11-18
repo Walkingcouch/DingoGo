@@ -8,5 +8,6 @@ COPY scripts ./scripts
 COPY migrations ./migrations
 ENV NODE_ENV=production PORT=4000
 EXPOSE 4000
-# Run migrations, then start (tsx runs TypeScript directly; swap for `npm run build && node dist` if preferred)
-CMD ["sh", "-c", "npx tsx scripts/migrate.ts && npx tsx src/index.ts"]
+# Bootstrap (migrations + RLS/grants + production base data; idempotent), then start.
+# tsx runs TypeScript directly; swap for `npm run build && node dist` if preferred. Demo data: DEMO_DATA=true.
+CMD ["sh", "-c", "npx tsx scripts/bootstrap.ts && npx tsx src/index.ts"]

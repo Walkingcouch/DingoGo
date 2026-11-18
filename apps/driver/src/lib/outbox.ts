@@ -1,7 +1,7 @@
 /** Poor-signal resilience for the driver app. Trip taps (arrived, start, complete) and GPS points that can't be sent are kept
  *  on the phone and sent, in order, when signal returns. Each tap carries an Idempotency-Key so a tap that did get through
  *  (but whose reply was lost) is not applied twice, and `client_at` so the trip records when the driver actually tapped. */
-import { ApiError, post } from '@dingogo/shared';
+import { ApiError, isTemporary, post } from '@dingogo/shared';
 
 export type Step = 'arrive' | 'start' | 'complete';
 export interface QueuedTap { key: string; trip_id: string; step: Step; body: Record<string, unknown>; client_at: string }
@@ -26,8 +26,9 @@ export const tapsFor = (tripId: string) => taps.filter((t) => t.trip_id === trip
 
 export const newKey = () => (typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`);
 
-/** No signal (or the connection dropped mid-request): worth keeping and sending again. Anything else is a real answer. */
-export const isNoSignal = (e: unknown) => !(e instanceof ApiError) || e.code === 'offline' || e.status === 0;
+/** No signal (or the connection dropped mid-request), or DingoGo's database briefly down (503: nothing was saved): worth keeping and
+ *  sending again with the same Idempotency-Key. Anything else is a real answer. */
+export const isNoSignal = (e: unknown) => !(e instanceof ApiError) || e.code === 'offline' || e.status === 0 || isTemporary(e);
 
 const send = (t: QueuedTap) => post(`/driver/trips/${t.trip_id}/${t.step}`, { ...t.body, client_at: t.client_at }, { headers: { 'Idempotency-Key': t.key }, timeoutMs: 15000 });
 

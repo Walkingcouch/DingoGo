@@ -123,3 +123,10 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .dg-chat-form { display: flex; gap: .5rem; align-items: flex-end; }
 .dg-chat-form .dg-textarea { min-height: 48px; resize: vertical; }
 .dg-badge { display: inline-grid; place-items: center; min-width: 1.4em; height: 1.4em; padding: 0 .35em; border-radius: var(--r-pill); background: var(--earth); color: #fff; font-size: var(--fs-xs); font-weight: 800; }
+
+/* Round 10: "problem on our side" notice (API can't reach its database). Same weight as the no-signal bar. */
+.service-notice { position: sticky; top: 0; z-index: 1500; display: flex; gap: 8px; align-items: flex-start; justify-content: center; margin: 0;
+  padding: .55rem 1rem; padding-top: max(.55rem, env(safe-area-inset-top)); background: var(--night); color: var(--gum);
+  font-size: var(--fs-sm); line-height: 1.4; text-align: left; }
+.service-notice svg { color: var(--ochre); flex: none; margin-top: 2px; }
+.service-notice strong { font-weight: 700; }

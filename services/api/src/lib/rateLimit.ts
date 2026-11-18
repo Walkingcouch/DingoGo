@@ -2,13 +2,14 @@
  * Rate limits kept in Postgres (table rate_events), so they hold across serverless instances.
  * Fails open if the table is missing (code deployed before migration 011) — never blocks sign-in because of our own setup.
  */
+import { log } from './log.js';
 import { one, q } from '../db.js';
 import { ApiError } from './errors.js';
 
 let warned = false;
 const missingTable = (e: any) => {
   if (e?.code !== '42P01') throw e;
-  if (!warned) { warned = true; console.error('rate_events table missing — run migration 011; rate limits are off'); }
+  if (!warned) { warned = true; log.warn('rate_events table missing — run migration 011; rate limits are off'); }
 };
 
 /** Has `key` already used `limit` events of this bucket in the last `windowS` seconds? */

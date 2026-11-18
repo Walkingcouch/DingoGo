@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { NavLink, Navigate, Route, Routes } from 'react-router-dom';
-import { Icon, Login, disablePush, get, getToken, initAuth, refreshPush, setToken } from '@dingogo/shared';
+import { Icon, Login, disablePush, get, getToken, initAuth, refreshPush, setToken, useServiceUp } from '@dingogo/shared';
 import { DriverProvider, useDriver } from './state';
 import { Drive } from './screens/Drive';
 import { Offer } from './screens/Offer';
@@ -39,6 +39,7 @@ function Home() {
 
 function Shell({ onSignOut }: { onSignOut: () => void }) {
   const { me, offer, toast, connected, waiting, trip, online } = useDriver();
+  const serviceUp = useServiceUp();
   // Charging only makes sense for a car with a plug (electric or plug-in hybrid).
   const plug = hasPlug(me?.driver?.vehicle);
   const tabs = [
@@ -50,7 +51,7 @@ function Shell({ onSignOut }: { onSignOut: () => void }) {
   ];
   return (
     <div className="shell">
-      <SignalBar connected={connected} taps={waiting.taps} gps={waiting.gps} active={online || !!trip} />
+      <SignalBar connected={connected} serviceUp={serviceUp} taps={waiting.taps} gps={waiting.gps} active={online || !!trip} />
       <div style={{ minHeight: 0, overflow: 'hidden', position: 'relative' }}>
         <Routes>
           <Route path="/" element={<Home />} />
@@ -72,8 +73,17 @@ function Shell({ onSignOut }: { onSignOut: () => void }) {
 }
 
 /** Poor signal: says plainly that the app is reconnecting and that taps and GPS are kept on the phone until it does. */
-function SignalBar({ connected, taps, gps, active }: { connected: boolean; taps: number; gps: number; active: boolean }) {
+function SignalBar({ connected, serviceUp, taps, gps, active }: { connected: boolean; serviceUp: boolean; taps: number; gps: number; active: boolean }) {
   const sending = connected && (taps > 0 || gps > 0);
+  if (connected && !serviceUp) {
+    // Signal is fine but DingoGo's database isn't answering: taps wait on the phone (sent with the same key, so never twice).
+    return (
+      <div role="status" className="signal-bar">
+        <Icon name="alert" size={20} />
+        <span><strong>DingoGo is having a problem on our side.</strong>{taps > 0 ? ` ${taps} trip update${taps > 1 ? 's' : ''} saved on your phone, sent when it’s fixed.` : active ? ' Keep driving: trip updates are saved on your phone.' : ' We’re trying again.'}</span>
+      </div>
+    );
+  }
   if (connected && !sending) return <div role="status" />; // stays in the grid (row 1, no height) so the next message is read out
   return (
     <div role="status" className={`signal-bar${sending ? ' sending' : ''}`}>

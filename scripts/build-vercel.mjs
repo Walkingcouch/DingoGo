@@ -41,6 +41,8 @@ sh(`npx esbuild src/vercel.ts --bundle --platform=node --format=esm --target=nod
   `--banner:js="import { createRequire as __cr } from 'module'; const require = __cr(import.meta.url);"`, path.join(root, 'services/api'));
 fs.writeFileSync(path.join(fn, '.vc-config.json'), JSON.stringify({ runtime: 'nodejs22.x', handler: 'index.mjs', launcherType: 'Nodejs', maxDuration: 30, shouldAddHelpers: false }, null, 2));
 fs.writeFileSync(path.join(fn, 'package.json'), JSON.stringify({ type: 'module' }));
+// Migrations ship with the function so AUTO_MIGRATE=true can roll the schema forward at cold start (src/lib/migrator.ts looks next to index.mjs).
+fs.cpSync(path.join(root, 'services/api/migrations'), path.join(fn, 'migrations'), { recursive: true, filter: (f) => !/\.(md|txt)$/.test(f) });
 
 // Security headers for the website and apps (the API sets its own). Referrer-Policy keeps share-trip tokens in /track/…
 // URLs from leaking to map-tile servers; Permissions-Policy allows only what the apps use (location, camera for POD photos).

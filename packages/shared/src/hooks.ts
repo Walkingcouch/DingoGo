@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type RefObject } from 'react';
-import { ApiError, isOnline, onNetworkChange } from './api';
+import { ApiError, get, isOnline, isServiceUp, onNetworkChange, onServiceChange } from './api';
 
 /** Load data with loading/error state and a reload function. */
 export function useLoad<T>(fn: () => Promise<T>, deps: unknown[] = []) {
@@ -54,6 +54,19 @@ export function useOnline() {
   const [on, setOn] = useState(isOnline());
   useEffect(() => onNetworkChange(setOn), []);
   return on;
+}
+
+/** False while the API reports its database unreachable. While down, checks /health every 20 s so the notice clears by itself
+ *  even on a screen that isn't polling. */
+export function useServiceUp() {
+  const [up, setUp] = useState(isServiceUp());
+  useEffect(() => onServiceChange(setUp), []);
+  useEffect(() => {
+    if (up) return;
+    const t = setInterval(() => { void get('/health').catch(() => {}); }, 20000);
+    return () => clearInterval(t);
+  }, [up]);
+  return up;
 }
 
 const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';

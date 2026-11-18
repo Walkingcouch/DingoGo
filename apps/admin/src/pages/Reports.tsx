@@ -74,6 +74,32 @@ export default function Reports() {
         </div>
         <div className="actions" style={{ marginTop: 10 }}><button className="dg-btn dg-btn--sm dg-btn--ghost" onClick={() => run(() => downloadCsv(`/admin/export/gst.csv?from=${g.from}&to=${g.to}`), 'GST summary downloaded')}>Export GST CSV</button></div>
       </>)}
+
+      <SystemHealth />
     </Page>
   );
+}
+
+/** Round 10: GET /health/deep for staff — schema version, pending migrations, last auto-migrate, base data, RLS, integrations. */
+function SystemHealth() {
+  const h = useLoad(() => get('/health/deep'), []);
+  const d = h.data;
+  const yes = (b: boolean) => (b ? 'yes' : 'no');
+  return (<>
+    <Section title="System health" right={<button className="dg-btn dg-btn--sm dg-btn--ghost" onClick={() => void h.reload()}>Check again</button>} />
+    <ErrorMsg error={h.error} />
+    {d && (<div role="status">
+      <p style={{ marginTop: 0 }}><strong>{d.status === 'ok' ? 'All good.' : d.status === 'down' ? 'Database unreachable.' : 'Needs attention:'}</strong>
+        {d.problems?.length ? ' ' + d.problems.map((p: string) => p.replace(/_/g, ' ')).join(', ') + '.' : ''} Release {String(d.release).slice(0, 12)}, {d.environment}.</p>
+      <div className="kpis">
+        <div className="kpi"><b>{d.db?.ok ? `${d.db.ms} ms` : 'down'}</b><span>Database</span></div>
+        <div className="kpi"><b>{d.schema?.version?.replace(/\.sql$/, '') ?? '—'}</b><span>Schema version{d.schema?.pending?.length ? ` (${d.schema.pending.length} pending)` : ''}</span></div>
+        <div className="kpi"><b>{d.base_data ? `${d.base_data.active_zones} / ${d.base_data.fare_rules} / ${d.base_data.admins}` : '—'}</b><span>Zones / fares / admins</span></div>
+        <div className="kpi"><b>{d.security?.tables_without_rls ? d.security.tables_without_rls.length : '—'}</b><span>Tables without RLS</span></div>
+      </div>
+      {d.schema?.pending?.length > 0 && <p className="dg-muted">Pending migrations: {d.schema.pending.join(', ')}. {d.auto_migrate?.enabled ? 'AUTO_MIGRATE is on: they apply at the next cold start.' : 'Apply with npm run db:migrate (or set AUTO_MIGRATE=true).'}</p>}
+      {d.auto_migrate?.last?.error && <p className="dg-error">Last auto-migrate failed at {d.auto_migrate.last.error.migration}: {d.auto_migrate.last.error.message}</p>}
+      <p className="dg-muted">Auto-migrate: {d.auto_migrate?.enabled ? 'on' : 'off'}{d.auto_migrate?.last ? `, last run ${dateTime(d.auto_migrate.last.at)} (${d.auto_migrate.last.applied.length} applied)` : ''}. Error reporting: {d.integrations?.error_reporting === 'configured' ? 'Sentry' : 'off (logs only)'}. Supabase client roles locked out: {yes(!d.security?.client_role_grants?.length)}.</p>
+    </div>)}
+  </>);
 }

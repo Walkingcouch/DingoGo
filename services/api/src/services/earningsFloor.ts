@@ -6,6 +6,7 @@
  * Counted earnings: fares less the service fee, pickup pay, fuel surcharge and cancellation fees. Tips never count.
  * Top-up = floor × engaged hours − counted earnings (never negative), paid into the driver ledger once per driver per week.
  */
+import { logError } from '../lib/log.js';
 import type pg from 'pg';
 import { config } from '../config.js';
 import { one, pool, q, tx, type Q } from '../db.js';
@@ -153,7 +154,7 @@ export async function autoEarningsFloor(now = Date.now()) {
   const s = await loadDriverPay();
   if (!s.earnings_floor.enabled || !s.earnings_floor.auto_weekly) return;
   await runEarningsFloor(weekStartOf(new Date(now - 7 * 864e5)), null).catch((e) => {
-    if (!(e instanceof ApiError)) console.error('earnings floor', e);
+    if (!(e instanceof ApiError)) logError('earnings floor', e);
   });
 }
 

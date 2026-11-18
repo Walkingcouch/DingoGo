@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { NavLink, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
-import { Icon, Login, get, getToken, initAuth, setToken, connectRealtime, useOnline, disablePush, refreshPush } from '@dingogo/shared';
+import { Icon, Login, get, getToken, initAuth, setToken, connectRealtime, useOnline, disablePush, refreshPush, ServiceNotice } from '@dingogo/shared';
 import { MeCtx, type Me, ACTIVE } from './ctx';
 import { RideScreen } from './screens/Ride';
 import { TripScreen, clearCachedTrip, readCachedTrip } from './screens/Trip';
@@ -43,7 +43,7 @@ export function App() {
       const live = trips.find((t) => ACTIVE.includes(t.status));
       if (live && loc.pathname === '/') nav(`/trip/${live.id}`);
     }).catch(() => {
-      // No signal: open the live trip saved on this phone (PIN, car and rego still show).
+      // No signal (or DingoGo's side is down): open the live trip saved on this phone (PIN, car and rego still show).
       const c = readCachedTrip();
       if (c && loc.pathname === '/') nav(`/trip/${c.trip.id}`);
     });
@@ -96,8 +96,12 @@ export function App() {
 function OfflineBar() {
   const online = useOnline();
   return (
-    <div role="status" aria-live="polite">
-      {!online && <p className="offline"><Icon name="alert" size={18} /><span>No signal. We'll keep trying. Your trip details stay on screen.</span></p>}
-    </div>
+    <>
+      <div role="status" aria-live="polite">
+        {!online && <p className="offline"><Icon name="alert" size={18} /><span>No signal. We'll keep trying. Your trip details stay on screen.</span></p>}
+      </div>
+      {/* Signal is fine but DingoGo's database isn't answering. */}
+      {online && <ServiceNotice extra="In an emergency call 000." />}
+    </>
   );
 }

@@ -4,6 +4,7 @@
  * Marketing ("offers") needs the separate opt-in (users.marketing_opt_in) and every change is recorded with the wording shown.
  * Before migration 015 everything falls back to the defaults below.
  */
+import { logError } from '../lib/log.js';
 import { one, q } from '../db.js';
 import { ApiError } from '../lib/errors.js';
 import { MARKETING_CONSENT_WORDING, type Category } from '../lib/messages.js';
@@ -68,7 +69,7 @@ export async function recordConsent(c: { userId?: string | null; phone?: string 
   try {
     await q(`INSERT INTO marketing_consents (user_id, phone, granted, channel, source, wording, ip) VALUES ($1,$2,$3,$4,$5,$6,$7)`,
       [c.userId ?? null, c.phone ?? null, c.granted, c.channel ?? 'all', c.source, c.wording ?? (c.granted ? MARKETING_CONSENT_WORDING : null), c.ip ?? null]);
-  } catch (e) { if (!missing(e)) console.error('marketing_consents', e); }
+  } catch (e) { if (!missing(e)) logError('marketing_consents', e); }
 }
 
 export async function lastConsent(userId: string) {

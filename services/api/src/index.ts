@@ -1,4 +1,4 @@
-import Fastify from 'fastify';
+import Fastify, { LogController } from 'fastify';
 import cors from '@fastify/cors';
 import websocket from '@fastify/websocket';
 import { config } from './config.js';
@@ -21,13 +21,37 @@ import displayRoutes from './routes/display.js';
 import uploadRoutes from './routes/uploads.js';
 import paymentRoutes from './routes/payments.js';
 import commsRoutes from './routes/comms.js';
+import healthRoutes from './routes/health.js';
+import { log, logError, reportError, requestId, safePath } from './lib/log.js';
+import { autoMigrateOnce } from './lib/bootstrap.js';
+
+/** Postgres/driver errors that mean "can't reach the database" (not a bug in the request). */
+const DB_DOWN = new Set(['ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'ENOTFOUND', 'EAI_AGAIN', 'EHOSTUNREACH', '57P01', '57P02', '57P03', '53300', '08000', '08001', '08003', '08004', '08006']);
+export const isDbDown = (e: any) => !!e && (DB_DOWN.has(e.code)
+  || /Connection terminated|connection timeout|timeout exceeded when trying to connect|Client has encountered a connection error|No database reachable|too many clients|remaining connection slots/i.test(String(e.message ?? '')));
+/** Missing table or column: the code is ahead of the database (a migration not applied yet). */
+export const isSchemaLag = (e: any) => e?.code === '42P01' || e?.code === '42703';
 
 export async function buildServer() {
-  const app = Fastify({ logger: process.env.LOG_LEVEL ? { level: process.env.LOG_LEVEL } : false, bodyLimit: 1024 * 1024, trustProxy: config.trustProxy as any });
+  const app = Fastify({
+    // Structured JSON logs (src/lib/log.ts) with a request id per request; one line per request is written in onResponse below.
+    loggerInstance: log, logController: new LogController({ disableRequestLogging: true, requestIdLogLabel: 'request_id' }),
+    genReqId: (req) => requestId(req.headers),
+    bodyLimit: 1024 * 1024, trustProxy: config.trustProxy as any,
+  });
+  app.addHook('onRequest', async (req, reply) => { reply.header('X-Request-Id', req.id); });
+  app.addHook('onResponse', async (req, reply) => {
+    const ms = Math.round(reply.elapsedTime);
+    const vercel = req.headers['x-vercel-id'];
+    const line = { method: req.method, route: safePath(req.routeOptions?.url, req.url), status: reply.statusCode, ms,
+      ...(req.user ? { user_id: req.user.id, role: req.user.role } : {}), ...(typeof vercel === 'string' ? { vercel_id: vercel.slice(0, 128) } : {}) };
+    if (reply.statusCode >= 500) req.log.warn(line, 'request failed');
+    else req.log.info(line, 'request');
+  });
   await app.register(cors, { origin: config.corsOrigins.includes('*') ? true : config.corsOrigins, methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE'] });
   await app.register(websocket);
 
-  app.setErrorHandler((err: any, _req, reply) => {
+  app.setErrorHandler((err: any, req, reply) => {
     if (err instanceof ApiError) return reply.code(err.status).send({ error: err.code, message: err.message, details: err.details });
     if (err.validation) return reply.code(400).send({ error: 'validation_error', message: err.message });
     // Postgres constraint errors (e.g. from admin CRUD) → 4xx instead of a 500.
@@ -35,8 +59,20 @@ export async function buildServer() {
     if (err.code === '23514' || err.code === '22P02' || err.code === '23503') return reply.code(400).send({ error: 'invalid_value', message: err.detail ?? err.message });
     if (err.code === '23502') return reply.code(400).send({ error: 'missing_field', message: `${err.column ?? 'A required field'} is required` });
     if (err.statusCode && err.statusCode < 500) return reply.code(err.statusCode).send({ error: 'request_error', message: err.message });
-    console.error(err);
-    return reply.code(500).send({ error: 'server_error', message: 'Something went wrong' });
+    const ctx = { where: 'request', request_id: req.id, route: safePath(req.routeOptions?.url, req.url), method: req.method, user_id: req.user?.id };
+    if (isDbDown(err)) {
+      req.log.error({ err, ...ctx }, 'database unreachable');
+      reportError(err, { ...ctx, where: 'db_unavailable' });
+      return reply.code(503).header('Retry-After', '30').send({ error: 'db_unavailable', message: 'DingoGo can’t reach its database right now. Please try again in a few minutes.', request_id: req.id });
+    }
+    if (isSchemaLag(err)) {
+      req.log.error({ err, ...ctx }, 'schema behind the code (migration pending)');
+      reportError(err, { ...ctx, where: 'migration_pending' });
+      return reply.code(503).header('Retry-After', '60').send({ error: 'migration_pending', message: 'This part of DingoGo is being updated. Please try again soon.', request_id: req.id });
+    }
+    req.log.error({ err, ...ctx }, 'unhandled error');
+    reportError(err, ctx);
+    return reply.code(500).send({ error: 'server_error', message: 'Something went wrong', request_id: req.id });
   });
 
   // Security headers on every API response. JSON with personal data must not be cached by browsers or proxies.
@@ -64,7 +100,7 @@ export async function buildServer() {
       if (!/^\/(driver|trips|admin\/live|public\/track)/.test(req.url)) return;
       if (Date.now() - last < 3000) return;
       last = Date.now();
-      await dispatchTick().catch((e) => console.error('tick', e));
+      await dispatchTick().catch((e) => logError('dispatch tick', e));
     });
     // The function may be frozen once the response is sent: finish notifications/SMS started by this request first.
     app.addHook('onSend', async (_req, _reply, payload) => { await flushBackground(3000); return payload; });
@@ -126,6 +162,7 @@ export async function buildServer() {
     socket.on('close', () => clearInterval(recheck));
   });
 
+  await app.register(healthRoutes);
   await app.register(publicRoutes);
   await app.register(authRoutes);
   await app.register(riderRoutes);
@@ -142,15 +179,19 @@ export async function buildServer() {
 
 let timer: NodeJS.Timeout | undefined;
 export function startDispatcher() {
-  timer = setInterval(() => void dispatchTick().catch((e) => console.error('tick', e)), config.dispatch.tickMs);
+  timer = setInterval(() => void dispatchTick().catch((e) => logError('dispatch tick', e)), config.dispatch.tickMs);
   return () => clearInterval(timer);
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
+  process.on('unhandledRejection', (e) => logError('unhandled rejection', e));
+  process.on('uncaughtException', (e) => { logError('uncaught exception', e); setTimeout(() => process.exit(1), 2000).unref(); });
+  await autoMigrateOnce();   // AUTO_MIGRATE=true only; never throws
   const app = await buildServer();
   startDispatcher();
   await app.listen({ port: config.port, host: config.host });
-  console.log(`🐕 DingoGo API listening on http://${config.host}:${config.port}`);
+  log.info({ host: config.host, port: config.port }, 'DingoGo API listening');
+  console.log(`DingoGo API listening on http://${config.host}:${config.port}`);
   const shutdown = async () => { clearInterval(timer); await app.close(); await pool.end(); process.exit(0); };
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);

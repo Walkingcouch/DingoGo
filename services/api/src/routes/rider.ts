@@ -1,3 +1,4 @@
+import { logError } from '../lib/log.js';
 import crypto from 'node:crypto';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { config } from '../config.js';
@@ -339,7 +340,7 @@ export default async function riderRoutes(app: FastifyInstance) {
       }
       return d;
     });
-    if (gone?.provider === 'stripe') await pay.detachCard(gone.provider_ref).catch((e) => console.error('detach card', e));
+    if (gone?.provider === 'stripe') await pay.detachCard(gone.provider_ref).catch((e) => logError('detach card', e));
     return { ok: true };
   });
   app.post('/wallet/topup', async (req) => {

@@ -5,6 +5,7 @@
  *  - Expo push only for Expo tokens (legacy) — EXPO_PUSH_ENABLED.
  * Tokens the provider says are dead are removed. Nothing here throws: push is best-effort on top of the in-app inbox.
  */
+import { log } from '../lib/log.js';
 import crypto from 'node:crypto';
 import { config } from '../config.js';
 import { q } from '../db.js';
@@ -25,7 +26,7 @@ export function fcmAccount(): ServiceAccount | null {
   try {
     const j = JSON.parse(raw.trim().startsWith('{') ? raw : Buffer.from(raw, 'base64').toString('utf8'));
     if (j.project_id && j.client_email && j.private_key) sa = { ...j, token_uri: j.token_uri || 'https://oauth2.googleapis.com/token' };
-  } catch { console.error('FCM_SERVICE_ACCOUNT is not valid JSON (or base64 JSON); FCM push is off'); }
+  } catch { log.warn('FCM_SERVICE_ACCOUNT is not valid JSON (or base64 JSON); FCM push is off'); }
   saCache = { raw, sa };
   return sa;
 }
@@ -152,7 +153,7 @@ export async function sendPush(userId: string, m: PushMessage): Promise<number> 
     const p = providerFor(t.token, t.platform);
     if (!p) return;
     const r = await (p === 'fcm' ? sendFcm(t.token, m) : p === 'web' ? sendWebPush(t.token, m) : sendExpo(t.token, m))
-      .catch((e) => { console.error('push', p, e?.message ?? e); return 'failed' as const; });
+      .catch((e) => { log.warn({ provider: p, error: e?.message ?? String(e) }, 'push send failed'); return 'failed' as const; });
     if (r === 'sent') sent++;
     if (r === 'dead') await q('DELETE FROM push_tokens WHERE user_id = $1 AND token = $2', [userId, t.token]).catch(() => undefined);
   }));

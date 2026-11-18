@@ -1,14 +1,24 @@
 /**
- * Seed data for local development & demos. Partner businesses, advertisers and people are FICTIONAL placeholders.
- * Fares are set just under the NT-regulated Alice Springs taxi tariff ($5.30 flagfall + $2.45/km day, May 2026).
+ * Demo data for local development & demos, on top of the production base data (src/lib/baseSeed.ts).
+ * Partner businesses, advertisers and people are FICTIONAL placeholders. Refuses a non-local database unless DEMO_DATA=true.
  */
 import { pool, q, one } from '../src/db.js';
 import { quoteFare } from '../src/lib/fares.js';
 import { displayKey, pin4, referralCode, shareToken, tripRef } from '../src/lib/ids.js';
+import { seedBase } from '../src/lib/baseSeed.js';
+import { isLocalDatabase } from '../src/lib/migrator.js';
+import { config } from '../src/config.js';
 
-const exists = await one(`SELECT 1 FROM users LIMIT 1`).catch(() => null);
+// Demo data has fictional people and accounts that accept the demo code: never on a real database by accident.
+if (!isLocalDatabase(config.databaseUrl) && process.env.DEMO_DATA !== 'true') {
+  console.error('Refusing to load demo data into a non-local database. For production use `npm run db:bootstrap`; set DEMO_DATA=true only for a demo database.');
+  await pool.end();
+  process.exit(1);
+}
+
+const exists = await one(`SELECT 1 FROM users WHERE phone = '+61400000001'`).catch(() => null);  // the demo admin
 if (exists && !process.argv.includes('--force')) {
-  console.log('Database already seeded (use --force after migrate --reset).');
+  console.log('Demo data already loaded (use --force after migrate --reset).');
   await pool.end();
   process.exit(0);
 }
@@ -16,43 +26,14 @@ if (exists && !process.argv.includes('--force')) {
 const today = new Date();
 const plusDays = (n: number) => new Date(today.getTime() + n * 864e5).toISOString().slice(0, 10);
 
-// ── Zones
-await q(`INSERT INTO zones (id, name, centre_lat, centre_lng, radius_km, active, launch_note) VALUES
-  ('alice-springs', 'Alice Springs (Mparntwe)', -23.6980, 133.8807, 25, true, 'Phase 1 — launch'),
-  ('tennant-creek', 'Tennant Creek', -19.6497, 134.1912, 15, false, 'Phase 2'),
-  ('yulara', 'Yulara / Ayers Rock Resort', -25.2406, 130.9889, 20, false, 'Phase 2 — needs charging plan (450 km from Alice)'),
-  ('darwin', 'Darwin', -12.4634, 130.8456, 35, false, 'Phase 3')`);
-
-// ── Fares (cents)
-await q(`INSERT INTO fare_rules (service, label, base_cents, per_km_cents, per_min_cents, booking_fee_cents, min_fare_cents, cancel_fee_cents, free_wait_min, wait_per_min_cents, night_pct, holiday_pct, levy_cents, description) VALUES
-  ('ride',      'DingoGo Ride',        300, 160, 25, 100, 1000, 300, 3, 50, 20, 15, 100, 'Up to 4 passengers. Electric and hybrid cars get your trip first'),
-  ('pet',       'Pet-friendly Ride',   500, 160, 25, 100, 1400, 300, 3, 50, 20, 15, 100, 'Seat covers & harness point. Pets must be leashed or crated'),
-  ('courier_s', 'Courier — Small',     600, 120, 15,   0, 1200, 300, 5,  0,  0,  0,   0, 'Satchel or small box, up to 5 kg'),
-  ('courier_m', 'Courier — Medium',    900, 140, 20,   0, 1600, 300, 5,  0,  0,  0,   0, 'Box up to 15 kg (fits on back seat)'),
-  ('courier_l', 'Courier — Large',    1400, 160, 25,   0, 2400, 300, 5,  0,  0,  0,   0, 'Up to 25 kg, fits in a standard car boot'),
-  ('tour',      'Private Tour',          0,   0,  0,   0,    0, 2500, 10, 0,  0,  0, 100, 'Fixed-price private tours, up to 4 guests'),
-  ('hourly',    'Hourly Hire',           0,   0, 125, 0, 7500, 2500, 10, 0,  0,  0, 100, 'Events & corporate — $75/hr, 1 hour minimum')`);
-
-await q(`INSERT INTO public_holidays (day, name) VALUES
-  ('2026-12-25','Christmas Day'), ('2026-12-26','Boxing Day'), ('2026-12-28','Boxing Day (additional)'),
-  ('2027-01-01','New Year''s Day'), ('2027-01-26','Australia Day'), ('2027-03-26','Good Friday'), ('2027-03-27','Easter Saturday'),
-  ('2027-03-29','Easter Monday'), ('2027-04-26','Anzac Day (observed)'), ('2027-05-03','May Day'), ('2027-06-14','King''s Birthday'),
-  ('2027-07-02','Alice Springs Show Day'), ('2027-08-02','Picnic Day')`);
-
-await q(`INSERT INTO plans (code, name, price_cents, ride_discount_pct, free_deliveries, waive_booking_fee, perks) VALUES
-  ('pass', 'DingoGo Pass', 999, 10, 2, true, ARRAY['10% off every ride','No booking fees','2 free small deliveries / month','Double points at partner cafés']),
-  ('pass_biz', 'DingoGo Pass Business', 2999, 15, 8, true, ARRAY['15% off every ride','No booking fees','8 free deliveries / month','Priority dispatch'])`);
-
+// ── Base data shared with production (zones, fares, jurisdictions, settings, plans, holidays, tours)
+await seedBase(pool);
+// Demo only: roof screens on so the roof player shows something (production starts with them off).
+await q(`UPDATE settings SET value = $1 WHERE key = 'roof_display'`,
+  [JSON.stringify({ mode: 'ads', note: 'Confirm in writing with NT Passenger Transport Division that roof screens are permitted before switching on in service.' })]);
 await q(`INSERT INTO promo_codes (code, kind, value, max_discount_cents, max_uses, per_user_limit, first_trip_only, description) VALUES
   ('WELCOME', 'percent', 50, 1000, NULL, 1, true, '50% off your first trip (up to $10)'),
   ('DELIVER5', 'fixed', 500, NULL, 500, 1, false, '$5 off a delivery')`);
-
-await q(`INSERT INTO settings (key, value) VALUES
-  ('business', $1), ('support', $2), ('nt_levy_cents', '100'), ('home_tariff_cents_per_kwh', '30'),
-  ('roof_display', $3)`,
-  [JSON.stringify({ name: 'DingoGo Rideshare & Courier', legal_name: 'DingoGo Pty Ltd (TBC)', abn: 'TBC', address: 'Alice Springs NT 0870', email: 'contact@aperrke.com.au', owners: 'Johnathan Ah Chee & Micah Bartlett', aboriginal_owned: true }),
-   JSON.stringify({ phone: '0432 101 175', email: 'contact@aperrke.com.au', hours: '6am – midnight, 7 days', emergency: '000' }),
-   JSON.stringify({ mode: 'ads', note: 'Confirm in writing with NT Passenger Transport Division that roof screens are permitted before switching on in service.' })]);
 
 // ── People
 async function user(phone: string, name: string, role: string, extra: Record<string, unknown> = {}) {
@@ -139,21 +120,6 @@ const corp = await one(`INSERT INTO corporate_accounts (name, kind, abn, billing
   ('Desert Conference Centre (demo)', 'business', '11222333444', 'accounts@example.com', 5, 300000) RETURNING *`);
 await q(`INSERT INTO corporate_accounts (name, kind, billing_email, invoice_terms_days) VALUES ('Central Plan Managers (demo NDIS)', 'ndis_plan_manager', 'ndis@example.com', 7)`);
 await q(`INSERT INTO corporate_members (account_id, user_id, role) VALUES ($1, $2, 'member')`, [corp.id, rider.id]);
-
-// ── Tours (fixed price per vehicle, up to 4 guests)
-await q(`INSERT INTO tour_packages (slug, name, summary, description, duration_min, price_cents, stops, cultural_note, requires_permit) VALUES
-  ('town-heritage', 'Mparntwe Town & Telegraph Station', 'Two hours around town: Anzac Hill, the Telegraph Station and the Royal Flying Doctor base.',
-   'An easy introduction to Alice Springs. Your driver takes you to Anzac Hill for the view over the MacDonnell Ranges, the historic Telegraph Station where the town began, and the RFDS Tourist Facility. Plenty of time for photos.',
-   120, 22000, '["Anzac Hill","Alice Springs Telegraph Station","RFDS Tourist Facility"]', 'Alice Springs is Mparntwe, Arrernte Country. Some places around town are sacred sites — your driver will tell you where not to climb or photograph.', false),
-  ('west-macs-gaps', 'West MacDonnell Gaps', 'Half day to Simpsons Gap (Rungutjirba) and Standley Chasm (Angkerle Atwatye).',
-   'Head west along Larapinta Drive into Tjoritja / West MacDonnell National Park. Walk into Simpsons Gap to look for black-footed rock-wallabies, then continue to Standley Chasm (entry fee payable at the kiosk). Includes cold water.',
-   270, 42000, '["Simpsons Gap (Rungutjirba)","Standley Chasm (Angkerle Atwatye)"]', 'Standley Chasm is owned and run by the Iwupataka Land Trust. Please follow signage and the requests of Traditional Owners.', true),
-  ('desert-sunset', 'Desert Park & Sunset', 'Alice Springs Desert Park then sunset at Anzac Hill.',
-   'Drop-off at Alice Springs Desert Park with a pick-up time that suits you (park entry not included), then on to Anzac Hill for sunset over the ranges.',
-   210, 29000, '["Alice Springs Desert Park","Anzac Hill"]', NULL, false),
-  ('east-macs-gaps', 'Emily & Jessie Gaps', 'Short trip east to Anthwerrke and Atherrke.',
-   'Visit the rock art and waterholes at Emily Gap (Anthwerrke) and Jessie Gap (Atherrke) in the East MacDonnell Ranges, both important Arrernte sites connected to the caterpillar Dreaming.',
-   150, 26000, '["Emily Gap (Anthwerrke)","Jessie Gap (Atherrke)"]', 'Anthwerrke is a registered sacred site. Swimming and climbing are not permitted; please photograph the rock art only from the viewing area.', false)`);
 
 // ── Advertising (demo)
 const adv = await one(`INSERT INTO advertisers (name, contact_name, email) VALUES ('Spinifex Café (demo)', 'Owner', 'partner@example.com') RETURNING *`);
