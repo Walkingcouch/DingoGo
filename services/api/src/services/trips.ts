@@ -211,7 +211,10 @@ export async function createTrip(userId: string, input: CreateTripInput) {
     if (mins < 20) throw bad('schedule_too_soon', 'Scheduled trips must be at least 20 minutes ahead');
     if (mins > 60 * 24 * 60) throw bad('schedule_too_far', 'You can book up to 60 days ahead');
   }
+  // Card: available for this account (mock mode: test accounts only in production) and, with Stripe, a saved card to hold.
+  if (input.payment_method === 'card') await pay.requireCardOnFile(userId);
 
+  let heldRef: string | null = null;
   return tx(async (c) => {
     const { quote, route: r, zone, promo } = await buildQuote(userId, input, c, { opsBooking: !!input.booked_by });
     const user = await one('SELECT * FROM users WHERE id = $1 FOR UPDATE', [userId], c);
@@ -255,13 +258,11 @@ export async function createTrip(userId: string, input: CreateTripInput) {
           p.recipient_name, p.recipient_phone, p.instructions ?? null, !!p.leave_unattended, !!p.requires_signature, pin4(), true]);
     }
 
-    // Payment hold
-    if (input.payment_method === 'card' && quote.total_cents > 0) {
-      const auth = await pay.authorise(quote.total_cents, { description: `DingoGo ${trip.ref}` });
-      if (!auth.ok) throw new ApiError(402, 'payment_failed', auth.error ?? 'Card could not be authorised');
-      await c.query(`UPDATE trips SET payment_status = 'authorised', payment_ref = $2 WHERE id = $1`, [trip.id, auth.ref]);
-      await c.query(`INSERT INTO payments (trip_id, user_id, provider, provider_ref, kind, amount_cents, status)
-                     VALUES ($1,$2,$3,$4,'authorise',$5,'succeeded')`, [trip.id, userId, auth.provider, auth.ref, Math.round(quote.total_cents * 1.2)]);
+    // Payment hold. Booked trips get theirs when they are released to drivers (card holds lapse after about 7 days).
+    if (input.payment_method === 'card' && quote.total_cents > 0 && !scheduled) {
+      const auth = await placeHold(c, trip);
+      if (!auth.ok) throw payError(auth);
+      heldRef = auth.ref;
       trip.payment_status = 'authorised';
       trip.payment_ref = auth.ref;
     }
@@ -272,6 +273,9 @@ export async function createTrip(userId: string, input: CreateTripInput) {
 
     await event(c, trip.id, scheduled ? 'scheduled' : 'requested', userId, { quote: quote.total_cents });
     return trip;
+  }).catch(async (e) => {
+    if (heldRef) await pay.cancelHold(heldRef);   // the booking didn't go through: don't leave money held on the card
+    throw e;
   }).then(async (trip) => {
     toOps('trip.created', { id: trip.id, ref: trip.ref, status: trip.status });
     if (trip.status === 'requested') await dispatchTrip(trip.id).catch((e) => console.error('dispatch', e));
@@ -286,6 +290,61 @@ export async function createTrip(userId: string, input: CreateTripInput) {
 
 export async function event(c: Q, tripId: string, type: string, actorId: string | null, data?: unknown) {
   await c.query('INSERT INTO trip_events (trip_id, type, actor_id, data) VALUES ($1,$2,$3,$4)', [tripId, type, actorId, data ?? null]);
+}
+
+// ───────────────────────── Card money on trips ─────────────────────────
+
+export const payError = (r: pay.PayResult) =>
+  new ApiError(402, r.code === 'card_required' || r.code === 'cards_not_available' ? r.code : 'payment_failed', r.error ?? 'Your card could not be charged', { reason: r.code });
+
+/** Hold the fare on the rider's card. Each attempt (booking, release, search again) has its own idempotency key. */
+async function placeHold(c: Q, t: any): Promise<pay.PayResult> {
+  const n = await one<{ n: number }>(`SELECT count(*)::int n FROM payments WHERE trip_id = $1 AND kind = 'authorise'`, [t.id], c);
+  const auth = await pay.holdForTrip({ userId: t.rider_id, tripId: t.id, attempt: n!.n + 1, amountCents: t.quote_cents, description: `DingoGo ${t.ref}` });
+  if (auth.ok) await c.query(`UPDATE trips SET payment_status = 'authorised', payment_ref = $2 WHERE id = $1`, [t.id, auth.ref]);
+  await c.query(`INSERT INTO payments (trip_id, user_id, provider, provider_ref, kind, amount_cents, status) VALUES ($1,$2,$3,$4,'authorise',$5,$6)`,
+    [t.id, t.rider_id, auth.provider, auth.ref || null, auth.amount_cents ?? Math.round(t.quote_cents * 1.2), auth.ok ? 'succeeded' : 'failed']);
+  return auth;
+}
+
+/** Take `amount` for a card trip: capture the hold, or (no hold / it lapsed) charge the saved card. Records the result. */
+async function collectCard(c: Q, t: any, amount: number, purpose: 'fare' | 'fee' | 'retry', description: string) {
+  const held = t.payment_status === 'authorised' && t.payment_ref && t.payment_ref !== 'wallet' ? t.payment_ref : null;
+  let r: pay.PayResult;
+  if (purpose === 'retry') {
+    const n = await one<{ n: number }>(`SELECT count(*)::int n FROM payments WHERE trip_id = $1 AND kind = 'capture' AND status = 'failed'`, [t.id], c);
+    r = await pay.charge({ userId: t.rider_id, amountCents: amount, description, key: `retry-${t.id}-${n!.n}-${amount}`, metadata: { trip_id: t.id, kind: 'retry' } });
+  } else {
+    r = await pay.collect({ userId: t.rider_id, tripId: t.id, ref: held, amountCents: amount, description, purpose });
+  }
+  await c.query(`UPDATE trips SET payment_status = $2, payment_ref = coalesce($3, payment_ref) WHERE id = $1`, [t.id, r.ok ? 'captured' : 'failed', r.ok && r.ref ? r.ref : null]);
+  await c.query(`INSERT INTO payments (trip_id, user_id, provider, provider_ref, kind, amount_cents, gst_cents, status) VALUES ($1,$2,$3,$4,'capture',$5,$6,$7)`,
+    [t.id, t.rider_id, r.provider, r.ref || held, amount, Math.round(amount / 11), r.ok ? 'succeeded' : 'failed']);
+  if (!r.ok) {
+    await event(c, t.id, 'payment_failed', null, { stage: purpose, cents: amount, reason: r.code ?? null });
+    setImmediate(() => {
+      toOps('payment.failed', { trip_id: t.id, ref: t.ref, cents: amount, reason: r.code ?? null });
+      void notify(t.rider_id, 'Payment didn\'t go through', `We couldn't take $${(amount / 100).toFixed(2)} for ${t.ref}. ${r.error ?? ''} Open the trip to pay.`.trim(), { trip_id: t.id }, 'account');
+    });
+  }
+  return r;
+}
+
+/** Pay a card trip whose payment failed (rider "Pay now" or staff "Retry charge"), with the rider's current default card. */
+export async function retryTripPayment(tripId: string, actor: { id: string; role: string }) {
+  return tx(async (c) => {
+    const t = await one('SELECT * FROM trips WHERE id = $1 FOR UPDATE', [tripId], c);
+    const staff = actor.role === 'admin' || actor.role === 'dispatcher';
+    if (!t || (!staff && t.rider_id !== actor.id)) throw notFound('Trip');
+    if (t.payment_status !== 'failed' || t.payment_method !== 'card') throw conflict('nothing_to_pay', 'There is nothing to pay on this trip');
+    const amount = t.status === 'completed' ? t.final_cents : t.cancel_fee_cents;
+    if (!(amount > 0)) throw conflict('nothing_to_pay', 'There is nothing to pay on this trip');
+    if (!staff) await pay.requireCardOnFile(t.rider_id);
+    const r = await collectCard(c, t, amount, 'retry', `DingoGo ${t.ref}`);
+    await event(c, t.id, r.ok ? 'payment_retried' : 'payment_retry_failed', actor.id, { cents: amount, reason: r.code ?? null });
+    if (!r.ok) return { ok: false as const, error: r.error, code: r.code };
+    return { ok: true as const, payment_status: 'captured' };
+  });
 }
 
 /** Full trip view including driver/vehicle/parcel. */
@@ -458,13 +517,13 @@ async function failNoDrivers(c: pg.PoolClient, t: any, why: 'search' | 'missed' 
 }
 
 async function releaseHoldsAndPoints(c: Q, t: any, feeCents = 0) {
-  if (t.payment_method === 'card' && t.payment_ref && t.payment_status === 'authorised') {
+  if (t.payment_method === 'card') {
     if (feeCents > 0) {
-      const cap = await pay.capture(t.payment_ref, feeCents);
-      await c.query(`UPDATE trips SET payment_status = $2 WHERE id = $1`, [t.id, cap.ok ? 'captured' : 'failed']);
-      await c.query(`INSERT INTO payments (trip_id, user_id, provider, provider_ref, kind, amount_cents, gst_cents, status)
-                     VALUES ($1,$2,'card',$3,'capture',$4,$5,$6)`, [t.id, t.rider_id, t.payment_ref, feeCents, Math.round(feeCents / 11), cap.ok ? 'succeeded' : 'failed']);
-    } else {
+      // Capture the fee from the hold; a booking cancelled before its hold was placed (tours, hire) is charged on the saved card.
+      const r = await collectCard(c, t, feeCents, 'fee', `DingoGo cancellation fee ${t.ref}`);
+      // Charged afresh instead of from the hold (it had lapsed or wouldn't capture): let the old hold go.
+      if (t.payment_status === 'authorised' && t.payment_ref && r.ref !== t.payment_ref) await pay.cancelHold(t.payment_ref);
+    } else if (t.payment_ref && t.payment_status === 'authorised') {
       await pay.cancelHold(t.payment_ref);
       await c.query(`UPDATE trips SET payment_status = 'none' WHERE id = $1`, [t.id]);
     }
@@ -514,13 +573,10 @@ export async function dispatchTick() {
     }
 
     const due = await q(
-      `UPDATE trips SET status = 'requested', requested_at = now()
-       WHERE status = 'scheduled' AND scheduled_for <= now() + make_interval(mins => $1)
-         AND scheduled_for >= now() - make_interval(mins => $2) RETURNING id, rider_id, ref`,
+      `SELECT id FROM trips WHERE status = 'scheduled' AND scheduled_for <= now() + make_interval(mins => $1)
+         AND scheduled_for >= now() - make_interval(mins => $2) ORDER BY scheduled_for LIMIT 50`,
       [config.dispatch.scheduledLeadMin, config.dispatch.scheduledMissedMin]);
-    for (const t of due) {
-      void notify(t.rider_id, 'Finding your driver', `We're now matching a driver for your booked trip ${t.ref}.`, { trip_id: t.id });
-    }
+    for (const d of due) await releaseBooking(d.id).catch((e) => console.error('release booking', e));
 
     await watchDrivers().catch((e) => console.error('watch drivers', e));
     await autoEarningsFloor().catch((e) => console.error('earnings floor', e));
@@ -531,6 +587,41 @@ export async function dispatchTick() {
   } finally {
     ticking = false;
   }
+}
+
+/** A booked trip is due: hold the fare on the card now (not at booking: holds lapse after about 7 days), then search.
+ *  If the card is declined the booking is cancelled (no charge, points and promo back) and the rider and ops are told. */
+async function releaseBooking(tripId: string) {
+  const out = await tx(async (c) => {
+    const t = await one(`SELECT * FROM trips WHERE id = $1 FOR UPDATE SKIP LOCKED`, [tripId], c);
+    if (!t || t.status !== 'scheduled') return null;
+    if (t.payment_method === 'card' && t.quote_cents > 0 && t.payment_status !== 'authorised') {
+      const auth = await placeHold(c, t);
+      if (!auth.ok) {
+        await c.query(`UPDATE trips SET status = 'cancelled_admin', cancelled_at = now(), cancel_reason = $2 WHERE id = $1`,
+          [t.id, 'Card declined when the booking was due']);
+        if (t.promo_code) await c.query('UPDATE promo_codes SET uses = greatest(uses - 1, 0) WHERE code = $1', [t.promo_code]);
+        await releaseHoldsAndPoints(c, { ...t, payment_status: 'none' });
+        await event(c, t.id, 'payment_failed', null, { stage: 'release', reason: auth.code ?? null });
+        return { t, failed: auth };
+      }
+    }
+    await c.query(`UPDATE trips SET status = 'requested', requested_at = now() WHERE id = $1`, [t.id]);
+    return { t, failed: null };
+  });
+  if (!out) return;
+  const { t, failed } = out;
+  if (failed) {
+    toTrip(t.id, 'trip.updated', { id: t.id, status: 'cancelled_admin' });
+    toUser(t.rider_id, 'trip.updated', { id: t.id, ref: t.ref, status: 'cancelled_admin' });
+    toOps('payment.failed', { trip_id: t.id, ref: t.ref, stage: 'release', reason: failed.code ?? null });
+    void notify(t.rider_id, 'Booking cancelled: card declined',
+      `We couldn't hold the fare for your booking ${t.ref}. ${failed.error ?? ''} You have not been charged. Book again with another card or DingoGo credit, or call us.`.replace(/\s+/g, ' '),
+      { trip_id: t.id });
+    return;
+  }
+  toOps('trip.updated', { id: t.id, ref: t.ref, status: 'requested' });
+  void notify(t.rider_id, 'Finding your driver', `We're now matching a driver for your booked trip ${t.ref}.`, { trip_id: t.id });
 }
 
 /** Drivers who have gone quiet. A live trip whose driver has sent nothing for a while is flagged to ops once per silence
@@ -616,11 +707,8 @@ export async function redispatchTrip(tripId: string, actorId: string) {
       await c.query(`UPDATE trips SET payment_status = 'authorised', payment_ref = 'wallet' WHERE id = $1`, [t.id]);
     }
     if (t.payment_method === 'card' && t.quote_cents > 0) {
-      const auth = await pay.authorise(t.quote_cents, { description: `DingoGo ${t.ref}` });
-      if (!auth.ok) throw new ApiError(402, 'payment_failed', auth.error ?? 'Card could not be authorised');
-      await c.query(`UPDATE trips SET payment_status = 'authorised', payment_ref = $2 WHERE id = $1`, [t.id, auth.ref]);
-      await c.query(`INSERT INTO payments (trip_id, user_id, provider, provider_ref, kind, amount_cents, status)
-                     VALUES ($1,$2,$3,$4,'authorise',$5,'succeeded')`, [t.id, t.rider_id, auth.provider, auth.ref, Math.round(t.quote_cents * 1.2)]);
+      const auth = await placeHold(c, t);
+      if (!auth.ok) throw payError(auth);
     }
     if (t.promo_code) await c.query('UPDATE promo_codes SET uses = uses + 1 WHERE code = $1', [t.promo_code]);
     await c.query(`UPDATE trips SET status = 'requested', dispatch_attempts = 0, requested_at = now(), cancelled_at = NULL WHERE id = $1`, [tripId]);
@@ -923,11 +1011,10 @@ async function settle(c: pg.PoolClient, t: any) {
   const amount = t.final_cents;
   const gst = Math.round(amount / 11);
 
-  if (t.payment_method === 'card' && t.payment_ref) {
-    const cap = await pay.capture(t.payment_ref, amount);
-    await c.query(`UPDATE trips SET payment_status = $2 WHERE id = $1`, [t.id, cap.ok ? 'captured' : 'failed']);
-    await c.query(`INSERT INTO payments (trip_id, user_id, provider, provider_ref, kind, amount_cents, gst_cents, status)
-                   VALUES ($1,$2,'card',$3,'capture',$4,$5,$6)`, [t.id, t.rider_id, t.payment_ref, amount, gst, cap.ok ? 'succeeded' : 'failed']);
+  if (t.payment_method === 'card') {
+    // Capture the hold (or charge the saved card if it lapsed or was never placed). A failure leaves the trip "failed" to pay
+    // (rider "Pay now", ops "Retry charge"); the driver is paid either way.
+    if (amount > 0) await collectCard(c, t, amount, 'fare', `DingoGo ${t.ref}`);
   } else if (t.payment_method === 'cash') {
     await c.query(`UPDATE trips SET payment_status = 'cash_collected' WHERE id = $1`, [t.id]);
     await c.query(`INSERT INTO payments (trip_id, user_id, provider, kind, amount_cents, gst_cents, status)
@@ -1006,10 +1093,11 @@ export async function addTip(riderId: string, tripId: string, cents: number) {
       if (!u) throw new ApiError(402, 'wallet_insufficient', 'Not enough DingoGo credit for this tip');
       provider = 'wallet'; ref = 'wallet';
     } else {
-      const auth = await pay.authorise(cents, { description: `DingoGo tip ${t.ref}` });
-      const cap = auth.ok ? await pay.capture(auth.ref, cents) : { ok: false, error: auth.error };
-      if (!cap.ok) throw new ApiError(402, 'payment_failed', cap.error ?? 'Your card could not be charged for the tip');
-      provider = auth.provider; ref = auth.ref;
+      // Its own PaymentIntent, captured at once (refunds of the tip go back to it). One tip per trip: the key makes a retry a no-op.
+      await pay.requireCardOnFile(riderId);
+      const r = await pay.charge({ userId: riderId, amountCents: cents, description: `DingoGo tip ${t.ref}`, key: `tip-${tripId}-${cents}`, metadata: { trip_id: tripId, kind: 'tip' } });
+      if (!r.ok) throw payError(r);
+      provider = r.provider; ref = r.ref;
     }
     await c.query('UPDATE trips SET tip_cents = $2 WHERE id = $1', [tripId, cents]);
     await c.query(`INSERT INTO payments (trip_id, user_id, provider, provider_ref, kind, amount_cents, status) VALUES ($1,$2,$3,$4,'tip',$5,'succeeded')`, [tripId, riderId, provider, ref, cents]);

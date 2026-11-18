@@ -36,7 +36,7 @@ npm install
 npm run db:setup                                   # migrations + demo data
 npm run dev:api                                    # http://localhost:4000
 npm run dev:web    # and/or dev:rider, dev:driver, dev:admin, dev:partner, dev:roof
-npm test                                           # 68 API tests (needs a throwaway DB: they reset it)
+npm test                                           # 73 API tests (needs a throwaway DB: they reset it)
 node scripts/a11y-check.mjs                        # WCAG 2.2 AA check (axe-core + Playwright) of the website and rider app; needs api, web and rider running
 ```
 
@@ -102,7 +102,9 @@ They also install from the browser as web apps (PWA) — useful for testing befo
 1. **Accounts & keys** (`services/api/.env.example`): Stripe (card payments; mock until set), Twilio (SMS codes, parcel PINs, SOS texts), a commercial map tile provider (`VITE_TILE_URL` — OpenStreetMap's servers aren't for production), a self-hosted OSRM routing server (`OSRM_URL`; otherwise distance is estimated), Expo/FCM push.
 2. Set `OTP_DEV_MODE=false` and a long random `JWT_SECRET`.
 3. Move uploads (`UPLOAD_DIR`) to Supabase Storage or S3.
-4. Wire Stripe PaymentSheet in the rider app (card capture is mocked today) and register push tokens.
+4. Stripe: set `STRIPE_SECRET_KEY`, `STRIPE_PUBLISHABLE_KEY` and `STRIPE_WEBHOOK_SECRET`, apply migration 014, and add the webhook endpoint
+   `/api/payments/stripe/webhook` in the Stripe dashboard (events listed in `docs/API.md` → Payments). Without Stripe, only demo/test accounts can pay by
+   card (test payments); everyone else is shown "card payments coming soon". Register push tokens.
 5. Legal review of the website's draft privacy policy, terms, cancellation policy and prohibited items.
 6. NT approvals: dispatch network, operator accreditation, CVLs, driver H endorsements; written answers on roof screens, cash and tours (see the gap analysis).
 7. Arrernte translations with community input; app store listings.

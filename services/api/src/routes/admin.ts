@@ -264,6 +264,8 @@ export default async function adminRoutes(app: FastifyInstance) {
     return { trip: trips.viewFor(trip, me) };
   });
 
+  /** Refund part or all of what the rider paid. The fare is refunded first, then the tip, each back to where it was paid
+   *  (the fare's and the tip's own PaymentIntent; credit for wallet and cash). GST comes off the fare part only. */
   app.post('/admin/trips/:id/refund', async (req) => {
     const me = await admin(req);
     const b = parse(z.object({ cents: z.number().int().min(1), reason: z.string().min(1).max(200) }), req.body);
@@ -272,28 +274,68 @@ export default async function adminRoutes(app: FastifyInstance) {
     const out = await tx(async (c) => {
       const t = await one('SELECT * FROM trips WHERE id = $1 FOR UPDATE', [id], c);
       if (!t) throw notFound('Trip');
-      const paid = (t.final_cents ?? t.cancel_fee_cents ?? 0) + (t.tip_cents ?? 0);
-      const prior = await one<{ cents: number }>(`SELECT coalesce(-sum(amount_cents),0)::int cents FROM payments WHERE trip_id = $1 AND kind = 'refund' AND status = 'succeeded'`, [id], c);
-      const left = paid - prior!.cents;
+      const farePaid = t.payment_status === 'failed' ? 0 : (t.final_cents ?? t.cancel_fee_cents ?? 0);
+      const tip = await one(`SELECT provider, provider_ref, amount_cents FROM payments WHERE trip_id = $1 AND kind = 'tip' AND status = 'succeeded' ORDER BY created_at DESC LIMIT 1`, [id], c);
+      const tipPaid = tip ? t.tip_cents ?? 0 : 0;
+      const rows = await q(`SELECT provider_ref, -amount_cents AS cents FROM payments WHERE trip_id = $1 AND kind = 'refund' AND status = 'succeeded'`, [id], c);
+      const prior = rows.reduce((n: number, r: any) => n + r.cents, 0);
+      const left = farePaid + tipPaid - prior;
       if (b.cents > left) throw bad('refund_too_large', left > 0 ? `Only $${(left / 100).toFixed(2)} is left to refund on this trip` : 'This trip has already been fully refunded', { refundable_cents: Math.max(left, 0) });
-      let provider = t.payment_method;
-      if (t.payment_method === 'card' && t.payment_ref) {
-        const r = await pay.refund(t.payment_ref, b.cents);
-        if (!r.ok) throw bad('refund_failed', r.error);
-      } else if (t.payment_method === 'wallet' || t.payment_method === 'cash') {
-        // Cash fares are refunded as DingoGo credit.
-        await c.query('UPDATE users SET wallet_cents = wallet_cents + $2 WHERE id = $1', [t.rider_id, b.cents]);
-        provider = 'wallet';
+      // How much of each part is already refunded: by PaymentIntent when the tip has its own, otherwise fare first.
+      const ownTipRef = tip?.provider_ref && tip.provider_ref !== t.payment_ref && !['wallet'].includes(tip.provider_ref);
+      const tipRefunded = ownTipRef ? rows.filter((r: any) => r.provider_ref === tip!.provider_ref).reduce((n: number, r: any) => n + r.cents, 0) : Math.max(prior - farePaid, 0);
+      const fareRefunded = prior - tipRefunded;
+      const farePart = Math.min(b.cents, Math.max(farePaid - fareRefunded, 0));
+      const tipPart = b.cents - farePart;
+      const parts: { cents: number; gst: number; method: string; ref: string | null; which: string }[] = [];
+      if (farePart > 0) parts.push({ cents: farePart, gst: Math.round(farePart / 11), method: t.payment_method, ref: t.payment_ref, which: 'fare' });
+      if (tipPart > 0) parts.push({ cents: tipPart, gst: 0, method: tip!.provider === 'wallet' ? 'wallet' : 'card', ref: tip!.provider_ref, which: 'tip' });
+      for (const p of parts) {
+        let provider = p.method;
+        if (p.method === 'card' && p.ref) {
+          const r = await pay.refund(p.ref, p.cents, `${t.id}-${prior}-${p.which}-${p.cents}`);
+          if (!r.ok) throw bad('refund_failed', r.error);
+          provider = p.ref.startsWith('mock_') ? 'mock' : 'stripe';
+        } else if (p.method === 'wallet' || p.method === 'cash') {
+          // Cash fares are refunded as DingoGo credit.
+          await c.query('UPDATE users SET wallet_cents = wallet_cents + $2 WHERE id = $1', [t.rider_id, p.cents]);
+          provider = 'wallet';
+        }
+        await c.query(`INSERT INTO payments (trip_id, user_id, provider, provider_ref, kind, amount_cents, gst_cents, status) VALUES ($1,$2,$3,$4,'refund',$5,$6,'succeeded')`,
+          [t.id, t.rider_id, provider, p.ref, -p.cents, -p.gst]);
       }
-      await c.query(`INSERT INTO payments (trip_id, user_id, provider, provider_ref, kind, amount_cents, gst_cents, status) VALUES ($1,$2,$3,$4,'refund',$5,$6,'succeeded')`,
-        [t.id, t.rider_id, provider, t.payment_ref, -b.cents, -Math.round(b.cents / 11)]);
       if (b.cents === left) await c.query(`UPDATE trips SET payment_status = 'refunded' WHERE id = $1`, [t.id]);
-      await trips.event(c, t.id, 'refund', me.id, b);
+      await trips.event(c, t.id, 'refund', me.id, { ...b, fare_cents: farePart, tip_cents: tipPart });
       await c.query('INSERT INTO audit_log (actor_id, action, entity, entity_id, data) VALUES ($1,$2,$3,$4,$5)', [me.id, 'refund', 'trip', t.id, b]);
       return { t, refundable_cents: left - b.cents };
     });
     void notify(out.t.rider_id, 'Refund issued', `We've refunded $${(b.cents / 100).toFixed(2)} on ${out.t.ref}. ${b.reason}`, { trip_id: out.t.id }, 'account');
     return { ok: true, refundable_cents: out.refundable_cents };
+  });
+
+  /** Card payment that didn't go through: charge the rider's current default card again. */
+  app.post('/admin/trips/:id/retry-payment', async (req) => {
+    const me = await admin(req);
+    const id = (req.params as any).id;
+    const r = await trips.retryTripPayment(id, me);
+    await audit(me.id, 'retry_payment', 'trip', id, { ok: r.ok, reason: (r as any).code ?? null });
+    return r;
+  });
+
+  /** Payment problems to follow up: card payments that failed, and disputes (chargebacks) still open. */
+  app.get('/admin/payments/issues', async (req) => {
+    await admin(req);
+    const failed = await q(
+      `SELECT t.id, t.ref, t.status, t.payment_method, coalesce(t.final_cents, t.cancel_fee_cents) AS cents, coalesce(t.completed_at, t.cancelled_at) AS at,
+              ru.name AS rider_name,
+              (SELECT e.data->>'reason' FROM trip_events e WHERE e.trip_id = t.id AND e.type IN ('payment_failed','payment_retry_failed') ORDER BY e.at DESC LIMIT 1) AS reason
+       FROM trips t JOIN users ru ON ru.id = t.rider_id
+       WHERE t.payment_status = 'failed' ORDER BY coalesce(t.completed_at, t.cancelled_at, t.requested_at) DESC LIMIT 200`);
+    const disputes = await q(
+      `SELECT p.id, p.provider_ref AS dispute_ref, p.status, -p.amount_cents AS cents, p.created_at, t.id AS trip_id, t.ref, ru.name AS rider_name
+       FROM payments p LEFT JOIN trips t ON t.id = p.trip_id LEFT JOIN users ru ON ru.id = p.user_id
+       WHERE p.kind = 'dispute' AND p.status NOT IN ('won','lost','warning_closed') ORDER BY p.created_at DESC LIMIT 200`);
+    return { failed, disputes };
   });
 
   /** Phone / walk-in booking for customers without a smartphone (critical for community access). */
@@ -591,7 +633,7 @@ export default async function adminRoutes(app: FastifyInstance) {
     const on = (x: boolean) => (x ? 'configured' : 'not_configured');
     return {
       plate_lookup: on(plateLookupConfigured()),
-      payments: on(!!config.stripeSecretKey), sms: on(!!(config.twilio.sid && config.twilio.token)),
+      payments: on(!!config.stripe.secretKey), payments_webhook: on(!!config.stripe.webhookSecret), card_elements: on(!!config.stripe.publishableKey), sms: on(!!(config.twilio.sid && config.twilio.token)),
       routing: on(!!(config.orsKey || config.osrmUrl)),
     };
   });

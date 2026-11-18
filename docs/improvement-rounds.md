@@ -326,3 +326,91 @@ Ideas for next rounds:
 - SMS from the incident drawer (welfare check text to the rider/driver, logged on the timeline) behind the Twilio config.
 - Scheduled daily summary emailed/pushed to the owner at 7 am Darwin, and a weekly levy/GST reminder before lodging dates.
 - Run `scripts/a11y-check.mjs` (now web, rider, driver, admin, partner) in CI with the API and Postgres as services.
+
+### Round 8 — payments readiness (Stripe)
+Scan: read `services/payments.ts`, every call site (booking hold, redispatch, cancel fees, settle, tips, top-up, Pass, admin refund), saved-card routes,
+the receipt, the GST report and the rider app's Payment/booking screens. Found: the Stripe path could never have worked — holds were created with no
+customer or card and never confirmed (status `requires_payment_method`) yet the trip was marked `authorised`; tips, top-ups and Pass did
+"authorise then capture" on an unconfirmed PaymentIntent; no idempotency keys (a retried request could hold or charge twice); no webhook, so hold
+expiry, dashboard refunds and disputes were invisible; saved cards trusted brand/last4/`pm_…` sent by the client, the SetupIntent had no customer
+(card unusable later), removing a card didn't detach it or move the default; scheduled bookings up to 60 days ahead took a hold at booking (card holds
+lapse after ~7 days); refunds always went to the fare's PaymentIntent (a tip refund would fail or over-refund the fare) and took GST off the tip part;
+cancellation-fee invoices listed the trip fare lines; NDIS numbers promised "on the tax invoice" were not on it; in mock mode any real account on live
+got card trips for free.
+
+Suggested:
+1. [fix] Stripe client: pinned API version, request timeout, nested form encoding, idempotency keys on every write (hold per trip + attempt, capture per
+   PaymentIntent, cancel, refund per refund slot, charges per purpose), plain-English decline messages; `STRIPE_API_BASE` so tests run against a local fake
+   Stripe. Mock stays the default when `STRIPE_SECRET_KEY` is unset.
+2. [fix] Holds on the rider's own saved card: one Stripe Customer per rider, off-session confirm with the default card, 402 `card_required` with no card,
+   holds that need bank authentication cancelled with a clear message, a hold left behind by a failed booking released.
+3. [add] Scheduled card bookings: hold placed when the booking is released (15 min before), not at booking; declined at release → booking cancelled,
+   points/promo back, rider and ops told. Late tour/hire cancellation fees and captures of a lapsed hold fall back to a fresh off-session charge.
+4. [add] Tips, top-ups and DingoGo Pass on their own immediately-captured PaymentIntents (idempotent; `Idempotency-Key` honoured on top-up/Pass).
+   Refunds split fare first, then tip, each against its own PaymentIntent; GST only on the fare part.
+5. [add] Signed webhook `POST /payments/stripe/webhook`: Stripe-Signature HMAC-SHA256 with 5-min tolerance, constant-time; replay-safe event log; handlers
+   for `payment_intent.succeeded/payment_failed/canceled/amount_capturable_updated`, `charge.refunded` (dashboard refunds recorded once),
+   `charge.dispute.created/updated/closed` (dispute row, trip event, ops alert).
+6. [add] Saved cards: SetupIntent on the rider's Customer (`usage=off_session`); `POST /payment-methods` checks the SetupIntent with Stripe and takes
+   brand/last4/expiry from Stripe (client values ignored), same card twice merged; set default; remove detaches and promotes the next card.
+7. [add] Rider app card management: Stripe Elements (Payment Element) add-card flow when configured, make default/remove, test card in test mode,
+   "Card payments are coming soon" when Stripe isn't set for real accounts (server refuses card payments for them: `MOCK_CARDS`); booking and tip screens
+   follow the mode.
+8. [fix] Receipts / tax invoices: cancellation-fee invoices show the fee; refunds listed as adjustments with net total and GST; tips outside GST; invoice
+   number, ABN and "Total includes GST"; NDIS participant number on the invoice.
+9. [add] Admin: failed payments and open disputes list, "Retry charge" on a failed trip payment, rider "Pay now" for a failed payment; integrations show
+   whether the webhook secret is set.
+
+Done (all 9). Migration: `services/api/migrations/014_payments_stripe.sql` (new tables `payment_customers` (one Stripe Customer per rider) and
+`payment_events` (webhook events applied once), columns `payment_methods.fingerprint/exp_month/exp_year`, indexes on `payments(provider_ref)` and
+`trips(payment_ref)`; additive). Mock mode never touches them, so everything works before it is applied; with Stripe on, saving cards/holds and the
+webhook return 503 `migration_pending` until it is. Tests: 68 → 73 (a fake Stripe HTTP server on localhost, no network: form encoding + webhook
+signatures; saved card only via a checked SetupIntent, duplicate card merged and detached, hold with `hold-<trip>-1` / version header / quote + 20%,
+capture key and amount, tip on its own PaymentIntent, refunds fare-then-tip to their own PaymentIntents with GST on the fare part, adjusted invoice,
+dashboard refund recorded once and replays ignored; decline and bank-check refused plainly with nothing left behind, booked trip held at release,
+declined at release → cancelled and told, lapsed hold (webhook) → fresh charge, failed payment → ops list → rider pays later; webhook secret/signature/
+tolerance, disputes open → closed, unknown events; `MOCK_CARDS=test` refuses card payments for real accounts, demo/test accounts keep test cards,
+top-up and Pass replays charge once, default/remove cards, cancellation-fee invoice with NDIS number). Browser smoke: Payment screen in test mode (add
+test card, remove dialog) and "coming soon" mode (no card option on the booking screen), no page errors.
+- API: `services/payments.ts` rewritten (Stripe client, idempotency keys, `holdForTrip`/`charge`/`collect`/`capture`/`refund`, customers, SetupIntent
+  check, detach, card modes, `verifyWebhook`/`signWebhook`); new `services/stripeEvents.ts` and `routes/payments.ts` (webhook with raw-body parser);
+  `services/trips.ts` (`placeHold`, `collectCard`, `retryTripPayment`, `payError`, `releaseBooking` in the tick, hold released if a booking fails,
+  fees without a hold charged, settle via `collectCard`, tip via `charge`); `routes/rider.ts` (cards, default, delete + detach, top-up/Pass with
+  `Idempotency-Key`, `POST /trips/:id/pay`, receipt); `routes/admin.ts` (refund split, `retry-payment`, `payments/issues`, integrations); `config.ts`
+  (`stripe.*`, `mockCards`), `.env.example`.
+- Rider app: Payment screen — Stripe Payment Element add-card (Stripe.js from js.stripe.com, `confirmSetup` with `redirect: 'if_required'`), make
+  default, remove with a confirm dialog, expiry shown, test card in test mode, "Card payments are coming soon" when off (top-up hidden), top-up sends an
+  Idempotency-Key; booking screen hides the card option when off (starts on credit) and says booked trips are held 15 min before pickup; Tours get a
+  DingoGo credit option; receipt shows refunds, net total and GST, invoice number, NDIS number, "issued on behalf of your driver" with the driver's
+  ABN, and a "Pay now" box when a card payment failed. Admin: payments table with provider ref and dispute/row statuses, "Retry charge" on failed
+  trips, Reports → Payment problems (failed payments, open disputes, Stripe/webhook/card-form status), labels for the new events.
+- Behaviour changes to note: **without Stripe, in production (`OTP_DEV_MODE` not true) only seeded demo numbers and admin-made test accounts can pay by
+  card** (everyone else gets 402 `cards_not_available` and "coming soon"; set `MOCK_CARDS=all` to keep the old free-for-all mock); booked card trips are no
+  longer held at booking (held at release; `payment_status` stays `none` until then); card capture rows have provider `stripe`/`mock` instead of `card`;
+  admin refunds may write two rows (fare and tip parts); refunds take GST only off the fare part; receipt title "Tax Invoice (adjusted)" after refunds;
+  payment methods list default first.
+- Deploy: apply migration 014 before setting `STRIPE_SECRET_KEY`. To go live with Stripe set `STRIPE_SECRET_KEY`, `STRIPE_PUBLISHABLE_KEY`,
+  `STRIPE_WEBHOOK_SECRET`, and in the Stripe dashboard add the endpoint `https://<domain>/api/payments/stripe/webhook` with events
+  `payment_intent.succeeded`, `payment_intent.payment_failed`, `payment_intent.canceled`, `charge.refunded`, `charge.dispute.created`,
+  `charge.dispute.updated`, `charge.dispute.closed`. Optional: `MOCK_CARDS` (see above), `STRIPE_API_VERSION`, `STRIPE_TIMEOUT_MS`,
+  `STRIPE_WEBHOOK_TOLERANCE_S`. Existing mock saved cards (`pm_test_…`) are ignored once Stripe is on; riders add a real card. No data fix.
+
+Deferred:
+- Native PaymentSheet in the Capacitor apps (Stripe's native SDK plugin; Elements in the WebView works for now but Apple/Google Pay need native) and
+  Apple Pay / Google Pay in Elements (needs domain verification) — turned off in the Payment Element for now.
+- On-session bank checks (3-D Secure) during booking: off-session holds that need a check are refused with "add the card again"; the SetupIntent does
+  the bank check when the card is saved, which covers most cases. Full on-session confirm needs a "pending payment" trip state.
+- Stripe calls still run inside the trip's database transaction (row lock held during the HTTP call, ≤15 s timeout). Idempotency keys make it safe; a
+  two-phase "intent then record" outbox would shorten lock times at scale.
+- Driver ledger reversal when a tip is refunded (DingoGo currently funds tip refunds; drivers keep 100% of tips) — needs an owner decision.
+- Receipt PDF/email delivery and adjustment notes as separate numbered documents (the invoice shows refunds inline today); ATO wording to be checked by
+  the accountant (the invoice is issued on the driver's behalf with both ABNs).
+- Stripe Connect payouts to drivers (payouts stay manual bank transfers from the ledger).
+
+Ideas for next rounds:
+- Stripe Connect Express for drivers: automatic weekly payouts from the ledger, driver ABN/bank details collected by Stripe (removes bank numbers from
+  our database), with the earnings floor and lease deductions as transfers/reversals.
+- Rider "payment needed" gate: block new card bookings while a trip's payment has failed (with a clear path to pay), and ops reminders after 3 days.
+- Emailed tax invoices (PDF) on completion and on refund, plus a monthly statement for riders with an NDIS number.
+- Payments reconciliation report: Stripe balance transactions vs DingoGo `payments` per day (fees, refunds, disputes), CSV for the accountant.
+- Run the Stripe fake in CI and add a `stripe listen`-based manual test script for the coordinator with test keys.

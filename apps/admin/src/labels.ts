@@ -18,7 +18,11 @@ export const ROLE: Map = { rider: 'Rider', driver: 'Driver', admin: 'Administrat
 export const CHANNEL: Map = { app: 'App', phone: 'Phone', web: 'Website', sms: 'Text message' };
 export const PAYMENT_METHOD: Map = { card: 'Card', cash: 'Cash', corporate: 'Business account', wallet: 'DingoGo credit' };
 export const PAYMENT_STATUS: Map = { none: 'Not charged', authorised: 'Authorised', captured: 'Paid', failed: 'Failed', refunded: 'Refunded', invoiced: 'Invoiced', cash_collected: 'Cash collected' };
-export const PAYMENT_KIND: Map = { fare: 'Fare', tip: 'Tip', refund: 'Refund', cancellation_fee: 'Cancellation fee', adjustment: 'Adjustment', topup: 'Top-up', voucher: 'Voucher' };
+export const PAYMENT_KIND: Map = { fare: 'Fare', tip: 'Tip', refund: 'Refund', cancellation_fee: 'Cancellation fee', adjustment: 'Adjustment', topup: 'Top-up', voucher: 'Voucher',
+  authorise: 'Card hold', capture: 'Charged', cash: 'Cash', invoice: 'Account invoice', subscription: 'DingoGo Pass', dispute: 'Dispute (chargeback)' };
+export const PAYMENT_PROVIDER: Map = { stripe: 'Stripe', mock: 'Test payment', cash: 'Cash', wallet: 'DingoGo credit', corporate: 'Business account', voucher: 'Voucher', card: 'Card' };
+export const PAYMENT_ROW_STATUS: Map = { succeeded: 'Done', failed: 'Failed', pending: 'Pending', warning_needs_response: 'Early warning: reply needed', warning_under_review: 'Early warning: under review',
+  warning_closed: 'Early warning closed', needs_response: 'Reply needed', under_review: 'Under review', won: 'Won', lost: 'Lost' };
 
 export const DOC_TYPE: Map = {
   licence: 'Driver licence', h_endorsement: 'H endorsement', cpvid: 'CPV identity card', police_check: 'Police check', medical: 'Medical certificate',
@@ -57,6 +61,8 @@ export const isGreenFuel = (f?: string | null) => f === 'electric' || f === 'plu
 export const VEHICLE_STATUS: Map = { pending: 'Waiting for check', approved: 'Approved', rejected: 'Not approved' };
 export const VEHICLE_STATUS_TONE: Map = { pending: 'ochre', approved: 'green', rejected: 'red' };
 export const EVENT_TYPE: Map = { requested: 'Requested', offered: 'Offered to driver', accepted: 'Driver accepted', arrived: 'Driver arrived', started: 'Trip started', in_progress: 'Trip started', completed: 'Completed', cancelled: 'Cancelled', no_drivers: 'No driver available', picked_up: 'Parcel collected', delivered: 'Parcel delivered', refund: 'Refund issued', rated: 'Rated', pin_verified: 'PIN checked', scheduled: 'Scheduled', released: 'Released to drivers', redispatched: 'Searching again', pod_pin_failed: 'Wrong delivery PIN',
+  payment_failed: 'Payment failed', payment_retried: 'Payment taken (retry)', payment_retry_failed: 'Retry payment failed', hold_lapsed: 'Card hold lapsed',
+  dispute_opened: 'Dispute opened', dispute_updated: 'Dispute updated', dispute_closed: 'Dispute closed',
   driver_released: 'Back to the search (driver pulled out)', driver_silent: 'No signal from driver', offer_withdrawn: 'Offer withdrawn (driver went offline)',
   cancelled_rider: 'Cancelled by rider', cancelled_driver: 'Cancelled by driver', cancelled_admin: 'Cancelled by DingoGo', declined: 'Driver declined' };
 export const PARTNER_KIND: Map = { cafe: 'Café', shop: 'Shop', community: 'Community organisation', other: 'Other' };

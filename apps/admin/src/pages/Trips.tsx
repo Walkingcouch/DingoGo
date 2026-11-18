@@ -3,8 +3,8 @@ import { useSearchParams } from 'react-router-dom';
 import { get, post, money, dateTime, time, km, mins, STATUS_LABEL, COURIER_STATUS_LABEL, statusTone, useLoad, Icon, FileLink } from '@dingogo/shared';
 import { DgMap, type MapMarker } from '@dingogo/shared/map';
 import { Page } from '../ctx';
-import { Chip, Drawer, ErrorMsg, Modal, Table, downloadCsv, useAsk, useRun, type Col } from '../ui';
-import { CHANNEL, EVENT_TYPE, LEDGER_KIND, OFFER_STATUS, PARCEL_SIZE, PAYMENT_KIND, PAYMENT_METHOD, PAYMENT_STATUS, SERVICE_NAME, label } from '../labels';
+import { Chip, Drawer, ErrorMsg, Modal, Table, downloadCsv, useAsk, useRun, useToast, type Col } from '../ui';
+import { CHANNEL, EVENT_TYPE, LEDGER_KIND, OFFER_STATUS, PARCEL_SIZE, PAYMENT_KIND, PAYMENT_METHOD, PAYMENT_PROVIDER, PAYMENT_ROW_STATUS, PAYMENT_STATUS, SERVICE_NAME, label } from '../labels';
 
 const SERVICES: [string, string][] = [['ride', 'Ride'], ['pet', 'Pet-friendly'], ['courier_s', 'Courier small'], ['courier_m', 'Courier medium'], ['courier_l', 'Courier large'], ['hourly', 'Hourly hire']];
 
@@ -106,6 +106,7 @@ function TripDrawer({ id, onClose }: { id: string; onClose: () => void }) {
   const { data, error, reload } = useLoad(() => get(`/admin/trips/${id}`), [id]);
   const [refund, setRefund] = useState({ amount: '', reason: '' });
   const run = useRun();
+  const toast = useToast();
   const t = data?.trip;
   const markers: MapMarker[] = t ? [
     { id: 'p', kind: 'pickup', lat: t.pickup_lat, lng: t.pickup_lng, label: t.pickup_address },
@@ -165,8 +166,18 @@ function TripDrawer({ id, onClose }: { id: string; onClose: () => void }) {
         </>)}
         {data.payments.length > 0 && (<>
           <h3 style={{ marginTop: 18 }}>Payments</h3>
-          <table className="tbl"><tbody>{data.payments.map((p: any) => <tr key={p.id}><td>{label(PAYMENT_KIND, p.kind)}</td><td>{label({ stripe: 'Stripe', mock: 'Test payment', cash: 'Cash', wallet: 'DingoGo credit', corporate: 'Business account' }, p.provider)}</td><td>{label(PAYMENT_STATUS, p.status)}</td><td className="num">{money(p.amount_cents)}</td></tr>)}</tbody></table>
+          <table className="tbl"><tbody>{data.payments.map((p: any) => <tr key={p.id}><td>{label(PAYMENT_KIND, p.kind)}</td><td>{label(PAYMENT_PROVIDER, p.provider)}{p.provider === 'stripe' && p.provider_ref && <span className="sub">{p.provider_ref}</span>}</td><td>{label(PAYMENT_ROW_STATUS, p.status)}</td><td className="num">{money(p.amount_cents)}</td></tr>)}</tbody></table>
         </>)}
+        {t.payment_status === 'failed' && t.payment_method === 'card' && (
+          <div className="panel" style={{ marginTop: 18 }}>
+            <h3>Payment failed</h3>
+            <p className="dg-muted">The card payment for this trip didn't go through. The rider has been asked to pay in the app. Retry charges their current default card.</p>
+            <button className="dg-btn dg-btn--sm dg-btn--dark" onClick={async () => {
+              const r: any = await run(() => post(`/admin/trips/${id}/retry-payment`));
+              if (r) { toast(r.ok ? 'Payment taken' : (r.error ?? 'The card was declined again'), !r.ok); void reload(); }
+            }}>Retry charge</button>
+          </div>
+        )}
         {data.driver_ledger?.length > 0 && (<>
           <h3 style={{ marginTop: 18 }}>Driver pay</h3>
           <table className="tbl"><tbody>

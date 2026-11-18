@@ -19,6 +19,7 @@ import publicRoutes from './routes/public.js';
 import partnerRoutes from './routes/partner.js';
 import displayRoutes from './routes/display.js';
 import uploadRoutes from './routes/uploads.js';
+import paymentRoutes from './routes/payments.js';
 
 export async function buildServer() {
   const app = Fastify({ logger: process.env.LOG_LEVEL ? { level: process.env.LOG_LEVEL } : false, bodyLimit: 1024 * 1024, trustProxy: config.trustProxy as any });
@@ -133,6 +134,7 @@ export async function buildServer() {
   await app.register(partnerRoutes);
   await app.register(displayRoutes);
   await app.register(uploadRoutes);
+  await app.register(paymentRoutes);
   return app;
 }
 

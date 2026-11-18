@@ -39,7 +39,21 @@ export const config = {
     partnerCodeFailsPerUser: Number(env.RATE_PARTNER_CODE_FAILS ?? 20),
   },
   publicWebUrl: env.PUBLIC_WEB_URL ?? 'http://localhost:5173',
-  stripeSecretKey: env.STRIPE_SECRET_KEY ?? '',            // sk_test_… — empty = mock payments
+  /** Card payments. Empty secret key = built-in mock provider (no network). */
+  stripe: {
+    secretKey: env.STRIPE_SECRET_KEY ?? '',                 // sk_test_… / sk_live_… (server only)
+    publishableKey: env.STRIPE_PUBLISHABLE_KEY ?? '',       // pk_… for Stripe Elements in the rider app (sent by GET /payment-methods)
+    webhookSecret: env.STRIPE_WEBHOOK_SECRET ?? '',         // whsec_… for POST /payments/stripe/webhook; empty = webhook refuses (503)
+    apiBase: env.STRIPE_API_BASE ?? 'https://api.stripe.com',
+    /** Pinned so a Stripe account upgrade can't change response shapes under us. */
+    apiVersion: env.STRIPE_API_VERSION ?? '2024-06-20',
+    timeoutMs: Number(env.STRIPE_TIMEOUT_MS ?? 15000),
+    /** Webhook signatures older than this (seconds) are refused (replayed captures). */
+    webhookToleranceS: Number(env.STRIPE_WEBHOOK_TOLERANCE_S ?? 300),
+  },
+  /** Without Stripe, who may "pay" by card with the mock provider: all (development), test (seeded demo numbers and admin-made test
+   *  accounts; everyone else sees "card payments coming soon") or off. Default: all in dev mode, test otherwise. */
+  mockCards: ((env.MOCK_CARDS ?? '') || ((env.OTP_DEV_MODE ?? (env.NODE_ENV === 'production' ? 'false' : 'true')) === 'true' ? 'all' : 'test')) as 'all' | 'test' | 'off',
   twilio: {
     sid: env.TWILIO_ACCOUNT_SID ?? '',
     token: env.TWILIO_AUTH_TOKEN ?? '',

@@ -11,6 +11,9 @@ import { quoteFare } from '../src/lib/fares.js';
 import { dispatchTick, searchOver } from '../src/services/trips.js';
 import { bg, flushBackground, pendingBackground } from '../src/lib/background.js';
 import { config } from '../src/config.js';
+import http from 'node:http';
+import type { AddressInfo } from 'node:net';
+import { encodeForm, signWebhook, verifyWebhook } from '../src/services/payments.js';
 
 process.env.LOG_SMS = 'false';
 let app: Awaited<ReturnType<typeof buildServer>>;
@@ -1674,4 +1677,332 @@ test('CSV exports, daily summary and audit log filters', async () => {
   assert.equal((await call('GET', '/admin/audit?before=abc', 'admin')).status, 400);
   assert.equal((await call('GET', `/admin/audit?from=2001-01-01&to=2001-01-02`, 'admin')).items.length, 0);
   assert.equal((await call('GET', '/admin/audit', 'dispatcher')).status, 403);
+});
+
+// ───────────── Round 8: payments readiness (Stripe) ─────────────
+/** A fake Stripe API on localhost (no network): records every request, honours idempotency keys, and can decline or ask for a bank check. */
+const fake = {
+  url: '', n: 0, reqs: [] as { method: string; path: string; params: Record<string, string>; headers: http.IncomingHttpHeaders }[],
+  pis: new Map<string, any>(), setis: new Map<string, any>(), idem: new Map<string, { status: number; body: any }>(),
+  next: { pm: 'pm_card1', fingerprint: 'fp_card1' }, declineNext: false, requireAction: false,
+};
+const fakeServer = http.createServer((req, res) => {
+  let raw = '';
+  req.on('data', (d) => { raw += d; });
+  req.on('end', () => {
+    const u = new URL(req.url ?? '/', 'http://x');
+    const params = Object.fromEntries(new URLSearchParams(req.method === 'GET' ? u.search : raw));
+    fake.reqs.push({ method: req.method!, path: u.pathname, params, headers: req.headers });
+    const send = (status: number, body: any) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(body)); };
+    if (req.headers.authorization !== 'Bearer sk_test_fake') return send(401, { error: { message: 'bad key' } });
+    const key = req.headers['idempotency-key'] as string | undefined;
+    if (req.method === 'POST' && key && fake.idem.has(key)) { const c = fake.idem.get(key)!; return send(c.status, c.body); }
+    const out = (() => {
+      const p = u.pathname; const id = () => `${++fake.n}abcdef`;
+      if (p === '/v1/customers') return { status: 200, body: { id: `cus_${id()}` } };
+      if (p === '/v1/setup_intents' && req.method === 'POST') {
+        const si = { id: `seti_${id()}`, customer: params.customer, status: 'succeeded', client_secret: `seti_secret_${fake.n}`,
+          payment_method: { id: fake.next.pm, card: { brand: 'visa', last4: '4242', exp_month: 4, exp_year: 2030, fingerprint: fake.next.fingerprint } } };
+        fake.setis.set(si.id, si);
+        return { status: 200, body: { id: si.id, client_secret: si.client_secret, status: 'requires_payment_method' } };
+      }
+      const seti = p.match(/^\/v1\/setup_intents\/(.+)$/);
+      if (seti) return fake.setis.has(seti[1]) ? { status: 200, body: fake.setis.get(seti[1]) } : { status: 404, body: { error: { code: 'resource_missing', message: 'No such setupintent' } } };
+      if (/^\/v1\/payment_methods\/.+\/detach$/.test(p)) return { status: 200, body: { id: p.split('/')[3] } };
+      if (p === '/v1/payment_intents') {
+        if (fake.declineNext) {
+          fake.declineNext = false;
+          return { status: 402, body: { error: { type: 'card_error', code: 'card_declined', decline_code: 'insufficient_funds', message: 'Your card has insufficient funds.', payment_intent: { id: `pi_declined_${id()}` } } } };
+        }
+        const pi = { id: `pi_${id()}`, amount: Number(params.amount), capture_method: params.capture_method, metadata: {} as any,
+          status: fake.requireAction ? 'requires_action' : params.capture_method === 'manual' ? 'requires_capture' : 'succeeded' };
+        fake.pis.set(pi.id, pi);
+        return { status: 200, body: pi };
+      }
+      const cap = p.match(/^\/v1\/payment_intents\/(.+)\/capture$/);
+      if (cap) {
+        const pi = fake.pis.get(cap[1]);
+        if (!pi || pi.status !== 'requires_capture') return { status: 400, body: { error: { code: 'payment_intent_unexpected_state', message: 'This PaymentIntent could not be captured' } } };
+        pi.status = 'succeeded'; pi.amount_received = Number(params.amount_to_capture);
+        return { status: 200, body: pi };
+      }
+      const can = p.match(/^\/v1\/payment_intents\/(.+)\/cancel$/);
+      if (can) { const pi = fake.pis.get(can[1]); if (pi) pi.status = 'canceled'; return { status: 200, body: pi ?? { id: can[1], status: 'canceled' } }; }
+      if (p === '/v1/refunds') return { status: 200, body: { id: `re_${id()}`, amount: Number(params.amount), payment_intent: params.payment_intent } };
+      return { status: 404, body: { error: { message: `fake stripe: no route ${p}` } } };
+    })();
+    if (req.method === 'POST' && key) fake.idem.set(key, out);
+    send(out.status, out.body);
+  });
+});
+async function withStripe<T>(fn: () => Promise<T>): Promise<T> {
+  if (!fake.url) { await new Promise<void>((r) => fakeServer.listen(0, '127.0.0.1', r)); fake.url = `http://127.0.0.1:${(fakeServer.address() as AddressInfo).port}`; }
+  const prev = { ...config.stripe };
+  Object.assign(config.stripe, { secretKey: 'sk_test_fake', publishableKey: 'pk_test_fake', webhookSecret: 'whsec_test', apiBase: fake.url });
+  try { return await fn(); } finally { Object.assign(config.stripe, prev); }
+}
+after(() => { fakeServer.close(); });
+async function hook(evt: any, secret = 'whsec_test', t?: number) {
+  const payload = JSON.stringify(evt);
+  const res = await app.inject({ method: 'POST', url: '/payments/stripe/webhook', payload, headers: { 'content-type': 'application/json', 'stripe-signature': signWebhook(payload, secret, t) } });
+  return { status: res.statusCode, ...JSON.parse(res.body) } as any;
+}
+const reqsTo = (path: string, pred: (r: (typeof fake.reqs)[number]) => boolean = () => true) => fake.reqs.filter((r) => r.path === path && pred(r));
+const rideFor = (who: string, extra: Record<string, unknown> = {}) => call('POST', '/trips', who, { kind: 'ride', service: 'ride', pickup: TODD_MALL, dropoff: HOSPITAL, payment_method: 'card', ...extra });
+
+test('Stripe client: nested form encoding; webhook signatures (secret, tolerance, several v1, tampering)', () => {
+  assert.equal(encodeForm({ a: 1, m: { trip_id: 'x' }, l: ['card'], skip: undefined }).toString(), 'a=1&m%5Btrip_id%5D=x&l%5B0%5D=card');
+  const body = JSON.stringify({ id: 'evt_1', type: 'x' });
+  const h = signWebhook(body, 'whsec_a');
+  assert.equal(verifyWebhook(Buffer.from(body), h, 'whsec_a').id, 'evt_1');
+  assert.throws(() => verifyWebhook(Buffer.from(body), h, 'whsec_b'), /does not match/);
+  assert.throws(() => verifyWebhook(Buffer.from(body + ' '), h, 'whsec_a'), /does not match/, 'tampered body');
+  assert.throws(() => verifyWebhook(Buffer.from(body), signWebhook(body, 'whsec_a', Math.floor(Date.now() / 1000) - 400), 'whsec_a'), /too old/);
+  const t = Math.floor(Date.now() / 1000);
+  const two = `t=${t},v1=${'0'.repeat(64)},${signWebhook(body, 'whsec_a', t).split(',')[1]}`;   // rolling secrets: any v1 may match
+  assert.equal(verifyWebhook(Buffer.from(body), two, 'whsec_a').id, 'evt_1');
+  assert.throws(() => verifyWebhook(Buffer.from(body), undefined, 'whsec_a'), /Missing/);
+  assert.throws(() => verifyWebhook(Buffer.from(body), 't=abc', 'whsec_a'), /Malformed/);
+});
+
+let stripeTrip: any;
+test('Stripe mode: card saved only through a checked SetupIntent; fare held on it with idempotency keys and captured at the end; tip on its own PaymentIntent; refunds fare first then tip; dashboard refunds recorded once', async () => {
+  await clearOpenTrips();
+  await onlyOnline(['d1']);
+  await login('sr', '+61400000871');
+  await withStripe(async () => {
+    const pm0 = await call('GET', '/payment-methods', 'sr');
+    assert.deepEqual([pm0.cards.mode, pm0.cards.publishable_key, pm0.methods.length], ['stripe', 'pk_test_fake', 0]);
+    const noCard = await rideFor('sr');
+    assert.deepEqual([noCard.status, noCard.error], [402, 'card_required']);
+    // Card details from the app are not trusted: only a SetupIntent id, checked with Stripe.
+    assert.equal((await call('POST', '/payment-methods', 'sr', { provider_ref: 'pm_x', brand: 'Visa', last4: '4242' })).error, 'validation_error');
+    const setup = await call('POST', '/payment-methods/setup', 'sr');
+    assert.match(setup.client_secret, /^seti_secret_/);
+    assert.equal(setup.publishable_key, 'pk_test_fake');
+    const siReq = reqsTo('/v1/setup_intents').at(-1)!;
+    assert.deepEqual([siReq.params.usage, siReq.params['payment_method_types[0]']], ['off_session', 'card']);
+    assert.match(siReq.params.customer, /^cus_/);
+    fake.setis.set('seti_foreign1', { id: 'seti_foreign1', customer: 'cus_someone_else', status: 'succeeded', payment_method: { id: 'pm_other', card: {} } });
+    assert.equal((await call('POST', '/payment-methods', 'sr', { setup_intent_id: 'seti_foreign1' })).error, 'setup_not_found');
+    assert.equal((await call('POST', '/payment-methods', 'sr', { setup_intent_id: 'seti_missing99' })).error, 'setup_not_found');
+    const saved = await call('POST', '/payment-methods', 'sr', { setup_intent_id: setup.setup_intent_id });
+    assert.deepEqual([saved.method.brand, saved.method.last4, saved.method.is_default, saved.method.exp_year], ['Visa', '4242', true, 2030]);
+    // The same card again (same fingerprint): kept once, the copy detached at Stripe.
+    fake.next = { pm: 'pm_card1copy', fingerprint: 'fp_card1' };
+    const s2 = await call('POST', '/payment-methods/setup', 'sr');
+    const dup = await call('POST', '/payment-methods', 'sr', { setup_intent_id: s2.setup_intent_id });
+    assert.equal(dup.already_saved, true);
+    assert.equal(reqsTo('/v1/payment_methods/pm_card1copy/detach').length, 1);
+    fake.next = { pm: 'pm_card1', fingerprint: 'fp_card1' };
+    assert.equal((await call('GET', '/payment-methods', 'sr')).methods.length, 1);
+
+    const t = await rideFor('sr');
+    assert.equal(t.status, 201, JSON.stringify(t));
+    assert.equal(t.trip.payment_status, 'authorised');
+    const hold = reqsTo('/v1/payment_intents', (r) => r.params['metadata[trip_id]'] === t.trip.id)[0];
+    assert.equal(hold.headers['idempotency-key'], `hold-${t.trip.id}-1`);
+    assert.equal(hold.headers['stripe-version'], '2024-06-20');
+    assert.deepEqual([hold.params.capture_method, hold.params.off_session, hold.params.confirm, hold.params.payment_method, hold.params.currency],
+      ['manual', 'true', 'true', 'pm_card1', 'aud']);
+    assert.equal(hold.params.amount, String(Math.round(t.trip.quote_cents * 1.2)), 'quote + 20%');
+    await offeredTo(t.trip.id, ['d1']);
+    const done = await rideToEnd(t.trip.id, 'd1');
+    assert.equal(done.payment_status, 'captured');
+    const cap = reqsTo(`/v1/payment_intents/${t.trip.payment_ref}/capture`);
+    assert.equal(cap.length, 1);
+    assert.equal(cap[0].params.amount_to_capture, String(done.final_cents));
+    assert.equal(cap[0].headers['idempotency-key'], `capture-${t.trip.payment_ref}-${done.final_cents}`);
+    assert.equal((await one(`SELECT provider FROM payments WHERE trip_id = $1 AND kind = 'capture'`, [t.trip.id])).provider, 'stripe');
+
+    assert.equal((await call('POST', `/trips/${t.trip.id}/tip`, 'sr', { cents: 500 })).ok, true);
+    const tipReq = reqsTo('/v1/payment_intents', (r) => r.params['metadata[kind]'] === 'tip' && r.params['metadata[trip_id]'] === t.trip.id);
+    assert.equal(tipReq.length, 1);
+    assert.deepEqual([tipReq[0].params.capture_method, tipReq[0].headers['idempotency-key']], ['automatic', `tip-${t.trip.id}-500`]);
+    const tipRow = await one(`SELECT provider, provider_ref FROM payments WHERE trip_id = $1 AND kind = 'tip'`, [t.trip.id]);
+    assert.equal(tipRow.provider, 'stripe');
+    assert.notEqual(tipRow.provider_ref, t.trip.payment_ref, 'tip has its own PaymentIntent');
+
+    // Refund the whole fare and $2 of the tip: two refunds, each to its own PaymentIntent; GST only on the fare part.
+    const rf = await call('POST', `/admin/trips/${t.trip.id}/refund`, 'admin', { cents: done.final_cents + 200, reason: 'Test refund' });
+    assert.equal(rf.refundable_cents, 300);
+    const refunds = reqsTo('/v1/refunds', (r) => [t.trip.payment_ref, tipRow.provider_ref].includes(r.params.payment_intent));
+    assert.deepEqual(refunds.map((r) => [r.params.payment_intent, r.params.amount]), [[t.trip.payment_ref, String(done.final_cents)], [tipRow.provider_ref, '200']]);
+    assert.ok(refunds.every((r) => String(r.headers['idempotency-key']).startsWith(`refund-${t.trip.id}-`)));
+    const rows = await q(`SELECT provider_ref, amount_cents, gst_cents FROM payments WHERE trip_id = $1 AND kind = 'refund' ORDER BY amount_cents`, [t.trip.id]);
+    assert.deepEqual(rows.map((r) => [r.amount_cents, r.gst_cents]), [[-done.final_cents, -Math.round(done.final_cents / 11)], [-200, 0]]);
+    const rc = (await call('GET', `/trips/${t.trip.id}/receipt`, 'sr')).receipt;
+    assert.equal(rc.title, 'Tax Invoice (adjusted)');
+    assert.deepEqual([rc.refunded_cents, rc.net_total_cents, rc.net_gst_cents, rc.invoice_number], [done.final_cents + 200, 300, 0, t.trip.ref]);
+    assert.match(rc.tip_note, /not part of the taxable fare/);
+
+    // Stripe tells us about the refunds we made: nothing new. A dashboard refund of $1 more on the tip is recorded once.
+    assert.equal((await hook({ id: 'evt_ref_1', type: 'charge.refunded', data: { object: { id: 'ch_1', payment_intent: t.trip.payment_ref, amount_refunded: done.final_cents } } })).handled, 'already_recorded');
+    const dash = { id: 'evt_ref_2', type: 'charge.refunded', data: { object: { id: 'ch_2', payment_intent: tipRow.provider_ref, amount_refunded: 300 } } };
+    assert.equal((await hook(dash)).handled, 'refund_recorded');
+    assert.equal((await hook(dash)).duplicate, true, 'replayed event applied once');
+    assert.equal((await hook({ ...dash, id: 'evt_ref_3' })).handled, 'already_recorded', 'same total in a new event adds nothing');
+    const total = await one(`SELECT -sum(amount_cents)::int c, sum(gst_cents)::int g FROM payments WHERE trip_id = $1 AND kind = 'refund'`, [t.trip.id]);
+    assert.deepEqual([total.c, total.g], [done.final_cents + 300, -Math.round(done.final_cents / 11)]);
+    assert.equal((await call('POST', `/admin/trips/${t.trip.id}/refund`, 'admin', { cents: 300, reason: 'x' })).error, 'refund_too_large');
+    stripeTrip = { ...done, payment_ref: t.trip.payment_ref };
+  });
+});
+
+test('Stripe mode: declines and bank checks refused plainly; booked trips held at release (declined → cancelled); a lapsed hold is charged afresh; a failed payment is paid later', async () => {
+  await clearOpenTrips();
+  await onlyOnline([]);
+  await withStripe(async () => {
+    const riderId = (await one(`SELECT id FROM users WHERE phone = '+61400000871'`)).id;
+    const count = async () => (await one('SELECT count(*)::int n FROM trips WHERE rider_id = $1', [riderId])).n;
+    const n0 = await count();
+    fake.declineNext = true;
+    const d = await rideFor('sr');
+    assert.deepEqual([d.status, d.error, d.details.reason], [402, 'payment_failed', 'insufficient_funds']);
+    assert.match(d.message, /not enough money/);
+    assert.equal(await count(), n0, 'no trip left behind');
+    fake.requireAction = true;
+    const a = await rideFor('sr');
+    fake.requireAction = false;
+    assert.deepEqual([a.status, a.details.reason], [402, 'authentication_required']);
+    assert.match(a.message, /bank wants to confirm/);
+    const actionPi = [...fake.pis.values()].find((p) => p.status === 'canceled' && p.capture_method === 'manual');
+    assert.ok(actionPi, 'the half-done hold is cancelled');
+
+    // Booked ahead: no hold at booking (holds lapse after ~7 days); held when released to drivers.
+    const at = new Date(Date.now() + 3 * 24 * 3600e3).toISOString();
+    const s = await rideFor('sr', { scheduled_for: at });
+    assert.equal(s.status, 201, JSON.stringify(s));
+    assert.deepEqual([s.trip.status, s.trip.payment_status], ['scheduled', 'none']);
+    assert.equal((await one(`SELECT count(*)::int n FROM payments WHERE trip_id = $1`, [s.trip.id])).n, 0);
+    await q(`UPDATE trips SET scheduled_for = now() + interval '10 minutes' WHERE id = $1`, [s.trip.id]);
+    await dispatchTick();
+    const rel = await one('SELECT status, payment_status, payment_ref FROM trips WHERE id = $1', [s.trip.id]);
+    assert.deepEqual([rel.status, rel.payment_status], ['requested', 'authorised']);
+    assert.equal(reqsTo('/v1/payment_intents', (r) => r.params['metadata[trip_id]'] === s.trip.id)[0].headers['idempotency-key'], `hold-${s.trip.id}-1`);
+    await call('POST', `/trips/${s.trip.id}/cancel`, 'sr', {});
+    assert.equal(reqsTo(`/v1/payment_intents/${rel.payment_ref}/cancel`).length, 1, 'free cancel lets the hold go');
+
+    // Declined at release: the booking is cancelled, nothing charged, rider told.
+    const s2 = await rideFor('sr', { scheduled_for: at });
+    await q(`UPDATE trips SET scheduled_for = now() + interval '10 minutes' WHERE id = $1`, [s2.trip.id]);
+    fake.declineNext = true;
+    await dispatchTick();
+    const r2 = await one('SELECT status, payment_status, cancel_reason FROM trips WHERE id = $1', [s2.trip.id]);
+    assert.deepEqual([r2.status, r2.payment_status], ['cancelled_admin', 'none']);
+    assert.match(r2.cancel_reason, /Card declined/);
+    assert.ok(await one(`SELECT 1 FROM trip_events WHERE trip_id = $1 AND type = 'payment_failed' AND data->>'stage' = 'release'`, [s2.trip.id]));
+    await flushBackground(1000);
+    assert.ok(await one(`SELECT 1 FROM notifications WHERE user_id = $1 AND title = 'Booking cancelled: card declined'`, [riderId]));
+
+    // The hold lapsed (webhook): the fare is charged on the saved card instead of captured.
+    await onlyOnline(['d1']);
+    const t = await rideFor('sr');
+    fake.pis.get(t.trip.payment_ref).status = 'canceled';
+    assert.equal((await hook({ id: 'evt_cancel_1', type: 'payment_intent.canceled', data: { object: { id: t.trip.payment_ref, cancellation_reason: 'automatic' } } })).handled, 'hold_lapsed');
+    assert.equal((await one('SELECT payment_status FROM trips WHERE id = $1', [t.trip.id])).payment_status, 'none');
+    await offeredTo(t.trip.id, ['d1']);
+    const done = await rideToEnd(t.trip.id, 'd1');
+    assert.equal(done.payment_status, 'captured');
+    assert.notEqual(done.payment_ref, t.trip.payment_ref, 'fresh PaymentIntent');
+    const fresh = reqsTo('/v1/payment_intents', (r) => r.headers['idempotency-key'] === `fare-${t.trip.id}-${done.final_cents}`);
+    assert.deepEqual([fresh.length, fresh[0]?.params.capture_method], [1, 'automatic']);
+
+    // Capture fails and the fresh charge is declined: trip "failed" to pay, ops see it, the rider pays later.
+    const t2 = await rideFor('sr');
+    await offeredTo(t2.trip.id, ['d1']);
+    fake.pis.get(t2.trip.payment_ref).status = 'canceled';
+    fake.declineNext = true;
+    const done2 = await rideToEnd(t2.trip.id, 'd1');
+    assert.equal(done2.payment_status, 'failed');
+    const issues = await call('GET', '/admin/payments/issues', 'admin');
+    assert.equal(issues.failed.find((f: any) => f.id === t2.trip.id)?.reason, 'insufficient_funds');
+    assert.equal((await call('GET', '/admin/payments/issues', 'dispatcher')).status, 403);
+    assert.equal((await call('GET', `/trips/${t2.trip.id}/receipt`, 'sr')).receipt.payment_status, 'failed');
+    const paid = await call('POST', `/trips/${t2.trip.id}/pay`, 'sr');
+    assert.deepEqual([paid.ok, paid.payment_status], [true, 'captured']);
+    assert.equal(reqsTo('/v1/payment_intents', (r) => r.headers['idempotency-key'] === `retry-${t2.trip.id}-1-${done2.final_cents}`).length, 1);
+    assert.equal((await call('POST', `/trips/${t2.trip.id}/pay`, 'sr')).error, 'nothing_to_pay');
+    assert.equal((await call('POST', `/trips/${t2.trip.id}/pay`, 'rider')).status, 404, 'only the rider (or staff) can pay it');
+    assert.ok(!(await call('GET', '/admin/payments/issues', 'admin')).failed.some((f: any) => f.id === t2.trip.id));
+  });
+});
+
+test('Stripe webhook: secret and valid signature required; disputes tracked for ops; unknown events ignored', async () => {
+  const evt = { id: 'evt_nosecret', type: 'payment_intent.succeeded', data: { object: { id: 'pi_x' } } };
+  assert.deepEqual([(await hook(evt)).status, (await hook(evt)).error], [503, 'webhook_not_configured']);
+  await withStripe(async () => {
+    assert.equal((await hook(evt, 'whsec_wrong')).error, 'bad_signature');
+    assert.equal((await hook(evt, 'whsec_test', Math.floor(Date.now() / 1000) - 1000)).error, 'signature_expired');
+    const unsigned = await app.inject({ method: 'POST', url: '/payments/stripe/webhook', payload: JSON.stringify(evt), headers: { 'content-type': 'application/json' } });
+    assert.equal(unsigned.statusCode, 400);
+    assert.equal((await hook({ id: 'evt_other', type: 'customer.created', data: { object: { id: 'cus_1' } } })).handled, 'ignored');
+
+    const dispute = (id: string, type: string, status: string) => ({ id, type, data: { object: { id: 'dp_test1', payment_intent: stripeTrip.payment_ref, amount: 1500, status, reason: 'fraudulent' } } });
+    assert.equal((await hook(dispute('evt_dp_1', 'charge.dispute.created', 'needs_response'))).handled, 'dispute_opened');
+    assert.equal((await hook(dispute('evt_dp_1', 'charge.dispute.created', 'needs_response'))).duplicate, true);
+    let issues = await call('GET', '/admin/payments/issues', 'admin');
+    const open = issues.disputes.find((d: any) => d.dispute_ref === 'dp_test1');
+    assert.deepEqual([open?.trip_id, open?.cents, open?.status], [stripeTrip.id, 1500, 'needs_response']);
+    assert.ok(await one(`SELECT 1 FROM trip_events WHERE trip_id = $1 AND type = 'dispute_opened'`, [stripeTrip.id]));
+    assert.equal((await hook(dispute('evt_dp_2', 'charge.dispute.closed', 'won'))).handled, 'dispute_closed');
+    issues = await call('GET', '/admin/payments/issues', 'admin');
+    assert.ok(!issues.disputes.some((d: any) => d.dispute_ref === 'dp_test1'));
+    assert.equal((await one(`SELECT count(*)::int n, max(status) s FROM payments WHERE kind = 'dispute' AND provider_ref = 'dp_test1'`)).n, 1);
+    // Disputes are not GST events.
+    const gst = await call('GET', '/admin/reports/gst', 'admin');
+    if (gst.rows) assert.ok(!gst.rows.some((r: any) => r.kind === 'dispute'));
+  });
+});
+
+test('mock cards: only test accounts in production mode (others: coming soon); top-up and Pass replays charge once; fee invoices show the fee and the NDIS number', async () => {
+  const prev = config.mockCards;
+  config.mockCards = 'test';
+  try {
+    await login('plain', '+61400000872');
+    const pm = await call('GET', '/payment-methods', 'plain');
+    assert.deepEqual([pm.cards.mode, pm.methods.length], ['off', 0]);
+    for (const [m, u, b] of [['POST', '/trips', { kind: 'ride', service: 'ride', pickup: TODD_MALL, dropoff: HOSPITAL, payment_method: 'card' }],
+      ['POST', '/wallet/topup', { cents: 2000 }], ['POST', '/payment-methods/setup', {}], ['POST', '/payment-methods', { provider_ref: 'pm_test_1', brand: 'Visa', last4: '4242' }]] as const) {
+      const r = await call(m, u, 'plain', b);
+      assert.deepEqual([r.status, r.error], [402, 'cards_not_available'], u);
+    }
+    assert.equal((await call('GET', '/payment-methods', 'rider')).cards.mode, 'test', 'seeded demo number');
+    await q(`UPDATE users SET test_account = true WHERE phone = '+61400000872'`);
+    assert.equal((await call('GET', '/payment-methods', 'plain')).cards.mode, 'test', 'admin-made test account');
+  } finally { config.mockCards = prev; }
+
+  const w0 = await wallet();
+  const t1 = await callH('POST', '/wallet/topup', 'rider', { cents: 2000 }, { 'idempotency-key': 'topup-key-0001' });
+  const t2 = await callH('POST', '/wallet/topup', 'rider', { cents: 2000 }, { 'idempotency-key': 'topup-key-0001' });
+  assert.deepEqual([t1.wallet_cents, t2.wallet_cents, t2.replayed], [w0 + 2000, w0 + 2000, true]);
+  assert.equal((await callH('POST', '/wallet/topup', 'rider', { cents: 2000 }, { 'idempotency-key': 'topup-key-0002' })).wallet_cents, w0 + 4000);
+  const plan = (await call('GET', '/plans', 'rider')).plans[0];
+  if (plan) {
+    const p1 = await callH('POST', '/subscriptions', 'rider', { plan_code: plan.code }, { 'idempotency-key': 'pass-key-0001' });
+    const p2 = await callH('POST', '/subscriptions', 'rider', { plan_code: plan.code }, { 'idempotency-key': 'pass-key-0001' });
+    assert.equal(p2.replayed, true);
+    assert.equal(p1.subscription.id ?? p1.subscription.user_id, p2.subscription.id ?? p2.subscription.user_id);
+    assert.equal((await one(`SELECT count(*)::int n FROM payments WHERE kind = 'subscription' AND provider_ref = (SELECT provider_ref FROM subscriptions WHERE user_id = (SELECT id FROM users WHERE phone = '+61400000100'))`)).n, 1);
+  }
+
+  // Cards: default and remove (the next card becomes the default).
+  const a = (await call('POST', '/payment-methods', 'plain', { provider_ref: 'pm_test_a', brand: 'Visa', last4: '1111' })).method;
+  const b = (await call('POST', '/payment-methods', 'plain', { provider_ref: 'pm_test_b', brand: 'Mastercard', last4: '2222' })).method;
+  assert.deepEqual([a.is_default, b.is_default], [true, false]);
+  assert.equal((await call('POST', `/payment-methods/${b.id}/default`, 'plain')).ok, true);
+  assert.equal((await call('GET', '/payment-methods', 'plain')).methods[0].id, b.id, 'default listed first');
+  assert.equal((await call('POST', `/payment-methods/${b.id}/default`, 'rider')).status, 404, 'not your card');
+  await call('DELETE', `/payment-methods/${b.id}`, 'plain');
+  const left = (await call('GET', '/payment-methods', 'plain')).methods;
+  assert.deepEqual(left.map((m: any) => [m.id, m.is_default]), [[a.id, true]]);
+
+  // A cancellation-fee invoice shows the fee, not the trip's fare lines; NDIS number on the invoice.
+  const fee = await one(`SELECT id, cancel_fee_cents FROM trips WHERE cancel_fee_cents > 0 AND status <> 'completed' AND rider_id = (SELECT id FROM users WHERE phone = '+61400000100') LIMIT 1`);
+  assert.ok(fee, 'an earlier test left a fee trip');
+  await q(`UPDATE trips SET ndis_number = '430000001' WHERE id = $1`, [fee.id]);
+  const rc = (await call('GET', `/trips/${fee.id}/receipt`, 'rider')).receipt;
+  assert.deepEqual(rc.lines, [{ label: 'Cancellation fee', cents: fee.cancel_fee_cents }]);
+  assert.deepEqual([rc.fare_cents, rc.gst_cents, rc.cancellation_fee, rc.customer.ndis_number, rc.co2_saved_kg], [fee.cancel_fee_cents, Math.round(fee.cancel_fee_cents / 11), true, '430000001', null]);
+  assert.match(rc.gst_note, /^Total includes GST of \$/);
 });

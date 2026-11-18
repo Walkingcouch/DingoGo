@@ -1,6 +1,7 @@
-import type { FastifyInstance } from 'fastify';
+import crypto from 'node:crypto';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { config } from '../config.js';
-import { one, q, tx } from '../db.js';
+import { one, q, tx, type Q } from '../db.js';
 import { requireUser } from '../auth.js';
 import { ApiError, bad, conflict, forbidden, notFound } from '../lib/errors.js';
 import { voucherCode } from '../lib/ids.js';
@@ -10,6 +11,18 @@ import { toOps } from '../realtime.js';
 import { notify } from '../services/notify.js';
 import * as pay from '../services/payments.js';
 import * as trips from '../services/trips.js';
+
+/** Client Idempotency-Key header (a double tap or a retry after a lost reply sends the same one). */
+const idemKey = (req: FastifyRequest) => {
+  const k = req.headers['idempotency-key'];
+  return typeof k === 'string' && /^[A-Za-z0-9_-]{8,100}$/.test(k) ? k : null;
+};
+
+/** Record a one-off card payment (top-up, Pass) once, even when the same Stripe payment comes back for a replayed request. */
+async function recordOnce(c: Q, ref: string, kind: string) {
+  await c.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`${kind}:${ref}`]);
+  return !!(await one('SELECT 1 FROM payments WHERE provider_ref = $1 AND kind = $2', [ref, kind], c));
+}
 
 const quoteSchema = z.object({
   service: z.string().max(40),
@@ -113,26 +126,55 @@ export default async function riderRoutes(app: FastifyInstance) {
     return trips.addTip(me.id, (req.params as any).id, b.cents);
   });
 
-  /** Tax invoice — rideshare is a taxable supply so every receipt shows ABN + GST. */
+  /** Tax invoice — rideshare is a taxable supply so every receipt shows ABN + GST. Refunds are listed as adjustments and the
+   *  totals are net of them; tips are not part of the supply (no GST), matching the GST report. */
   app.get('/trips/:id/receipt', async (req) => {
     const me = await requireUser(req);
     const t = await trips.getTrip((req.params as any).id);
     if (!trips.canView(t, me)) throw notFound('Trip');
     if (t.status !== 'completed' && !t.cancel_fee_cents) throw conflict('no_receipt', 'Receipt available once the trip is complete');
-    const total = (t.final_cents ?? t.cancel_fee_cents) + t.tip_cents;
-    const biz = await one(`SELECT value FROM settings WHERE key = 'business'`);
+    const fee = t.status !== 'completed';
+    const fare = fee ? t.cancel_fee_cents : t.final_cents;
+    const biz = (await one(`SELECT value FROM settings WHERE key = 'business'`))?.value ?? {};
+    const refunds = await q(`SELECT created_at AS at, -amount_cents AS cents, -gst_cents AS gst_cents FROM payments
+                             WHERE trip_id = $1 AND kind = 'refund' AND status = 'succeeded' ORDER BY created_at`, [t.id]);
+    const refunded = refunds.reduce((n: number, r: any) => n + r.cents, 0);
+    const refundedGst = refunds.reduce((n: number, r: any) => n + r.gst_cents, 0);
+    const gst = Math.round(fare / 11);
+    const netGst = gst - refundedGst;
+    const total = fare + t.tip_cents;
+    const lines = fee ? [{ label: 'Cancellation fee', cents: fare }] : t.fare_breakdown.lines;
+    // Fares are the driver's taxable supply (each driver is registered for GST; see the GST report): DingoGo issues the
+    // invoice on the driver's behalf, so it carries the driver's ABN as well as DingoGo's.
+    const drv = t.driver_id ? await one('SELECT abn, gst_registered FROM drivers WHERE user_id = $1', [t.driver_id]) : null;
     return {
       receipt: {
-        title: 'Tax Invoice', supplier: biz?.value ?? {}, trip_ref: t.ref, date: t.completed_at ?? t.cancelled_at,
-        service: t.service, from: t.pickup_address, to: t.dropoff_address,
+        title: refunded > 0 ? 'Tax Invoice (adjusted)' : 'Tax Invoice', invoice_number: t.ref,
+        supplier: biz, supplier_abn: biz.abn ?? null,
+        supplied_by: t.driver ? { name: t.driver.name, abn: drv?.abn ?? null, gst_registered: !!drv?.gst_registered } : null,
+        issued_on_behalf: !!t.driver, trip_ref: t.ref, date: t.completed_at ?? t.cancelled_at, issued_at: new Date().toISOString(),
+        customer: { name: t.rider?.name ?? null, ndis_number: t.ndis_number ?? null },
+        service: t.service, from: t.pickup_address, to: t.dropoff_address, cancellation_fee: fee,
         driver: t.driver?.name, vehicle: t.vehicle?.rego, vehicle_fuel_type: t.vehicle?.fuel_type ?? null, vehicle_is_ev: !!t.vehicle?.is_ev,
-        lines: t.fare_breakdown.lines, fare_cents: t.final_cents ?? t.cancel_fee_cents, tip_cents: t.tip_cents,
-        total_cents: total, gst_cents: Math.round((total - t.tip_cents) / 11), payment_method: t.payment_method,
+        lines, fare_cents: fare, tip_cents: t.tip_cents,
+        total_cents: total, gst_cents: gst,
+        refunds, refunded_cents: refunded, net_total_cents: total - refunded, net_gst_cents: netGst,
+        gst_note: `Total includes GST of $${(netGst / 100).toFixed(2)}`,
+        tip_note: t.tip_cents > 0 ? 'Tips go 100% to your driver and are not part of the taxable fare (no GST).' : null,
+        payment_method: t.payment_method, payment_status: t.payment_status,
         distance_km: Math.round((t.actual_distance_m ?? t.est_distance_m) / 100) / 10,
         // CO₂ saved only for trips actually done in an electric car (vs avg petrol car ~180 g/km); null otherwise.
-        co2_saved_kg: t.vehicle?.is_ev ? Math.round(((t.actual_distance_m ?? t.est_distance_m) / 1000) * 0.18 * 10) / 10 : null,
+        co2_saved_kg: !fee && t.vehicle?.is_ev ? Math.round(((t.actual_distance_m ?? t.est_distance_m) / 1000) * 0.18 * 10) / 10 : null,
       },
     };
+  });
+
+  /** Pay a trip whose card payment didn't go through, with the rider's current default card. */
+  app.post('/trips/:id/pay', async (req) => {
+    const me = await requireUser(req);
+    const r = await trips.retryTripPayment((req.params as any).id, me);
+    if (!r.ok) throw new ApiError(402, 'payment_failed', r.error ?? 'Your card could not be charged', { reason: r.code });
+    return r;
   });
 
   /** Emergency: notifies DingoGo ops + emergency contact. The app also offers a one-tap 000 call. */
@@ -203,18 +245,22 @@ export default async function riderRoutes(app: FastifyInstance) {
     const b = parse(z.object({ plan_code: z.string().max(40) }), req.body);
     const plan = await one('SELECT * FROM plans WHERE code = $1 AND active', [b.plan_code]);
     if (!plan) throw notFound('Plan');
-    const auth = await pay.authorise(plan.price_cents, { description: `DingoGo Pass ${plan.name}` });
-    if (!auth.ok) throw bad('payment_failed', auth.error);
-    const cap = await pay.capture(auth.ref, plan.price_cents);
-    if (!cap.ok) throw bad('payment_failed', cap.error ?? 'Your card could not be charged');
-    await q(`INSERT INTO payments (user_id, provider, provider_ref, kind, amount_cents, gst_cents, status) VALUES ($1,$2,$3,'subscription',$4,$5,'succeeded')`,
-      [me.id, auth.provider, auth.ref, plan.price_cents, Math.round(plan.price_cents / 11)]);
-    const sub = await one(
-      `INSERT INTO subscriptions (user_id, plan_code, status, period_start, period_end, deliveries_used, provider_ref)
-       VALUES ($1,$2,'active', now(), now() + interval '1 month', 0, $3)
-       ON CONFLICT (user_id) DO UPDATE SET plan_code = $2, status = 'active', period_start = now(), period_end = now() + interval '1 month', deliveries_used = 0, provider_ref = $3
-       RETURNING *`, [me.id, plan.code, auth.ref]);
-    return { subscription: sub };
+    await pay.requireCardOnFile(me.id);
+    const r = await pay.charge({ userId: me.id, amountCents: plan.price_cents, description: `DingoGo Pass ${plan.name}`,
+      key: `pass-${me.id}-${plan.code}-${idemKey(req) ?? crypto.randomUUID()}`, metadata: { user_id: me.id, kind: 'subscription' } });
+    if (!r.ok) throw trips.payError(r);
+    return tx(async (c) => {
+      // A replayed request (same Idempotency-Key) gets the same payment back from Stripe: don't start the month again.
+      if (await recordOnce(c, r.ref, 'subscription')) return { subscription: await one('SELECT * FROM subscriptions WHERE user_id = $1', [me.id], c), replayed: true };
+      await c.query(`INSERT INTO payments (user_id, provider, provider_ref, kind, amount_cents, gst_cents, status) VALUES ($1,$2,$3,'subscription',$4,$5,'succeeded')`,
+        [me.id, r.provider, r.ref, plan.price_cents, Math.round(plan.price_cents / 11)]);
+      const sub = await one(
+        `INSERT INTO subscriptions (user_id, plan_code, status, period_start, period_end, deliveries_used, provider_ref)
+         VALUES ($1,$2,'active', now(), now() + interval '1 month', 0, $3)
+         ON CONFLICT (user_id) DO UPDATE SET plan_code = $2, status = 'active', period_start = now(), period_end = now() + interval '1 month', deliveries_used = 0, provider_ref = $3
+         RETURNING *`, [me.id, plan.code, r.ref], c);
+      return { subscription: sub };
+    });
   });
 
   app.delete('/subscriptions', async (req) => {
@@ -224,39 +270,96 @@ export default async function riderRoutes(app: FastifyInstance) {
   });
 
   // ───────────── Payment methods & wallet ─────────────
+  /** Saved cards. `cards.mode`: stripe (add with Stripe Elements using `publishable_key`), test (mock test card) or off (coming soon). */
   app.get('/payment-methods', async (req) => {
     const me = await requireUser(req);
     const u = await one('SELECT wallet_cents FROM users WHERE id = $1', [me.id]);
-    return { methods: await q('SELECT id, provider, brand, last4, is_default FROM payment_methods WHERE user_id = $1 ORDER BY created_at', [me.id]), wallet_cents: u.wallet_cents };
+    const mode = await pay.cardModeFor(me.id);
+    const base = `FROM payment_methods WHERE user_id = $1 AND ${pay.usableCardsSql()} ORDER BY is_default DESC, created_at`;
+    const methods = mode === 'off' ? [] : await q(`SELECT id, provider, brand, last4, is_default, exp_month, exp_year ${base}`, [me.id])
+      .catch(() => q(`SELECT id, provider, brand, last4, is_default ${base}`, [me.id]));   // before migration 014
+    return { methods, wallet_cents: u.wallet_cents, cards: { mode, publishable_key: mode === 'stripe' ? config.stripe.publishableKey || null : null } };
   });
   app.post('/payment-methods/setup', async (req) => {
-    await requireUser(req);
-    return pay.setupIntent();
+    const me = await requireUser(req);
+    await pay.requireCards(me.id);
+    return pay.setupIntent(me.id);
   });
-  /** Called after Stripe confirms the SetupIntent on-device (or in mock mode with a test card). */
+  /** Called after the app confirms the SetupIntent (Stripe), or with a test card (test mode). With Stripe the card details
+   *  come from Stripe, never from the request, and the SetupIntent must belong to this rider. */
   app.post('/payment-methods', async (req) => {
     const me = await requireUser(req);
+    const mode = await pay.requireCards(me.id);
+    const count = await one<{ n: number }>(`SELECT count(*)::int n FROM payment_methods WHERE user_id = $1 AND ${pay.usableCardsSql()}`, [me.id]);
+    if (count!.n >= 10) throw bad('too_many_cards', 'You can save up to 10 cards. Remove one first.');
+    if (mode === 'stripe') {
+      const b = parse(z.object({ setup_intent_id: z.string().regex(/^seti_[A-Za-z0-9_]{6,200}$/) }), req.body);
+      const card = await pay.cardFromSetup(me.id, b.setup_intent_id);
+      const out = await tx(async (c) => {
+        await c.query('SELECT id FROM users WHERE id = $1 FOR UPDATE', [me.id]);
+        const same = await one(`SELECT id, brand, last4, is_default, exp_month, exp_year, provider_ref FROM payment_methods
+                                WHERE user_id = $1 AND provider = 'stripe' AND (provider_ref = $2 OR (fingerprint IS NOT NULL AND fingerprint = $3))`,
+          [me.id, card.ref, card.fingerprint], c);
+        if (same) return { method: same, duplicate: same.provider_ref !== card.ref };
+        const n = await one<{ n: number }>(`SELECT count(*)::int n FROM payment_methods WHERE user_id = $1 AND ${pay.usableCardsSql()}`, [me.id], c);
+        const pm = await one(`INSERT INTO payment_methods (user_id, provider, provider_ref, brand, last4, is_default, fingerprint, exp_month, exp_year)
+                              VALUES ($1,'stripe',$2,$3,$4,$5,$6,$7,$8) RETURNING id, brand, last4, is_default, exp_month, exp_year`,
+          [me.id, card.ref, card.brand, card.last4, n!.n === 0, card.fingerprint, card.exp_month, card.exp_year], c);
+        return { method: pm, duplicate: false };
+      });
+      // The same card saved twice: keep the first, let Stripe forget the copy.
+      if (out.duplicate) await pay.detachCard(card.ref).catch(() => undefined);
+      const { provider_ref: _r, ...method } = out.method as any;
+      return { method, already_saved: 'provider_ref' in out.method };
+    }
     const b = parse(z.object({ provider_ref: z.string().min(1).max(255), brand: z.string().max(20), last4: z.string().regex(/^\d{4}$/) }), req.body);
-    const n = await one<{ n: number }>('SELECT count(*)::int n FROM payment_methods WHERE user_id = $1', [me.id]);
-    const pm = await one(`INSERT INTO payment_methods (user_id, provider, provider_ref, brand, last4, is_default) VALUES ($1,'stripe',$2,$3,$4,$5) RETURNING id, brand, last4, is_default`,
-      [me.id, b.provider_ref, b.brand, b.last4, n!.n === 0]);
+    const pm = await one(`INSERT INTO payment_methods (user_id, provider, provider_ref, brand, last4, is_default) VALUES ($1,'mock',$2,$3,$4,$5) RETURNING id, brand, last4, is_default`,
+      [me.id, b.provider_ref, b.brand, b.last4, count!.n === 0]);
     return { method: pm };
+  });
+  app.post('/payment-methods/:id/default', async (req) => {
+    const me = await requireUser(req);
+    const id = String((req.params as any).id);
+    if (!/^[0-9a-f-]{36}$/i.test(id)) throw notFound('Card');
+    return tx(async (c) => {
+      const pm = await one(`SELECT id FROM payment_methods WHERE id = $1 AND user_id = $2 AND ${pay.usableCardsSql()}`, [id, me.id], c);
+      if (!pm) throw notFound('Card');
+      await c.query('UPDATE payment_methods SET is_default = (id = $2) WHERE user_id = $1', [me.id, id]);
+      return { ok: true };
+    });
   });
   app.delete('/payment-methods/:id', async (req) => {
     const me = await requireUser(req);
-    await q('DELETE FROM payment_methods WHERE id = $1 AND user_id = $2', [(req.params as any).id, me.id]);
+    const id = String((req.params as any).id);
+    if (!/^[0-9a-f-]{36}$/i.test(id)) return { ok: true };
+    const gone = await tx(async (c) => {
+      const d = await one('DELETE FROM payment_methods WHERE id = $1 AND user_id = $2 RETURNING provider, provider_ref, is_default', [id, me.id], c);
+      // Removing the default card makes the newest remaining card the default (booking always has a card to hold).
+      if (d?.is_default) {
+        await c.query(`UPDATE payment_methods SET is_default = true WHERE id = (SELECT id FROM payment_methods WHERE user_id = $1 AND ${pay.usableCardsSql()}
+                       ORDER BY created_at DESC LIMIT 1)`, [me.id]);
+      }
+      return d;
+    });
+    if (gone?.provider === 'stripe') await pay.detachCard(gone.provider_ref).catch((e) => console.error('detach card', e));
     return { ok: true };
   });
   app.post('/wallet/topup', async (req) => {
     const me = await requireUser(req);
     const b = parse(z.object({ cents: z.number().int().min(1000).max(50000) }), req.body);
-    const auth = await pay.authorise(b.cents, { description: 'DingoGo credit top-up' });
-    if (!auth.ok) throw bad('payment_failed', auth.error);
-    const cap = await pay.capture(auth.ref, b.cents);
-    if (!cap.ok) throw bad('payment_failed', cap.error ?? 'Your card could not be charged');
-    await q(`INSERT INTO payments (user_id, provider, provider_ref, kind, amount_cents, status) VALUES ($1,$2,$3,'topup',$4,'succeeded')`, [me.id, auth.provider, auth.ref, b.cents]);
-    const u = await one('UPDATE users SET wallet_cents = wallet_cents + $2 WHERE id = $1 RETURNING wallet_cents', [me.id, b.cents]);
-    return { wallet_cents: u.wallet_cents };
+    await pay.requireCardOnFile(me.id);
+    const r = await pay.charge({ userId: me.id, amountCents: b.cents, description: 'DingoGo credit top-up',
+      key: `topup-${me.id}-${b.cents}-${idemKey(req) ?? crypto.randomUUID()}`, metadata: { user_id: me.id, kind: 'topup' } });
+    if (!r.ok) throw trips.payError(r);
+    return tx(async (c) => {
+      const replayed = await recordOnce(c, r.ref, 'topup');
+      if (!replayed) {
+        await c.query(`INSERT INTO payments (user_id, provider, provider_ref, kind, amount_cents, status) VALUES ($1,$2,$3,'topup',$4,'succeeded')`, [me.id, r.provider, r.ref, b.cents]);
+        await c.query('UPDATE users SET wallet_cents = wallet_cents + $2 WHERE id = $1', [me.id, b.cents]);
+      }
+      const u = await one('SELECT wallet_cents FROM users WHERE id = $1', [me.id], c);
+      return { wallet_cents: u.wallet_cents, ...(replayed ? { replayed: true } : {}) };
+    });
   });
 
   /** Prepaid voucher cards (sold at partner shops / community orgs) for customers without bank cards. */

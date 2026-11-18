@@ -1,9 +1,11 @@
 import { useState } from 'react';
-import { get, money, useLoad } from '@dingogo/shared';
+import { dateTime, get, money, useLoad } from '@dingogo/shared';
+import { Link } from 'react-router-dom';
+import { PAYMENT_ROW_STATUS, label } from '../labels';
 import { Page } from '../ctx';
 import { ErrorMsg, Section, Table, downloadCsv, useRun } from '../ui';
 
-const KIND: Record<string, string> = { capture: 'Card fares', cash: 'Cash fares', invoice: 'Account invoices', subscription: 'DingoGo Pass', refund: 'Refunds', tip: 'Tips (passed to drivers)' };
+const KIND: Record<string, string> = { topup: 'Credit top-ups', capture: 'Card fares', cash: 'Cash fares', invoice: 'Account invoices', subscription: 'DingoGo Pass', refund: 'Refunds', tip: 'Tips (passed to drivers)' };
 
 export default function Reports() {
   const [month, setMonth] = useState(new Date().toISOString().slice(0, 7));
@@ -14,8 +16,31 @@ export default function Reports() {
   const l = levy.data;
   const run = useRun();
   const g = gst.data;
+  const issues = useLoad(() => get('/admin/payments/issues'), []);
+  const integ = useLoad(() => get('/admin/integrations').catch(() => null), []);
+  const on = (k: string) => integ.data?.[k] === 'configured';
   return (
     <Page title="Reports">
+      <Section title="Payment problems" />
+      <p className="dg-muted" style={{ marginTop: 0, maxWidth: 780 }}>Card payments that didn't go through (the rider is asked to pay in the app; open the trip to retry) and disputes (chargebacks) still open in Stripe. Reply to disputes in the Stripe dashboard before the due date.</p>
+      {integ.data && <p className="dg-muted" role="status">Card payments: {on('payments') ? 'Stripe connected' : 'test payments only (Stripe not set up)'}
+        {on('payments') && `, webhook ${on('payments_webhook') ? 'set up' : 'not set up (hold lapses, dashboard refunds and disputes are not seen)'}, card form in the app ${on('card_elements') ? 'on' : 'off (needs the publishable key)'}`}.</p>}
+      <ErrorMsg error={issues.error} />
+      {issues.data && (<>
+        <h3>Failed payments</h3>
+        <Table rows={issues.data.failed} rowKey={(r) => r.id} empty="No failed payments." cols={[
+          { key: 'ref', label: 'Trip', render: (r) => <Link to={`/trips?open=${r.id}`}>{r.ref}</Link> }, { key: 'rider_name', label: 'Rider' },
+          { key: 'at', label: 'When', render: (r) => (r.at ? dateTime(r.at) : '') }, { key: 'reason', label: 'Reason', render: (r) => r.reason ?? '' },
+          { key: 'cents', label: 'Amount', num: true, render: (r) => money(r.cents) },
+        ]} />
+        <h3 style={{ marginTop: 14 }}>Open disputes</h3>
+        <Table rows={issues.data.disputes} rowKey={(r) => r.id} empty="No open disputes." cols={[
+          { key: 'ref', label: 'Trip', render: (r) => (r.trip_id ? <Link to={`/trips?open=${r.trip_id}`}>{r.ref}</Link> : r.dispute_ref) }, { key: 'rider_name', label: 'Rider' },
+          { key: 'status', label: 'Status', render: (r) => label(PAYMENT_ROW_STATUS, r.status) }, { key: 'created_at', label: 'Opened', render: (r) => dateTime(r.created_at) },
+          { key: 'cents', label: 'Amount', num: true, render: (r) => money(r.cents) },
+        ]} />
+      </>)}
+
       <Section title="NT passenger services levy" right={<input className="dg-input" type="month" value={month} onChange={(e) => setMonth(e.target.value)} aria-label="Levy month" style={{ width: 'auto', minHeight: 38 }} />} />
       <p className="dg-muted" style={{ marginTop: 0, maxWidth: 780 }}>As an approved dispatch network, DingoGo lodges and pays $1 for every completed passenger trip each month. Courier jobs are not passenger trips. Under-reporting is an offence, so lodge from this report.</p>
       <ErrorMsg error={levy.error} />

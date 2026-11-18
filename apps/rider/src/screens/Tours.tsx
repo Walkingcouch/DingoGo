@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ApiError, get, money, post, useLoad } from '@dingogo/shared';
 import { PlaceField, type Place } from '../components/PlaceField';
@@ -18,7 +18,10 @@ export function ToursPanel({ pickup, setPickup, onFocusPickup, payMethod }: { pi
   const [guests, setGuests] = useState(2);
   const cfg = useLoad(() => get('/public/config'), []);
   const cashRide = !!cfg.data?.cash_payments?.ride;
-  const [pay, setPay] = useState<'card' | 'cash'>(payMethod === 'cash' && cashRide ? 'cash' : 'card');
+  const [pay, setPay] = useState<'card' | 'cash' | 'wallet'>(payMethod === 'cash' && cashRide ? 'cash' : 'card');
+  const pm = useLoad(() => get('/payment-methods'), []);
+  const cardsOff = pm.data?.cards?.mode === 'off';
+  useEffect(() => { if (cardsOff && pay === 'card') setPay('wallet'); }, [cardsOff]); // eslint-disable-line react-hooks/exhaustive-deps
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -75,7 +78,8 @@ export function ToursPanel({ pickup, setPickup, onFocusPickup, payMethod }: { pi
       </div>
       <label className="dg-field"><span>Pay with</span>
         <select className="dg-select" value={pay} onChange={(e) => setPay(e.target.value as any)}>
-          <option value="card">Card</option>{cashRide && <option value="cash">Cash on the day</option>}
+          {!cardsOff && <option value="card">Card (held 15 minutes before pickup)</option>}
+          <option value="wallet">DingoGo credit</option>{cashRide && <option value="cash">Cash on the day</option>}
         </select></label>
       <p className="quote__total dg-money" style={{ margin: '.2rem 0 .8rem' }}>{money(sel.price_cents + 100)} <small className="dg-muted" style={{ fontSize: 'var(--fs-sm)', fontWeight: 400 }}>incl. GST and $1 NT passenger levy</small></p>
       {err && <p className="dg-error" role="alert">{err}</p>}

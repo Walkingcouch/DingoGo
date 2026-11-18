@@ -113,6 +113,76 @@ function Profile() {
   );
 }
 
+// Stripe.js must be loaded from js.stripe.com (PCI): card numbers go from Stripe's own fields straight to Stripe, never to DingoGo.
+let stripeJs: Promise<any> | null = null;
+function loadStripe(publishableKey: string) {
+  stripeJs ??= new Promise((resolve, reject) => {
+    const w = window as any;
+    if (w.Stripe) return resolve(w.Stripe(publishableKey));
+    const el = document.createElement('script');
+    el.src = 'https://js.stripe.com/v3/';
+    el.async = true;
+    el.onload = () => (w.Stripe ? resolve(w.Stripe(publishableKey)) : reject(new Error('no Stripe')));
+    el.onerror = () => { stripeJs = null; el.remove(); reject(new Error('load failed')); };
+    document.head.appendChild(el);
+  });
+  return stripeJs;
+}
+
+/** Stripe Payment Element for one card: SetupIntent from the API, confirmed on the device (bank check if the bank asks),
+ *  then the API reads the card from Stripe. */
+function AddCard({ publishableKey, onDone, onCancel }: { publishableKey: string; onDone: (msg: string) => void; onCancel: () => void }) {
+  const host = useRef<HTMLDivElement>(null);
+  const st = useRef<{ stripe: any; elements: any } | null>(null);
+  const [ready, setReady] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  useEffect(() => {
+    let gone = false;
+    (async () => {
+      try {
+        const [stripe, setup] = await Promise.all([loadStripe(publishableKey), post('/payment-methods/setup')]);
+        if (gone || !host.current) return;
+        const dark = window.matchMedia?.('(prefers-color-scheme: dark)').matches;
+        const elements = stripe.elements({ clientSecret: setup.client_secret, appearance: { theme: dark ? 'night' : 'stripe', variables: { borderRadius: '10px' } } });
+        const pe = elements.create('payment', { layout: 'tabs', wallets: { applePay: 'never', googlePay: 'never' } });
+        pe.on('ready', () => { if (!gone) setReady(true); });
+        pe.mount(host.current);
+        st.current = { stripe, elements };
+      } catch (e) {
+        if (!gone) setErr(e instanceof ApiError ? e.message : 'We could not load the card form. Check your signal and try again.');
+      }
+    })();
+    return () => { gone = true; try { st.current?.elements.getElement('payment')?.destroy(); } catch { /* already gone */ } };
+  }, [publishableKey]);
+  const save = async () => {
+    if (!st.current || busy) return;
+    setBusy(true); setErr(null);
+    try {
+      const { error, setupIntent } = await st.current.stripe.confirmSetup({ elements: st.current.elements, redirect: 'if_required',
+        confirmParams: { return_url: `${location.origin}${location.pathname}` } });
+      if (error) { setErr(error.message ?? 'Your card was not accepted. Check the details and try again.'); return; }
+      const r = await post('/payment-methods', { setup_intent_id: setupIntent.id });
+      onDone(r.already_saved ? 'That card is already saved.' : `${r.method.brand} ending ${r.method.last4} saved.`);
+    } catch (e) {
+      setErr(e instanceof ApiError ? e.message : 'Something went wrong. Try again.');
+    } finally { setBusy(false); }
+  };
+  return (
+    <div className="addcard">
+      <h3 className="section__title">Add a card</h3>
+      <div ref={host} className="addcard__element" aria-busy={!ready} />
+      {!ready && !err && <Spinner />}
+      {err && <p className="dg-error" role="alert">{err}</p>}
+      <p className="dg-muted" style={{ fontSize: 'var(--fs-xs)' }}>Your card details go straight to Stripe, our payment processor. DingoGo never sees or stores your card number. Your bank may ask you to confirm.</p>
+      <div className="tips__row">
+        <button className="dg-btn dg-btn--dark" aria-disabled={!ready || busy} onClick={() => void save()}>{busy ? 'Saving…' : 'Save card'}</button>
+        <button className="dg-btn dg-btn--ghost" onClick={onCancel}>Cancel</button>
+      </div>
+    </div>
+  );
+}
+
 function Payment() {
   const { me, reload } = useMe();
   const pm = useLoad(() => get('/payment-methods'));
@@ -120,46 +190,72 @@ function Payment() {
   const [msg, setMsg] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [adding, setAdding] = useState(false);
+  const [removing, setRemoving] = useState<any | null>(null);
+  const mode: 'stripe' | 'test' | 'off' = pm.data?.cards?.mode ?? 'test';
+  const pk: string | null = pm.data?.cards?.publishable_key ?? null;
+  const methods: any[] = pm.data?.methods ?? [];
   const act = async (fn: () => Promise<any>, ok: string) => {
     setBusy(true); setErr(null); setMsg(null);
     try { await fn(); await Promise.all([pm.reload(), reload()]); setMsg(ok); }
     catch (e) { setErr(e instanceof ApiError ? e.message : 'Something went wrong'); }
     finally { setBusy(false); }
   };
+  const expiry = (c: any) => (c.exp_month && c.exp_year ? `expires ${String(c.exp_month).padStart(2, '0')}/${String(c.exp_year).slice(-2)}` : null);
   return (
     <Page title="Payment" back="/account">
       <div className="points points--green">
         <div><span className="points__n">{money(me?.user.wallet_cents ?? 0)}</span><span className="points__l">DingoGo credit</span></div>
-        <p>Use it like cash on any trip. Top up with a card, or buy a prepaid card at a partner shop.</p>
+        <p>Use it like cash on any trip. {mode === 'off' ? 'Buy a prepaid card at a partner shop.' : 'Top up with a card, or buy a prepaid card at a partner shop.'}</p>
       </div>
       {err && <p className="dg-error" role="alert">{err}</p>}
       {msg && <p className="callout callout--green" role="status">{msg}</p>}
       <section className="section">
         <h2 className="section__title">Cards</h2>
-        {pm.loading ? <Spinner /> : (
-          <ul className="list">
-            {pm.data?.methods.map((c: any) => (
-              <li key={c.id} className="row">
-                <span className="row__icon"><Icon name="card" size={20} /></span>
-                <span className="row__main"><strong>{c.brand} ending {c.last4}</strong>{c.is_default && <span className="dg-muted">Default</span>}</span>
-                <button className="dg-btn dg-btn--ghost dg-btn--sm" disabled={busy} onClick={() => act(() => del(`/payment-methods/${c.id}`), 'Card removed.')}>Remove</button>
-              </li>
-            ))}
-            {!pm.data?.methods.length && <li className="dg-muted">No cards saved yet.</li>}
-          </ul>
+        {pm.loading ? <Spinner /> : mode === 'off' ? (
+          <p className="callout callout--dusk"><strong>Card payments are coming soon.</strong> For now, pay with DingoGo credit (prepaid cards from partner shops work too){' '}
+            or a business account. Parcels can also be paid in cash.</p>
+        ) : (
+          <>
+            <ul className="list">
+              {methods.map((c) => (
+                <li key={c.id} className="row">
+                  <span className="row__icon"><Icon name="card" size={20} /></span>
+                  <span className="row__main"><strong>{c.brand} ending {c.last4}</strong>
+                    <span className="dg-muted">{[c.is_default ? 'Default' : null, expiry(c)].filter(Boolean).join(', ')}</span></span>
+                  {!c.is_default && <button className="dg-btn dg-btn--ghost dg-btn--sm" disabled={busy} aria-label={`Make ${c.brand} ending ${c.last4} your default card`}
+                    onClick={() => act(() => post(`/payment-methods/${c.id}/default`), `${c.brand} ending ${c.last4} is now your default card.`)}>Make default</button>}
+                  <button className="dg-btn dg-btn--ghost dg-btn--sm" disabled={busy} aria-label={`Remove ${c.brand} ending ${c.last4}`} onClick={() => setRemoving(c)}>Remove</button>
+                </li>
+              ))}
+              {!methods.length && <li className="dg-muted">No cards saved yet.</li>}
+            </ul>
+            {mode === 'stripe' && !pk && <p className="dg-note" role="status">Adding cards in the app is coming soon. Call us if you need help.</p>}
+            {mode === 'stripe' && pk && (adding
+              ? <AddCard publishableKey={pk} onCancel={() => setAdding(false)} onDone={(m) => { setAdding(false); void act(async () => undefined, m); }} />
+              : <button className="dg-btn dg-btn--ghost dg-btn--block" style={{ marginTop: 10 }} disabled={busy} onClick={() => { setMsg(null); setErr(null); setAdding(true); }}>Add a card</button>)}
+            {mode === 'test' && (<>
+              <button className="dg-btn dg-btn--ghost dg-btn--block" style={{ marginTop: 10 }} disabled={busy}
+                onClick={() => act(async () => { await post('/payment-methods/setup'); await post('/payment-methods', { provider_ref: `pm_test_${Date.now()}`, brand: 'Visa', last4: '4242' }); }, 'Test card added.')}>
+                Add a test card
+              </button>
+              <p className="dg-muted" style={{ fontSize: 'var(--fs-xs)' }}>Test mode: adds a Visa 4242 test card and no money moves. In the live app your card details go straight to Stripe and never touch DingoGo's servers.</p>
+            </>)}
+            <p className="dg-muted" style={{ fontSize: 'var(--fs-xs)' }}>When you book with a card we hold the fare plus 20% and take only the final price at the end. Booked trips are held 15 minutes before pickup.</p>
+          </>
         )}
-        <button className="dg-btn dg-btn--ghost dg-btn--block" style={{ marginTop: 10 }} disabled={busy}
-          onClick={() => act(async () => { await post('/payment-methods/setup'); await post('/payment-methods', { provider_ref: `pm_test_${Date.now()}`, brand: 'Visa', last4: '4242' }); }, 'Test card added.')}>
-          Add a card
-        </button>
-        <p className="dg-muted" style={{ fontSize: 'var(--fs-xs)' }}>Test mode: adds a Visa 4242 test card. In the live app your card details go straight to Stripe and never touch DingoGo's servers.</p>
       </section>
-      <section className="section">
-        <h2 className="section__title">Top up credit</h2>
-        <div className="tips__row">
-          {[2000, 5000, 10000].map((c) => <button key={c} className="dg-btn dg-btn--ghost" disabled={busy} onClick={() => act(() => post('/wallet/topup', { cents: c }), `${money(c)} added.`)}>{money(c)}</button>)}
-        </div>
-      </section>
+      {mode !== 'off' && (
+        <section className="section">
+          <h2 className="section__title">Top up credit</h2>
+          {mode === 'stripe' && !methods.length ? <p className="dg-muted">Add a card first to top up.</p> : (
+            <div className="tips__row">
+              {[2000, 5000, 10000].map((c) => <button key={c} className="dg-btn dg-btn--ghost" disabled={busy}
+                onClick={() => { const key = `topup-${c}-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`; void act(() => post('/wallet/topup', { cents: c }, { headers: { 'Idempotency-Key': key } }), `${money(c)} added.`); }}>{money(c)}</button>)}
+            </div>
+          )}
+        </section>
+      )}
       <section className="section">
         <h2 className="section__title">Prepaid card or voucher</h2>
         <form onSubmit={(e) => { e.preventDefault(); void act(async () => { const r = await post('/wallet/voucher', { code }); setCode(''); return r; }, 'Voucher added to your credit.'); }}>
@@ -167,6 +263,13 @@ function Payment() {
           <button className="dg-btn dg-btn--dark" disabled={busy || code.length < 6}>Add to credit</button>
         </form>
       </section>
+      <Dialog open={!!removing} onClose={() => setRemoving(null)} title="Remove this card?">
+        <p>{removing ? `${removing.brand} ending ${removing.last4}` : ''} will be removed from DingoGo.{removing?.is_default && methods.length > 1 ? ' Your newest other card becomes the default.' : ''}</p>
+        <div className="tips__row">
+          <button className="dg-btn dg-btn--dark" onClick={() => { const c = removing; setRemoving(null); void act(() => del(`/payment-methods/${c.id}`), 'Card removed.'); }}>Remove card</button>
+          <button className="dg-btn dg-btn--ghost" onClick={() => setRemoving(null)}>Keep it</button>
+        </div>
+      </Dialog>
     </Page>
   );
 }

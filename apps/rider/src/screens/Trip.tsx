@@ -422,24 +422,32 @@ function AfterTrip({ trip, reload }: { trip: any; reload: () => Promise<void> })
 
 export function Receipt({ tripId, vehicle }: { tripId: string; vehicle?: any }) {
   const [r, setR] = useState<any | null>(null);
-  useEffect(() => { get(`/trips/${tripId}/receipt`).then((x) => setR(x.receipt)).catch(() => {}); }, [tripId]);
+  const load = () => get(`/trips/${tripId}/receipt`).then((x) => setR(x.receipt)).catch(() => {});
+  useEffect(() => { void load(); }, [tripId]); // eslint-disable-line react-hooks/exhaustive-deps
   if (!r) return null;
   // Receipt `vehicle` is the rego today; tolerate an object if the API starts sending one.
   const rv = r.vehicle && typeof r.vehicle === 'object' ? r.vehicle : null;
   const car = vehicle ?? rv;
   const rego = rv ? rv.rego : r.vehicle;
+  const refunds: any[] = r.refunds ?? [];
   return (
+    <>
+    {r.payment_status === 'failed' && <PayNow tripId={tripId} cents={r.fare_cents} onPaid={load} />}
     <details className="receipt">
-      <summary>Tax invoice</summary>
+      <summary>{r.title ?? 'Tax invoice'}</summary>
       <div className="receipt__body">
-        <p><strong>{r.supplier?.name ?? 'DingoGo'}</strong><br />ABN {r.supplier?.abn ?? 'TBC'}<br />{r.supplier?.address}</p>
-        <p className="dg-muted">Trip {r.trip_ref}, {dateTime(r.date)}<br />{r.from}{r.to && r.to !== r.from ? ` to ${r.to}` : ''}<br />{r.driver ? `Driver ${r.driver}, ${rego ?? ''}` : ''} {r.driver && car && <FuelChip v={car} />}</p>
+        <p><strong>{r.supplier?.name ?? 'DingoGo'}</strong><br />ABN {r.supplier_abn ?? r.supplier?.abn ?? 'TBC'}<br />{r.supplier?.address}</p>
+        {r.supplied_by && <p className="dg-muted">Issued by DingoGo on behalf of your driver {r.supplied_by.name}{r.supplied_by.abn ? `, ABN ${r.supplied_by.abn}` : ''}.</p>}
+        <p className="dg-muted">Invoice {r.invoice_number ?? r.trip_ref}, {dateTime(r.date)}<br />{r.from}{r.to && r.to !== r.from ? ` to ${r.to}` : ''}<br />{r.driver ? `Driver ${r.driver}, ${rego ?? ''}` : ''} {r.driver && car && <FuelChip v={car} />}
+          {r.customer?.ndis_number && <><br />NDIS participant {r.customer.name ? `${r.customer.name}, ` : ''}number {r.customer.ndis_number}</>}</p>
         <table className="quote__lines">
           <tbody>
             {r.lines.map((l: any, i: number) => <tr key={i}><td>{l.label}</td><td className="dg-money">{money(l.cents)}</td></tr>)}
-            {r.tip_cents > 0 && <tr><td>Tip (not subject to GST)</td><td className="dg-money">{money(r.tip_cents)}</td></tr>}
-            <tr className="quote__sum"><td>Total paid ({payLabel(r.payment_method)})</td><td className="dg-money">{money(r.total_cents)}</td></tr>
-            <tr><td>Includes GST</td><td className="dg-money">{money(r.gst_cents)}</td></tr>
+            {r.tip_cents > 0 && <tr><td>Tip, all to your driver (no GST)</td><td className="dg-money">{money(r.tip_cents)}</td></tr>}
+            <tr className="quote__sum"><td>{r.payment_status === 'failed' ? 'Total to pay' : `Total paid (${payLabel(r.payment_method)})`}</td><td className="dg-money">{money(r.total_cents)}</td></tr>
+            {refunds.map((x, i) => <tr key={`r${i}`}><td>Refund {date(x.at)}</td><td className="dg-money">−{money(x.cents)}</td></tr>)}
+            {refunds.length > 0 && <tr className="quote__sum"><td>Total after refunds</td><td className="dg-money">{money(r.net_total_cents)}</td></tr>}
+            <tr><td>Includes GST</td><td className="dg-money">{money(r.net_gst_cents ?? r.gst_cents)}</td></tr>
           </tbody>
         </table>
         {/* CO₂ only for trips actually done in an electric car, and only when the API sent a figure. */}
@@ -450,5 +458,27 @@ export function Receipt({ tripId, vehicle }: { tripId: string; vehicle?: any }) 
       </div>
       <Ranges height={18} fill="var(--line)" />
     </details>
+    </>
+  );
+}
+
+/** A card payment that didn't go through: pay it now with the default card (add or change cards in Account → Payment). */
+function PayNow({ tripId, cents, onPaid }: { tripId: string; cents: number; onPaid: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const pay = async () => {
+    setBusy(true); setErr(null);
+    try { await post(`/trips/${tripId}/pay`, {}); setMsg('Paid. Thank you.'); onPaid(); }
+    catch (e) { setErr(e instanceof ApiError ? e.message : 'Something went wrong. Try again.'); }
+    finally { setBusy(false); }
+  };
+  if (msg) return <p className="callout callout--green" role="status">{msg}</p>;
+  return (
+    <div className="callout callout--earth" role="region" aria-label="Payment needed">
+      <p><strong>Your payment of {money(cents)} didn't go through.</strong> Pay now with your default card, or change cards in <Link to="/account/payment">Account → Payment</Link> first.</p>
+      {err && <p className="dg-error" role="alert">{err}</p>}
+      <button className="dg-btn dg-btn--dark dg-btn--sm" aria-disabled={busy} onClick={() => { if (!busy) void pay(); }}>{busy ? 'Paying…' : `Pay ${money(cents)} now`}</button>
+    </div>
   );
 }

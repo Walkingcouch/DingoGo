@@ -46,6 +46,7 @@ Base URL: `http://localhost:4000` in development. Auth: `Authorization: Bearer <
 | POST | `/trips/:id/rate` |
 | POST | `/trips/:id/tip` |
 | GET | `/trips/:id/receipt` |
+| POST | `/trips/:id/pay` |
 | POST | `/trips/:id/sos` |
 | GET | `/loyalty` |
 | POST | `/loyalty/rewards/:id/redeem` |
@@ -55,6 +56,7 @@ Base URL: `http://localhost:4000` in development. Auth: `Authorization: Bearer <
 | GET | `/payment-methods` |
 | POST | `/payment-methods/setup` |
 | POST | `/payment-methods` |
+| POST | `/payment-methods/:id/default` |
 | DELETE | `/payment-methods/:id` |
 | POST | `/wallet/topup` |
 | POST | `/wallet/voucher` |
@@ -106,6 +108,8 @@ Base URL: `http://localhost:4000` in development. Auth: `Authorization: Bearer <
 | POST | `/admin/trips/:id/redispatch` |
 | POST | `/admin/trips/:id/reassign` |
 | POST | `/admin/trips/:id/refund` |
+| POST | `/admin/trips/:id/retry-payment` |
+| GET | `/admin/payments/issues` |
 | POST | `/admin/bookings` |
 | GET | `/admin/users` |
 | PATCH | `/admin/users/:id` |
@@ -481,3 +485,54 @@ Top-up = max(0, rate × engaged hours − counted earnings). Table `driver_pay_w
 - **Admin app.** Search box on every page (`/`), `g` then `l d t s i r f` to change page, `?` for the list; trip filters in the URL plus quick and saved filters
   (kept in the browser); incident drawer with runbook, map, notes and timeline; bulk approve/reject; daily summary on the Dashboard (print, CSV); audit log
   filters; drawers and dialogs are real modals; tabs use arrow keys. Migration `013_ops_indexes.sql` only adds indexes.
+
+## Payments (Round 8)
+Stripe when `STRIPE_SECRET_KEY` is set, otherwise the built-in mock provider (no network). Card data never reaches the API (Stripe Elements on the
+client); the API only sees Stripe ids. Every Stripe write carries an idempotency key named after what it is for: `hold-<trip>-<attempt>`,
+`capture-<pi>-<cents>`, `cancel-<pi>`, `fare|fee-<trip>-<cents>` (charge when there is no usable hold), `tip-<trip>-<cents>`, `retry-<trip>-<n>-<cents>`,
+`refund-<trip>-<refunded so far>-<fare|tip>-<cents>`, `topup|pass-<user>-…-<Idempotency-Key>`, `customer-<user>`. API version pinned (`STRIPE_API_VERSION`, 2024-06-20).
+- **Card mode** — `GET /payment-methods` adds `cards { mode: 'stripe'|'test'|'off', publishable_key }`; methods list default first and, with Stripe, only
+  real Stripe cards (with `exp_month`/`exp_year`). `off` (mock provider, `MOCK_CARDS=test` and the account is not a seeded demo number or admin-made test
+  account; the default in production without Stripe): every card payment (booking with `card`, tip by card, top-up, Pass, saving a card) is 402
+  `cards_not_available`. `MOCK_CARDS=all` (default in dev mode) keeps the old behaviour for everyone.
+- **Saving a card** — `POST /payment-methods/setup` → `{ provider: 'stripe', client_secret, setup_intent_id, publishable_key }` (SetupIntent on the
+  rider's own Stripe Customer, `usage=off_session`). After `stripe.confirmSetup` on the device: `POST /payment-methods { setup_intent_id }`. The API
+  fetches the SetupIntent: it must be this rider's (400 `setup_not_found`) and `succeeded` (400 `setup_incomplete`); brand, last4, expiry and
+  fingerprint come from Stripe. The same card again (fingerprint) → `{ method, already_saved: true }` and the copy is detached. Max 10 cards
+  (`too_many_cards`). Test mode keeps `{ provider_ref, brand, last4 }`. `POST /payment-methods/:id/default`. `DELETE` detaches at Stripe and makes the
+  newest remaining card the default.
+- **Fares** — booking with `card` needs a saved card with Stripe (402 `card_required`). The hold (quote + 20%, manual capture) is placed off-session on the
+  default card at booking; **booked (scheduled) trips get it when released to drivers** (15 min before), not at booking. Declined: 402 `payment_failed`
+  with a plain message and `details.reason` (e.g. `insufficient_funds`); a card that needs a bank check off-session: `details.reason =
+  'authentication_required'` (the half-done hold is cancelled). A booking that fails after its hold was placed releases the hold. Declined at release:
+  the booking is cancelled (`cancelled_admin`, reason "Card declined when the booking was due"), points/promo back, event `payment_failed`
+  `{ stage: 'release' }`, rider notified, ops `payment.failed`.
+- **Capture** — at the end of the trip (and for cancellation fees) the hold is captured; if it lapsed or was cancelled the saved card is charged afresh
+  (`fare-…`/`fee-…`), and the trip's `payment_ref` moves to the new PaymentIntent. Late tour/hire fees on bookings that were never held are charged the
+  same way. If that fails too the trip's `payment_status` is `failed` (event `payment_failed`, rider notified "Payment didn't go through", ops
+  `payment.failed`); the driver's pay is unaffected.
+- `POST /trips/:id/pay` (rider) and `POST /admin/trips/:id/retry-payment` (admin, audited) → `{ ok: true, payment_status: 'captured' }`; the rider
+  route returns 402 `payment_failed` on a decline, the admin route `{ ok: false, error, code }`. 409 `nothing_to_pay` unless the trip's card payment failed.
+- **Tips, top-ups, Pass** — each its own PaymentIntent, captured at once. `POST /wallet/topup` and `POST /subscriptions` honour an `Idempotency-Key`
+  header: a replay returns the same result with `replayed: true` and credits/extends once.
+- **Refunds** (`POST /admin/trips/:id/refund`) — fare first, then tip, each back where it was paid (the fare's and the tip's own PaymentIntent; DingoGo
+  credit for wallet and cash). One `payments` refund row per part: GST on the fare part only (`round(cents / 11)`), none on the tip part. Event data adds
+  `fare_cents`, `tip_cents`. Payment-failed trips have nothing to refund on the fare.
+- **Webhook** `POST /payments/stripe/webhook` (no auth; raw body; `Stripe-Signature` checked with `STRIPE_WEBHOOK_SECRET`, HMAC-SHA256, any `v1`,
+  5-minute tolerance, constant-time). 503 `webhook_not_configured` without the secret, 400 `bad_signature`/`signature_expired`. Each event id is applied
+  once (`payment_events`; a replay → `{ received: true, duplicate: true }`), in one transaction with its effect (an error rolls both back so Stripe
+  retries; 503 `migration_pending` before migration 014). Handled: `payment_intent.succeeded` (pending rows marked done), `payment_intent.payment_failed`
+  (trip event + ops), `payment_intent.canceled` (a live trip's hold lapsed → `payment_status 'none'`, event `hold_lapsed`, ops `payment.hold_lapsed`; the
+  fare is charged afresh at the end), `charge.refunded` (dashboard refunds: the difference between Stripe's `amount_refunded` and what DingoGo recorded
+  for that PaymentIntent is recorded once, GST as above; top-up refunds take the credit back), `charge.dispute.*` (one `payments` row
+  `kind: 'dispute'` per dispute with Stripe's status, trip event `dispute_opened|dispute_updated|dispute_closed`, audit, ops `payment.dispute`). Other
+  types → `handled: 'ignored'`. Subscribe the endpoint to: `payment_intent.succeeded`, `payment_intent.payment_failed`, `payment_intent.canceled`,
+  `charge.refunded`, `charge.dispute.created`, `charge.dispute.updated`, `charge.dispute.closed`.
+- `GET /admin/payments/issues` (admin) → `{ failed: [{ id, ref, status, cents, at, rider_name, reason }], disputes: [{ id, dispute_ref, status, cents,
+  created_at, trip_id, ref, rider_name }] }` (open disputes: not won/lost/warning_closed). `GET /admin/integrations` adds `payments_webhook`, `card_elements`.
+- **Tax invoice** (`GET /trips/:id/receipt`) adds `invoice_number` (trip ref), `supplier_abn`, `supplied_by { name, abn, gst_registered }` (the driver:
+  DingoGo issues the invoice on the driver's behalf, matching the GST report), `customer { name, ndis_number }`, `cancellation_fee`, `refunds [{ at,
+  cents, gst_cents }]`, `refunded_cents`, `net_total_cents`, `net_gst_cents`, `gst_note`, `tip_note`, `payment_status`. Title "Tax Invoice (adjusted)" once
+  refunded. Cancellation-fee invoices list one "Cancellation fee" line (they listed the trip's fare lines) and no CO₂ figure.
+- Payments rows: card captures are recorded with `provider` `stripe` or `mock` (were `card`); failed holds are recorded (`kind: 'authorise'`,
+  `status: 'failed'`).

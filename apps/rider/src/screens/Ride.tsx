@@ -56,6 +56,7 @@ export function RideScreen() {
   const [ndisNo, setNdisNo] = useState('');
   const [pay, setPay] = useState<Pay>({ method: 'card' });
   const [cards, setCards] = useState<any[]>([]);
+  const [cardMode, setCardMode] = useState<'stripe' | 'test' | 'off'>('test');
   const [showMore, setShowMore] = useState(false);
 
   // courier
@@ -69,7 +70,15 @@ export function RideScreen() {
   const [error, setError] = useState<string | null>(null);
   const qSeq = useRef(0);
 
-  useEffect(() => { get('/payment-methods').then((r) => setCards(r.methods)).catch(() => {}); }, []);
+  useEffect(() => {
+    get('/payment-methods').then((r) => {
+      setCards(r.methods);
+      const m = r.cards?.mode ?? 'test';
+      setCardMode(m);
+      // Card payments not available yet for this account: start on DingoGo credit instead.
+      if (m === 'off') setPay((p) => (p.method === 'card' ? { method: 'wallet' } : p));
+    }).catch(() => {});
+  }, []);
   useEffect(() => {
     if (me && !parcel.sender_name) setParcel((p) => ({ ...p, sender_name: me.user.name, sender_phone: me.user.phone }));
   }, [me]); // eslint-disable-line
@@ -82,7 +91,7 @@ export function RideScreen() {
   const cashOk = !!cashCfg.data?.[mode === 'courier' ? 'courier' : 'ride'];
   // A pickup in a town we've built but not opened (e.g. regional SA) gets "coming soon", not "outside our area".
   const soonZone = pickup ? comingSoonZone(cfg.data?.zones, pickup) : null;
-  useEffect(() => { if (!cashOk && pay.method === 'cash') setPay({ method: 'card' }); }, [cashOk]); // eslint-disable-line
+  useEffect(() => { if (!cashOk && pay.method === 'cash') setPay({ method: cardMode === 'off' ? 'wallet' : 'card' }); }, [cashOk]); // eslint-disable-line
   const service = mode === 'courier' ? SIZES.find((s) => s.id === size)!.service : mode === 'pet' ? 'pet' : 'ride';
   const quotable = (mode === 'ride' || mode === 'pet' || mode === 'courier') && pickup && dropoff;
 
@@ -308,8 +317,11 @@ export function RideScreen() {
             <fieldset className="block pay">
               <legend>Pay with</legend>
               <div className="paylist">
-                <PayOpt on={pay.method === 'card'} onClick={() => setPay({ method: 'card' })} icon="card" title={cards[0] ? `${cards[0].brand} ending ${cards[0].last4}` : 'Card'}
-                  sub={cards[0] ? 'Held when you book, charged at the end' : 'Add a card in Account, or use test mode'} />
+                {cardMode !== 'off' && (
+                  <PayOpt on={pay.method === 'card'} onClick={() => setPay({ method: 'card' })} icon="card" title={cards[0] ? `${cards[0].brand} ending ${cards[0].last4}` : 'Card'}
+                    sub={!cards[0] ? (cardMode === 'stripe' ? 'Add a card in Account → Payment first' : 'Add a card in Account, or use test mode')
+                      : later ? 'Held 15 minutes before pickup, charged at the end' : 'Held when you book, charged at the end'} />
+                )}
                 {cashOk && <PayOpt on={pay.method === 'cash'} onClick={() => setPay({ method: 'cash' })} icon="cash" title="Cash" sub="Pay the driver at the end" />}
                 <PayOpt on={pay.method === 'wallet'} onClick={() => setPay({ method: 'wallet' })} icon="wallet" title="DingoGo credit" sub={`${money(me?.user.wallet_cents ?? 0)} available`} />
                 {corp.map((c) => (
