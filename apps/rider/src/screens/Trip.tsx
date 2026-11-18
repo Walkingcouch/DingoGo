@@ -1,14 +1,18 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import {
   Icon,
-  ApiError, REALTIME, COURIER_STATUS_LABEL, STATUS_LABEL, connectRealtime, date, dateTime, get, km, money, post, statusTone, time, useInterval, Ranges,
+  ApiError, REALTIME, COURIER_STATUS_LABEL, STATUS_LABEL, ago, connectRealtime, date, dateTime, get, km, money, onNetworkChange, post, statusTone, time, useInterval, Ranges,
 } from '@dingogo/shared';
 import { DgMap, type MapMarker } from '@dingogo/shared/map';
 import { ACTIVE, shareUrl, useMe } from '../ctx';
 import { Dialog, Spinner, Stars, shareOrCopy, useCopy } from '../components/ui';
+import { announce } from '../components/Announcer';
 
 const RIDE_STEPS = ['requested', 'accepted', 'arrived', 'in_progress', 'completed'];
+/** Short, plain step names shown under the progress bar (icons alone aren't enough for everyone). */
+const RIDE_STEP = ['Finding', 'Coming', 'Here', 'Riding'];
+const COURIER_STEP = ['Finding', 'To pickup', 'Collecting', 'Delivering'];
 
 /** Fuel chip for green cars. Older APIs send no fuel_type/is_ev, so both are optional; petrol and diesel get no chip. */
 const FUEL_LABEL: Record<string, string> = { electric: 'Electric', plug_in_hybrid: 'Plug-in hybrid', hybrid: 'Hybrid' };
@@ -23,16 +27,26 @@ export function TripScreen() {
   const { id } = useParams();
   const nav = useNavigate();
   const { reload: reloadMe } = useMe();
-  const [trip, setTrip] = useState<any | null>(null);
+  // Poor signal: start from the copy saved on this phone, so the PIN, car and rego show even with no bars.
+  const [cached] = useState(() => (id ? readCachedTrip(id) : null));
+  const [trip, setTrip] = useState<any | null>(cached?.trip ?? null);
+  const [syncedAt, setSyncedAt] = useState<number | null>(cached?.at ?? null);
+  const [stale, setStale] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [carPos, setCarPos] = useState<{ lat: number; lng: number; heading?: number | null } | null>(null);
+  const tripRef = useRef(trip); tripRef.current = trip;
 
   const load = useCallback(async () => {
     try {
       const r = await get(`/trips/${id}`);
-      setTrip(r.trip); setErr(null);
+      setTrip(r.trip); setErr(null); setStale(false); setSyncedAt(Date.now());
+      cacheTrip(r.trip);
       if (r.trip.driver?.lat) setCarPos((p) => p ?? { lat: r.trip.driver.lat, lng: r.trip.driver.lng, heading: r.trip.driver.heading });
-    } catch (e) { setErr(e instanceof ApiError ? e.message : 'Could not load trip'); }
+    } catch (e) {
+      // No signal: keep showing what we have and say how old it is. Only a real answer from DingoGo replaces the screen.
+      if (e instanceof ApiError && e.code === 'offline' && tripRef.current) setStale(true);
+      else setErr(e instanceof ApiError ? e.message : 'Could not load trip');
+    }
   }, [id]);
 
   useEffect(() => { void load(); }, [load]);
@@ -45,17 +59,89 @@ export function TripScreen() {
     }, { subscribe: [`trip:${id}`] });
     return () => rt.close();
   }, [id, load]);
-  useInterval(() => void load(), live ? (REALTIME ? 10000 : 4000) : null);
+  // Back in signal: refresh straight away rather than waiting for the next poll.
+  useEffect(() => onNetworkChange((on) => { if (on) void load(); }), [load]);
+  useInterval(() => void load(), live || stale ? (REALTIME && !stale ? 10000 : 4000) : null);
   useEffect(() => { if (trip?.status === 'completed') void reloadMe(); }, [trip?.status]); // eslint-disable-line
+  useTripAnnouncements(trip);
 
-  if (err) return <div className="page"><p className="dg-error">{err}</p><Link to="/" className="dg-btn">Back to home</Link></div>;
+  if (err && !trip) return <div className="page"><p className="dg-error" role="alert">{err}</p><button className="dg-btn" onClick={() => { setErr(null); void load(); }}>Try again</button> <Link to="/" className="dg-btn dg-btn--ghost">Back to home</Link></div>;
   if (!trip) return <div className="page"><Spinner label="Loading trip" /></div>;
 
-  if (live) return <LiveTrip trip={trip} carPos={carPos} reload={load} onClose={() => nav('/')} />;
-  return <TripDetail trip={trip} reload={load} />;
+  const net = stale ? <StaleNote at={syncedAt} /> : null;
+  if (live) return <LiveTrip trip={trip} carPos={carPos} reload={load} onClose={() => nav('/')} net={net} />;
+  return <TripDetail trip={trip} reload={load} net={net} />;
 }
 
-function LiveTrip({ trip, carPos, reload, onClose }: { trip: any; carPos: any; reload: () => Promise<void>; onClose: () => void }) {
+/** "Last updated 3 min ago" while the phone has no signal. */
+function StaleNote({ at }: { at: number | null }) {
+  const [, tick] = useState(0);
+  useInterval(() => tick((n) => n + 1), 30000);
+  return (
+    <p className="netbar" role="status">
+      <Icon name="alert" size={18} />
+      <span><strong>No signal.</strong> {at ? `Showing your trip as it was ${ago(new Date(at)) === 'just now' ? 'a moment ago' : ago(new Date(at))}.` : 'Showing your trip as we last saw it.'} We'll update it when you're back in range.</span>
+    </p>
+  );
+}
+
+// ── Last live trip, kept on this phone (cleared when the trip ends or you sign out) ──
+const CACHE_KEY = 'dingogo.rider.lastTrip';
+export function cacheTrip(t: any) {
+  try {
+    if (ACTIVE.includes(t.status)) localStorage.setItem(CACHE_KEY, JSON.stringify({ at: Date.now(), trip: t }));
+    else if (readCachedTrip()?.trip.id === t.id) localStorage.removeItem(CACHE_KEY);
+  } catch { /* storage unavailable */ }
+}
+export function readCachedTrip(id?: string): { at: number; trip: any } | null {
+  try {
+    const c = JSON.parse(localStorage.getItem(CACHE_KEY) ?? 'null');
+    if (!c?.trip?.id || (id && c.trip.id !== id)) return null;
+    if (Date.now() - c.at > 12 * 3600_000) { localStorage.removeItem(CACHE_KEY); return null; } // a trip doesn't last half a day
+    return c;
+  } catch { return null; }
+}
+export function clearCachedTrip() { try { localStorage.removeItem(CACHE_KEY); } catch { /* storage unavailable */ } }
+
+/** Plain-words summary of a trip's state, read out by screen readers when it changes. */
+const spell = (s?: string | null) => (s ?? '').split('').join(' ');
+export function tripAnnouncement(t: any): { text: string; urgent: boolean } | null {
+  const courier = t.kind === 'courier';
+  const v = t.vehicle, d = t.driver;
+  const car = v ? `${[v.colour, v.make, v.model].filter(Boolean).join(' ')}, rego ${spell(v.rego)}` : '';
+  switch (t.status) {
+    case 'requested': return { text: t.driver_releases > 0 ? 'Your driver couldn\'t make it. Finding you another driver. Same price.' : courier ? 'Finding a driver for your parcel.' : 'Finding you a driver.', urgent: false };
+    case 'accepted': return { text: `${d?.name ? `${d.name} is` : 'Your driver is'} on the way.${car ? ` Car: ${car}.` : ''}${!courier && t.verify_pin ? ` Your trip PIN is ${spell(t.verify_pin)}.` : ''}`, urgent: false };
+    case 'arrived': return { text: courier ? 'Your driver is at the pickup.' : `Your driver has arrived.${car ? ` Car: ${car}.` : ''}`, urgent: true };
+    case 'in_progress': return { text: courier ? 'Your parcel is on its way.' : `Trip started. On the way to ${t.dropoff_address}.`, urgent: false };
+    case 'completed': return { text: courier ? 'Your parcel has been delivered.' : 'You have arrived. Trip complete.', urgent: false };
+    case 'cancelled_driver': return { text: 'Your driver cancelled. You have not been charged.', urgent: true };
+    case 'no_drivers': return { text: 'No drivers are free right now. You have not been charged.', urgent: true };
+    case 'cancelled_rider': case 'cancelled_admin': return { text: 'This trip is cancelled.', urgent: false };
+    default: return null;
+  }
+}
+
+/** Speak each change of trip status once (not on first load, when the screen itself is read), update the page title so the status
+ *  shows in the app switcher, and buzz the phone when the driver arrives (helps riders who are Deaf or hard of hearing). */
+function useTripAnnouncements(trip: any | null) {
+  const key = trip ? `${trip.status}:${trip.driver_releases ?? 0}:${trip.driver_id ?? ''}` : null;
+  const last = useRef<string | null>(null);
+  useEffect(() => {
+    if (!trip || !key) return;
+    const labels = trip.kind === 'courier' ? COURIER_STATUS_LABEL : STATUS_LABEL;
+    document.title = `${labels[trip.status] ?? 'Trip'} · DingoGo`;
+    if (last.current !== null && last.current !== key) {
+      const a = tripAnnouncement(trip);
+      if (a) announce(a.text, a.urgent);
+      if (trip.status === 'arrived') { try { navigator.vibrate?.([300, 150, 300]); } catch { /* not supported */ } }
+    }
+    last.current = key;
+  }, [key]); // eslint-disable-line
+  useEffect(() => () => { document.title = 'DingoGo'; }, []);
+}
+
+function LiveTrip({ trip, carPos, reload, onClose, net }: { trip: any; carPos: any; reload: () => Promise<void>; onClose: () => void; net: ReactNode }) {
   const labels = trip.kind === 'courier' ? COURIER_STATUS_LABEL : STATUS_LABEL;
   const [sosOpen, setSosOpen] = useState(false);
   const [cancelOpen, setCancelOpen] = useState(false);
@@ -89,13 +175,17 @@ function LiveTrip({ trip, carPos, reload, onClose }: { trip: any; carPos: any; r
       </div>
       <div className="sheet sheet--live">
         <div className="sheet__grab" aria-hidden="true" />
+        {net}
         <p className="live__ref dg-muted">{trip.ref}</p>
-        <h1 className="live__status" aria-live="polite">{again ? 'Finding you another driver' : labels[trip.status]}</h1>
+        <h1 className="live__status">{again ? 'Finding you another driver' : labels[trip.status]}</h1>
         <p className="live__sub">{sub}</p>
 
         <ol className="steps" aria-label="Trip progress">
           {RIDE_STEPS.slice(0, 4).map((s, i) => (
-            <li key={s} className={i < step ? 'is-done' : i === step ? 'is-now' : ''}><span className="sr-only">{labels[s]}{i === step ? ' (current)' : ''}</span></li>
+            <li key={s} className={i < step ? 'is-done' : i === step ? 'is-now' : ''} aria-current={i === step ? 'step' : undefined}>
+              <span className="steps__bar" aria-hidden="true" />
+              <span className="steps__l">{i < step && <Icon name="check" size={14} />}{(trip.kind === 'courier' ? COURIER_STEP : RIDE_STEP)[i]}<span className="sr-only">{i < step ? ', done' : i === step ? ', now' : ''}</span></span>
+            </li>
           ))}
         </ol>
 
@@ -232,7 +322,7 @@ function CancelDialog({ open, onClose, trip, onDone }: { open: boolean; onClose:
   );
 }
 
-function TripDetail({ trip, reload }: { trip: any; reload: () => Promise<void> }) {
+function TripDetail({ trip, reload, net }: { trip: any; reload: () => Promise<void>; net: ReactNode }) {
   const labels = trip.kind === 'courier' ? COURIER_STATUS_LABEL : STATUS_LABEL;
   const [cancelOpen, setCancelOpen] = useState(false);
   const done = trip.status === 'completed';
@@ -246,6 +336,7 @@ function TripDetail({ trip, reload }: { trip: any; reload: () => Promise<void> }
         <Link to="/trips" className="iconbtn" aria-label="Back to trips"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"><path d="M15 5l-7 7 7 7" /></svg></Link>
         <h1>{done ? (trip.kind === 'courier' ? 'Delivered' : 'Thanks for riding') : labels[trip.status]}</h1>
       </header>
+      {net}
       <div className="detail__map"><DgMap markers={markers} route={trip.service !== 'tour' ? [{ lat: trip.pickup_lat, lng: trip.pickup_lng }, { lat: trip.dropoff_lat, lng: trip.dropoff_lng }] : null} padding={30} /></div>
       <p className="dg-muted" style={{ margin: '.8rem 0 0' }}>{trip.ref}, {dateTime(trip.scheduled_for ?? trip.requested_at)} <span className={`dg-chip dg-chip--${statusTone(trip.status)}`}>{labels[trip.status]}</span></p>
       <dl className="kv">
@@ -269,6 +360,11 @@ function TripDetail({ trip, reload }: { trip: any; reload: () => Promise<void> }
       {done && <AfterTrip trip={trip} reload={reload} />}
       {(done || trip.cancel_fee_cents > 0) && <Receipt tripId={trip.id} vehicle={trip.vehicle} />}
       <Link className="dg-btn dg-btn--ghost dg-btn--block" style={{ marginTop: 16 }} to={`/account/help?trip=${trip.id}`}>Get help with this trip</Link>
+      {trip.kind === 'ride' && (trip.assistance_animal || trip.status === 'cancelled_driver') && (
+        <Link className="linkbtn" style={{ display: 'inline-flex', alignItems: 'center' }} to={`/account/help?trip=${trip.id}&category=assistance_animal_refused`}>
+          A driver refused my assistance animal
+        </Link>
+      )}
     </div>
   );
 }

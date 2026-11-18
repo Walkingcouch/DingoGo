@@ -14,7 +14,7 @@ body { overscroll-behavior: none; }
 .tabs a.active { color: var(--text); }
 .tabs a.active svg { color: var(--ochre-deep, var(--ochre)); }
 .tabs a.active::before { content: ''; position: absolute; top: 0; left: 30%; right: 30%; height: 3px; border-radius: 0 0 3px 3px; background: var(--ochre); }
-.tabs a:focus-visible { box-shadow: inset var(--focus); }
+.tabs a:focus-visible { box-shadow: inset 0 0 0 3px var(--ochre-deep); }
 
 /* Buttons */
 .btn-xl { min-height: 64px; font-size: var(--fs-lg); border-radius: var(--r-lg); }
@@ -92,6 +92,8 @@ body { overscroll-behavior: none; }
 .flag { display: inline-flex; align-items: center; gap: 8px; padding: 8px 12px; min-height: 40px; box-sizing: border-box; border-radius: var(--r-md); background: rgba(255,255,255,.1); font-weight: 700; }
 .flag svg { color: var(--ochre); }
 .flag-note { width: 100%; font-weight: 400; }
+.flag-need { width: 100%; align-items: flex-start; }
+.flag-need svg { margin-top: 2px; }
 .flag.legal { background: var(--ochre-soft); color: var(--night); width: 100%; font-weight: 400; align-items: flex-start; }
 .flag.legal svg { color: var(--night); margin-top: 2px; }
 .offer-actions { display: grid; grid-template-columns: 1fr 2fr; gap: 12px; }

@@ -4,7 +4,7 @@ import { Page, useOps } from '../ctx';
 import { Chip, Drawer, Table, Tabs, useRun } from '../ui';
 import { TICKET_STATUS, label } from '../labels';
 
-const CAT: Record<string, string> = { lost_item: 'Lost item', fare: 'Fare', safety: 'Safety', driver: 'Driver', parcel: 'Parcel', accessibility: 'Accessibility', app: 'App', other: 'Other' };
+const CAT: Record<string, string> = { lost_item: 'Lost item', fare: 'Fare', safety: 'Safety', driver: 'Driver', parcel: 'Parcel', accessibility: 'Accessibility', assistance_animal_refused: 'Assistance animal refused', app: 'App', other: 'Other' };
 
 export default function Support() {
   const [tab, setTab] = useState<'tickets' | 'hire' | 'enquiries'>('tickets');
@@ -20,7 +20,7 @@ export default function Support() {
       <Tabs tabs={[['tickets', `Support tickets (${n(tickets, 'open')} open)`], ['hire', `Hire requests (${n(hire, 'new')} new)`], ['enquiries', `Enquiries (${n(enq, 'new')} new)`]]} value={tab} onChange={setTab} />
       {tab === 'tickets' && <Table rows={tickets.data?.items} onRow={setOpen} empty="No tickets." cols={[
         { key: 'created_at', label: 'Received', nowrap: true, render: (t) => dateTime(t.created_at) },
-        { key: 'category', label: 'Type', render: (t) => <Chip tone={t.category === 'safety' ? 'red' : ''}>{CAT[t.category] ?? t.category}</Chip> },
+        { key: 'category', label: 'Type', render: (t) => <Chip tone={t.category === 'safety' || t.category === 'assistance_animal_refused' ? 'red' : ''}>{CAT[t.category] ?? t.category}</Chip> },
         { key: 'subject', label: 'Subject', render: (t) => <strong>{t.subject}</strong> }, { key: 'user_name', label: 'From' }, { key: 'trip_ref', label: 'Trip' },
         { key: 'status', label: 'Status', render: (t) => <Chip tone={t.status === 'open' ? 'ochre' : t.status === 'resolved' ? 'green' : ''}>{label(TICKET_STATUS, t.status)}</Chip> },
       ]} />}

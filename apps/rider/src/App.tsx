@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useState } from 'react';
 import { NavLink, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
-import { Login, get, getToken, initAuth, setToken, connectRealtime } from '@dingogo/shared';
+import { Icon, Login, get, getToken, initAuth, setToken, connectRealtime, useOnline } from '@dingogo/shared';
 import { MeCtx, type Me, ACTIVE } from './ctx';
 import { RideScreen } from './screens/Ride';
-import { TripScreen } from './screens/Trip';
+import { TripScreen, clearCachedTrip, readCachedTrip } from './screens/Trip';
 import { TripsScreen } from './screens/Trips';
 import { RewardsScreen } from './screens/Rewards';
 import { AccountScreen } from './screens/Account';
 import { Toast, toast } from './components/Toast';
+import { Announcer } from './components/Announcer';
 
 initAuth('rider');
 
@@ -27,7 +28,7 @@ export function App() {
   const reload = useCallback(async () => {
     try { setMe(await get<Me>('/me')); } catch { if (!getToken()) setAuthed(false); }
   }, []);
-  const signOut = useCallback(() => { setToken(null); setMe(null); setAuthed(false); nav('/'); }, [nav]);
+  const signOut = useCallback(() => { setToken(null); clearCachedTrip(); setMe(null); setAuthed(false); nav('/'); }, [nav]);
 
   useEffect(() => {
     if (!authed) return;
@@ -36,7 +37,11 @@ export function App() {
     get<{ trips: any[] }>('/trips?status=active').then(({ trips }) => {
       const live = trips.find((t) => ACTIVE.includes(t.status));
       if (live && loc.pathname === '/') nav(`/trip/${live.id}`);
-    }).catch(() => {});
+    }).catch(() => {
+      // No signal: open the live trip saved on this phone (PIN, car and rego still show).
+      const c = readCachedTrip();
+      if (c && loc.pathname === '/') nav(`/trip/${c.trip.id}`);
+    });
     const rt = connectRealtime((m) => {
       if (m.type === 'notification') toast(m.data.title + (m.data.body ? ` — ${m.data.body}` : ''));
     });
@@ -44,8 +49,8 @@ export function App() {
   }, [authed]); // eslint-disable-line
 
   if (!authed) {
-    return <Login title="Rides and deliveries for Mparntwe" subtitle="Aboriginal-owned and local to Alice Springs. Going electric." askName askReferral
-      onDone={() => setAuthed(true)} />;
+    return <><OfflineBar /><Login title="Rides and deliveries for Mparntwe" subtitle="Aboriginal-owned and local to Alice Springs. Going electric." askName askReferral
+      onDone={() => setAuthed(true)} /></>;
   }
 
   const hideTabs = loc.pathname.startsWith('/trip/');
@@ -53,6 +58,8 @@ export function App() {
     <MeCtx.Provider value={{ me, reload, signOut }}>
       <div className={`shell ${hideTabs ? 'shell--full' : ''}`}>
         <div className="shell__main">
+          {/* The trip screens say "no signal" themselves, next to the trip details. */}
+          {!/^\/trips?\/[^/]+/.test(loc.pathname) && <OfflineBar />}
           <Routes>
             <Route path="/" element={<RideScreen />} />
             <Route path="/trip/:id" element={<TripScreen />} />
@@ -74,7 +81,18 @@ export function App() {
           </nav>
         )}
         <Toast />
+        <Announcer />
       </div>
     </MeCtx.Provider>
+  );
+}
+
+/** Shown at the top of every screen while there's no signal. Announced once to screen readers. */
+function OfflineBar() {
+  const online = useOnline();
+  return (
+    <div role="status" aria-live="polite">
+      {!online && <p className="offline"><Icon name="alert" size={18} /><span>No signal. We'll keep trying. Your trip details stay on screen.</span></p>}
+    </div>
   );
 }

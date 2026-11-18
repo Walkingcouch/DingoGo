@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { ApiError, Icon, get, money, post, Ranges, useLoad } from '@dingogo/shared';
 import { DgMap, type MapMarker } from '@dingogo/shared/map';
@@ -73,6 +73,9 @@ export function RideScreen() {
   useEffect(() => {
     if (me && !parcel.sender_name) setParcel((p) => ({ ...p, sender_name: me.user.name, sender_phone: me.user.phone }));
   }, [me]); // eslint-disable-line
+  // Riders who said in their profile they travel with an assistance animal don't have to tick it on every booking.
+  const profileAnimal = !!me?.user.accessibility?.assistance_animal;
+  useEffect(() => { if (profileAnimal) setAssist(true); }, [profileAnimal]);
 
   const cfg = useLoad(() => get('/public/config'), []);
   const cashCfg = { data: cfg.data ? cfg.data.cash_payments ?? { ride: false, courier: true } : null };
@@ -156,8 +159,25 @@ export function RideScreen() {
   ];
   const route = quote?.route?.geometry?.map(([lat, lng]: number[]) => ({ lat, lng })) ?? (pickup && dropoff && mode !== 'tour' ? [pickup, dropoff] : null);
 
-  const courierReady = mode !== 'courier' || (parcel.description.trim().length >= 2 && parcel.sender_name && parcel.sender_phone.length >= 8 && parcel.recipient_name && parcel.recipient_phone.length >= 8 && parcel.prohibited_ack);
-  const canRequest = !!quote && !qError && !qLoading && courierReady && (!later || !!when) && (!ndis || /^\d{9}$/.test(ndisNo));
+  // What still stops the booking, in plain words: shown under the button and read out if it's pressed too early.
+  const badPhone = (v: string) => v.trim() !== '' && v.replace(/\D/g, '').length < 8;
+  const missing = [
+    !pickup && 'a pickup', !dropoff && 'a drop-off',
+    later && !when && 'a pickup time',
+    ...(mode === 'courier' ? [
+      parcel.description.trim().length < 2 && 'what you’re sending',
+      !parcel.sender_name.trim() && 'the sender’s name', parcel.sender_phone.replace(/\D/g, '').length < 8 && 'the sender’s mobile',
+      !parcel.recipient_name.trim() && 'the recipient’s name', parcel.recipient_phone.replace(/\D/g, '').length < 8 && 'the recipient’s mobile',
+      !parcel.prohibited_ack && 'the prohibited items check',
+    ] : []),
+    ndis && !/^\d{9}$/.test(ndisNo) && 'your 9-digit NDIS number',
+  ].filter(Boolean) as string[];
+  const canRequest = !!quote && !qError && !qLoading && missing.length === 0;
+  const why = missing.length ? `To book, add ${listWords(missing)}.` : qLoading ? 'Getting your price…' : qError ? 'We can’t price this trip yet. See the message above.' : null;
+  const [whyLoud, setWhyLoud] = useState(false);
+  useEffect(() => { if (!missing.length) setWhyLoud(false); }, [missing.length]);
+  const errRef = useRef<HTMLParagraphElement>(null);
+  useEffect(() => { if (error) errRef.current?.focus(); }, [error]);
   const corp = me?.corporate_accounts ?? [];
   const firstName = me?.user.name?.split(' ')[0];
 
@@ -219,9 +239,9 @@ export function RideScreen() {
                   <input className="dg-input" inputMode="decimal" placeholder="e.g. 80" value={parcel.declared} onChange={(e) => setParcel({ ...parcel, declared: e.target.value.replace(/[^\d.]/g, '') })} /></label>
                 <div className="grid2">
                   <label className="dg-field"><span>Sender name</span><input className="dg-input" value={parcel.sender_name} onChange={(e) => setParcel({ ...parcel, sender_name: e.target.value })} /></label>
-                  <label className="dg-field"><span>Sender mobile</span><input className="dg-input" type="tel" value={parcel.sender_phone} onChange={(e) => setParcel({ ...parcel, sender_phone: e.target.value })} /></label>
+                  <PhoneField label="Sender mobile" value={parcel.sender_phone} bad={badPhone(parcel.sender_phone)} onChange={(v) => setParcel({ ...parcel, sender_phone: v })} />
                   <label className="dg-field"><span>Recipient name</span><input className="dg-input" value={parcel.recipient_name} onChange={(e) => setParcel({ ...parcel, recipient_name: e.target.value })} /></label>
-                  <label className="dg-field"><span>Recipient mobile</span><input className="dg-input" type="tel" value={parcel.recipient_phone} onChange={(e) => setParcel({ ...parcel, recipient_phone: e.target.value })} /></label>
+                  <PhoneField label="Recipient mobile" value={parcel.recipient_phone} bad={badPhone(parcel.recipient_phone)} onChange={(v) => setParcel({ ...parcel, recipient_phone: v })} />
                 </div>
                 <p className="dg-muted" style={{ fontSize: 'var(--fs-sm)', marginTop: 0 }}>We text the recipient a tracking link and a 4-digit delivery PIN to give the driver.</p>
                 <label className="dg-field"><span>Instructions for the driver</span>
@@ -259,7 +279,7 @@ export function RideScreen() {
                       </div>
                     </label>
                     <label className="dg-check"><input type="checkbox" checked={assist} onChange={(e) => setAssist(e.target.checked)} />
-                      <span>I'm travelling with an assistance animal<br /><small className="dg-muted">Every DingoGo driver must take assistance animals. It's the law, and our policy.</small></span></label>
+                      <span>I'm travelling with an assistance animal<br /><small className="dg-muted">Every DingoGo driver must take assistance animals. It's the law, and our policy.{profileAnimal ? ' Ticked from your profile.' : ''}</small></span></label>
                     <label className="dg-check"><input type="checkbox" checked={wheelchair} onChange={(e) => setWheelchair(e.target.checked)} />
                       <span>I need a wheelchair-accessible car<br /><small className="dg-muted">We don't have a wheelchair-accessible car yet, so this request may not be matched. A folding wheelchair fits in the boot. Call us and we'll help arrange another option.</small></span></label>
                     <label className="dg-check"><input type="checkbox" checked={femalePref} onChange={(e) => setFemalePref(e.target.checked)} />
@@ -278,7 +298,9 @@ export function RideScreen() {
                   <span>I'm an NDIS participant (your number goes on the tax invoice for your plan manager)</span></label>
                 {ndis && (
                   <label className="dg-field"><span>NDIS number</span>
-                    <input className="dg-input" inputMode="numeric" maxLength={9} value={ndisNo} onChange={(e) => setNdisNo(e.target.value.replace(/\D/g, ''))} placeholder="9 digits" /></label>
+                    <input className="dg-input" inputMode="numeric" maxLength={9} value={ndisNo} onChange={(e) => setNdisNo(e.target.value.replace(/\D/g, ''))} placeholder="9 digits"
+                      aria-invalid={ndisNo.length > 0 && ndisNo.length !== 9} aria-describedby={ndisNo.length > 0 && ndisNo.length !== 9 ? 'ndis-err' : undefined} />
+                    {ndisNo.length > 0 && ndisNo.length !== 9 && <span id="ndis-err" className="dg-field-error"><Icon name="alert" size={16} />NDIS numbers have 9 digits. You have {ndisNo.length}.</span>}</label>
                 )}
               </div>
             )}
@@ -298,13 +320,14 @@ export function RideScreen() {
 
             <QuoteBox quote={quote} loading={qLoading} error={qError && soonZone ? null : qError} />
             {qError && soonZone && <p className="dg-note" role="status"><strong>Coming soon to {soonZone.name}.</strong> DingoGo isn’t taking bookings there yet.</p>}
-            {error && <p className="dg-error" role="alert">{error}</p>}
+            {error && <p className="dg-error" role="alert" tabIndex={-1} ref={errRef}>{error}</p>}
             <div className="requestbar">
-            {!pickup || !dropoff ? <p className="requestbar__hint">Add a pickup and drop-off to see your price</p> : null}
-            <button className="dg-btn dg-btn--block dg-btn--dark request" disabled={!canRequest || busy} onClick={request}>
+            {/* The button stays focusable when it can't book yet, so screen-reader users hear why instead of meeting a dead button. */}
+            {why && <p id="book-why" className={`requestbar__why ${whyLoud ? 'is-alert' : ''}`} role={whyLoud ? 'alert' : undefined}>{why}</p>}
+            <button className="dg-btn dg-btn--block dg-btn--dark request" aria-disabled={!canRequest || busy} aria-describedby={why ? 'book-why' : undefined}
+              onClick={() => { if (busy) return; if (!canRequest) { setWhyLoud(true); return; } void request(); }}>
               {busy ? 'Booking…' : mode === 'courier' ? `Send parcel${quote ? ` for ${money(quote.total_cents)}` : ''}` : later ? `Schedule ${mode === 'pet' ? 'pet ride' : 'ride'}` : `Book ${mode === 'pet' ? 'pet ride' : 'ride'}${quote ? ` for ${money(quote.total_cents)}` : ''}`}
             </button>
-            {mode === 'courier' && !parcel.prohibited_ack && quote && <p className="requestbar__hint">Confirm the prohibited items check to send</p>}
             </div>
           </>
         )}
@@ -335,4 +358,18 @@ function comingSoonZone(zones: any[] | undefined, p: { lat: number; lng: number 
     return 2 * R * Math.asin(Math.sqrt(a));
   };
   return (zones ?? []).find((z) => !z.active && z.centre_lat != null && z.centre_lng != null && km(z) <= Number(z.radius_km)) ?? null;
+}
+
+/** "a, b and c" */
+function listWords(xs: string[]) { return xs.length < 2 ? xs.join('') : `${xs.slice(0, -1).join(', ')} and ${xs[xs.length - 1]}`; }
+
+function PhoneField({ label, value, bad, onChange }: { label: string; value: string; bad: boolean; onChange: (v: string) => void }) {
+  const id = useId();
+  return (
+    <label className="dg-field"><span>{label}</span>
+      <input className="dg-input" type="tel" inputMode="tel" autoComplete="off" value={value} onChange={(e) => onChange(e.target.value)}
+        aria-invalid={bad} aria-describedby={bad ? `${id}-err` : undefined} />
+      {bad && <span id={`${id}-err`} className="dg-field-error"><Icon name="alert" size={16} />Enter a mobile number, like 0412 345 678.</span>}
+    </label>
+  );
 }

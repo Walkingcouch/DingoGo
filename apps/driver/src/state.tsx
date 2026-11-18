@@ -119,7 +119,7 @@ export function DriverProvider({ children }: { children: React.ReactNode }) {
             est_distance_m: o.est_distance_m, est_duration_s: o.est_duration_s, quote_cents: o.quote_cents, pickup_eta_s: o.pickup_eta_s,
             trip_cents: o.trip_cents, driver_pay: o.driver_pay, pickup_m: o.pickup_m, total_m: o.total_m,
             expires_at: o.expires_at, has_pet: o.has_pet, assistance_animal: o.assistance_animal, needs_wheelchair: o.needs_wheelchair,
-            passengers: o.passengers, payment_method: o.payment_method, notes: o.notes,
+            passengers: o.passengers, payment_method: o.payment_method, notes: o.notes, rider_needs: o.rider_needs ?? null,
           });
         } else setOffer((cur: any) => (cur && cur.expires_at && new Date(cur.expires_at) < new Date() ? null : cur));
       } catch { /* ignore */ }
@@ -166,3 +166,14 @@ export function estimateEarnings(o: { quote_cents: number; kind: string; trip_ce
 export const FEE_BASIS: Record<string, string> = { green: 'electric/hybrid rate', own_car: 'own-car rate', driver: 'your rate' };
 
 export const rangeKm = (rangeRated: number | undefined, pct: number) => Math.round((rangeRated ?? 427) * (pct / 100) * 0.7);
+
+/** The rider's accessibility needs (from their profile) as [icon, plain words] for the offer and trip screens. */
+export function needFlags(n?: { hearing?: boolean; vision?: boolean; mobility?: boolean; notes?: string | null } | null): [string, string][] {
+  if (!n) return [];
+  const out: [string, string][] = [];
+  if (n.hearing) out.push(['chat', 'Deaf or hard of hearing: send a message, don’t call']);
+  if (n.vision) out.push(['user', 'Blind or low vision: come to the door and say who you are']);
+  if (n.mobility) out.push(['access', 'Uses a mobility aid: may need help and boot space']);
+  if (n.notes) out.push(['info', `Rider’s note: “${n.notes}”`]);
+  return out;
+}

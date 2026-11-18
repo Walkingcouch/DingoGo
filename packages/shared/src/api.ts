@@ -23,21 +23,55 @@ export function setToken(t: string | null) {
 }
 export const getToken = () => token;
 
-export async function api<T = any>(method: string, path: string, body?: unknown): Promise<T> {
-  let res: Response;
+/** Connection state shared by every screen: false after a request fails for lack of signal (or the browser says it's offline),
+ *  true again after the next request gets through. Apps show an "offline" banner from it (useOnline in hooks.ts). */
+let online = typeof navigator === 'undefined' ? true : navigator.onLine !== false;
+const netListeners = new Set<(on: boolean) => void>();
+function setOnline(on: boolean) { if (on !== online) { online = on; netListeners.forEach((f) => f(on)); } }
+export const isOnline = () => online;
+export function onNetworkChange(f: (on: boolean) => void) { netListeners.add(f); return () => { netListeners.delete(f); }; }
+if (typeof window !== 'undefined') {
+  window.addEventListener('online', () => setOnline(true));
+  window.addEventListener('offline', () => setOnline(false));
+}
+
+/** Reads (GET) give up after this long so a weak signal doesn't leave a spinner forever, then retry. Writes are never
+ *  retried or timed out here: a booking or payment that may have gone through must not be sent twice. */
+const READ_TIMEOUT_MS = 15000;
+const READ_RETRIES = [800, 2500];
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+async function send(method: string, path: string, body: unknown, timeoutMs: number | null): Promise<Response> {
+  const ctl = timeoutMs && typeof AbortController !== 'undefined' ? new AbortController() : null;
+  const timer = ctl ? setTimeout(() => ctl.abort(), timeoutMs!) : null;
   try {
-    res = await fetch(BASE + path, {
-      method,
+    return await fetch(BASE + path, {
+      method, signal: ctl?.signal,
       headers: { ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}), ...(token ? { Authorization: `Bearer ${token}` } : {}) },
       body: body !== undefined ? JSON.stringify(body) : undefined,
     });
-  } catch {
-    throw new ApiError(0, 'offline', 'No connection. Check your signal and try again.');
+  } finally { if (timer) clearTimeout(timer); }
+}
+
+export async function api<T = any>(method: string, path: string, body?: unknown): Promise<T> {
+  const read = method === 'GET';
+  let res: Response | null = null;
+  for (let attempt = 0; ; attempt++) {
+    try { res = await send(method, path, body, read ? READ_TIMEOUT_MS : null); break; }
+    catch {
+      if (read && attempt < READ_RETRIES.length) { await sleep(READ_RETRIES[attempt]); continue; }
+      setOnline(false);
+      throw new ApiError(0, 'offline', 'No signal. Check your connection and try again.');
+    }
   }
+  setOnline(true);
   const text = await res.text();
-  const json = text ? JSON.parse(text) : {};
+  let json: any = {};
+  try { json = text ? JSON.parse(text) : {}; } catch { json = {}; }
   if (!res.ok) {
     if (res.status === 401) setToken(null);
+    // Gateways in front of the API answer 502-504 when the connection drops mid-request: treat like no signal.
+    if (!json.error && res.status >= 502 && res.status <= 504) throw new ApiError(res.status, 'offline', 'The connection dropped. Try again in a moment.');
     throw new ApiError(res.status, json.error ?? 'error', json.message ?? 'Something went wrong', json.details);
   }
   return json as T;

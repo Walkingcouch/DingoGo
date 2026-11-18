@@ -78,7 +78,8 @@ function TripDrawer({ id, onClose }: { id: string; onClose: () => void }) {
           <dt>Trip PIN</dt><dd>{t.verify_pin}</dd>
           <dt>Payment</dt><dd>{label(PAYMENT_METHOD, t.payment_method)}, {label(PAYMENT_STATUS, t.payment_status).toLowerCase()}</dd>
           {t.scheduled_for && <><dt>Scheduled</dt><dd>{dateTime(t.scheduled_for)}</dd></>}
-          {(t.has_pet || t.assistance_animal || t.needs_wheelchair || t.women_driver_pref) && <><dt>Needs</dt><dd>{[t.has_pet && 'Pet', t.assistance_animal && 'Assistance animal', t.needs_wheelchair && 'Wheelchair', t.women_driver_pref && 'Female driver preferred'].filter(Boolean).join(', ')}</dd></>}
+          {(t.has_pet || t.assistance_animal || t.needs_wheelchair || t.women_driver_pref || t.rider?.needs) && <><dt>Needs</dt><dd>{[t.has_pet && 'Pet', t.assistance_animal && 'Assistance animal', t.needs_wheelchair && 'Wheelchair', t.women_driver_pref && 'Female driver preferred',
+            t.rider?.needs?.hearing && 'Deaf or hard of hearing', t.rider?.needs?.vision && 'Blind or low vision', t.rider?.needs?.mobility && 'Mobility aid', t.rider?.needs?.notes && `“${t.rider.needs.notes}”`].filter(Boolean).join(', ')}</dd></>}
           {t.ndis_number && <><dt>NDIS no.</dt><dd>{t.ndis_number}</dd></>}
           {t.notes && <><dt>Notes</dt><dd>{t.notes}</dd></>}
           {t.cancel_reason && <><dt>Cancel reason</dt><dd>{t.cancel_reason}</dd></>}

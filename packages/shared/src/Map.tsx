@@ -10,10 +10,15 @@ const env = (import.meta as any).env ?? {};
 const TILE_URL = env.VITE_TILE_URL ?? 'https://basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png?key=cb1_5202_1_92ee69774dec256c7a8c17d1';
 const TILE_ATTR = env.VITE_TILE_ATTR ?? '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>';
 
+/** Riders who ask their phone for less motion get a map that jumps instead of gliding when it zooms or follows the car. */
+const REDUCE_MOTION = typeof matchMedia !== 'undefined' && matchMedia('(prefers-reduced-motion: reduce)').matches;
+
 export type Pt = { lat: number; lng: number };
 export type MapMarker = Pt & { id: string; kind: 'pickup' | 'dropoff' | 'car' | 'car-busy' | 'car-off' | 'me' | 'sos' | 'partner'; label?: string; heading?: number | null; onClick?: () => void };
 
-const COLORS: Record<string, string> = { pickup: '#4E7D5B', dropoff: '#14213D', car: '#E8912D', 'car-busy': '#7B5C8F', 'car-off': '#9AA0AE', me: '#2F6FED', sos: '#A63D2A', partner: '#B86A12' };
+const COLORS: Record<string, string> = { pickup: '#3D6B4A', dropoff: '#14213D', car: '#E8912D', 'car-busy': '#7B5C8F', 'car-off': '#9AA0AE', me: '#2F6FED', sos: '#A63D2A', partner: '#B86A12' };
+
+const KIND_NAME: Record<string, string> = { pickup: 'Pickup', dropoff: 'Drop-off', car: 'Car', 'car-busy': 'Car on a trip', 'car-off': 'Car offline', me: 'You', sos: 'SOS', partner: 'Partner' };
 
 function icon(m: MapMarker) {
   const c = COLORS[m.kind];
@@ -58,13 +63,16 @@ export function DgMap({ markers = [], route, track, fit = true, padding = 60, zo
 }) {
   const fitPts = useMemo(() => (fit ? [...markers.filter((m) => m.kind !== 'car-off'), ...(route ?? [])] : []), [fit, markers, route]);
   return (
-    <MapContainer center={[ALICE.lat, ALICE.lng]} zoom={zoom} zoomControl={false} attributionControl style={{ width: '100%', height: '100%', ...style }} className={className}>
+    <MapContainer center={[ALICE.lat, ALICE.lng]} zoom={zoom} zoomControl={false} attributionControl
+      zoomAnimation={!REDUCE_MOTION} fadeAnimation={!REDUCE_MOTION} markerZoomAnimation={!REDUCE_MOTION} style={{ width: '100%', height: '100%', ...style }} className={className}>
       <TileLayer url={TILE_URL} attribution={TILE_ATTR} />
       {zones?.map((z) => <Circle key={z.name} center={[z.lat, z.lng]} radius={z.radius_km * 1000} pathOptions={{ color: z.active ? '#E8912D' : '#9AA0AE', weight: 2, dashArray: z.active ? undefined : '6 6', fillOpacity: 0.04 }} />)}
       {track && track.length > 1 && <Polyline positions={track.map((p) => [p.lat, p.lng] as [number, number])} pathOptions={{ color: '#E8912D', weight: 5, opacity: 0.9 }} />}
       {route && route.length > 1 && <Polyline positions={route.map((p) => [p.lat, p.lng] as [number, number])} pathOptions={{ color: '#14213D', weight: 4, dashArray: '2 8', lineCap: 'round' }} />}
       {markers.map((m) => (
-        <Marker key={m.id} position={[m.lat, m.lng]} icon={icon(m)} eventHandlers={m.onClick ? { click: m.onClick } : undefined}>
+        // Only markers that do something are buttons (keyboard-focusable, named); the rest are pictures of what the text already says.
+        <Marker key={m.id} position={[m.lat, m.lng]} icon={icon(m)} eventHandlers={m.onClick ? { click: m.onClick } : undefined}
+          keyboard={!!m.onClick} title={m.onClick ? `${KIND_NAME[m.kind] ?? ''}${m.label ? `: ${m.label}` : ''}` : undefined}>
           {m.label && <Tooltip direction="top" offset={[0, -24]}>{m.label}</Tooltip>}
         </Marker>
       ))}

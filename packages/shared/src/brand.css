@@ -5,18 +5,20 @@
   --night: #14213D;        /* desert-night indigo: text, dark surfaces */
   --night-2: #22325A;
   --ochre: #E8912D;        /* dingo ochre: primary actions */
-  --ochre-deep: #B86A12;   /* ochre text on light bg (AA) */
+  --ochre-deep: #935309;   /* ochre text on light bg: AA (4.5:1) on gum, ochre-soft and earth-soft */
   --ochre-soft: #FCEBD5;
   --gum: #FBFAF7;          /* ghost-gum white: base */
   --paper: #FFFFFF;
   --line: #E4E1DA;
   --muted: #5D6478;
-  --saltbush: #4E7D5B;     /* EV / eco / success */
+  --saltbush: #3D6B4A;     /* EV / eco / success: AA for white text on it and for it on saltbush-soft */
   --saltbush-soft: #E3EFE6;
   --earth: #A63D2A;        /* safety, alerts, destructive */
   --earth-soft: #F7E3DE;
   --dusk: #7B5C8F;         /* quiet secondary */
   --dusk-soft: #EEE7F3;
+  /* Text on the soft tints (chips, notes, errors). Same as the base colour in light mode, lighter in dark mode so it stays AA. */
+  --saltbush-ink: var(--saltbush); --earth-ink: var(--earth); --dusk-ink: var(--dusk);
 
   --bg: var(--gum);
   --surface: var(--paper);
@@ -31,18 +33,20 @@
   --r-sm: 6px; --r-md: 12px; --r-lg: 22px; --r-pill: 999px;
   --shadow-sheet: 0 -8px 30px rgba(20, 33, 61, 0.16);
   --shadow-pop: 0 10px 30px rgba(20, 33, 61, 0.18);
-  --focus: 0 0 0 3px rgba(232, 145, 45, 0.55);
+  --focus: 0 0 0 2px var(--surface), 0 0 0 5px var(--ochre-deep); /* 3:1+ against light and dark surfaces */
 }
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     --bg: #0F1830; --surface: #18233F; --text: #F3EFE6; --line: #2C3A5E; --muted: #A9B0C3;
     --ochre-deep: #F2A541; --ochre-soft: #3A2C17; --saltbush-soft: #1D3326; --earth-soft: #3A1E19; --dusk-soft: #2A2238;
+    --saltbush-ink: #8CC79B; --earth-ink: #F09A88; --dusk-ink: #C9A8DB;
   }
 }
 :root[data-theme="dark"] {
   --bg: #0F1830; --surface: #18233F; --text: #F3EFE6; --line: #2C3A5E; --muted: #A9B0C3;
   --ochre-deep: #F2A541; --ochre-soft: #3A2C17; --saltbush-soft: #1D3326; --earth-soft: #3A1E19; --dusk-soft: #2A2238;
+    --saltbush-ink: #8CC79B; --earth-ink: #F09A88; --dusk-ink: #C9A8DB;
 }
 
 *, *::before, *::after { box-sizing: border-box; }
@@ -51,7 +55,7 @@ body { margin: 0; background: var(--bg); color: var(--text); font-family: var(--
 h1, h2, h3, h4 { font-family: var(--font-display); line-height: 1.12; margin: 0 0 .4em; letter-spacing: -0.01em; }
 h1 { font-weight: 800; } h2, h3 { font-weight: 600; }
 a { color: var(--ochre-deep); }
-:focus-visible { outline: none; box-shadow: var(--focus); border-radius: var(--r-sm); }
+:focus-visible { outline: 2px solid transparent; outline-offset: 2px; box-shadow: var(--focus); border-radius: var(--r-sm); } /* transparent outline shows in Windows high contrast */
 img { max-width: 100%; }
 button, input, select, textarea { font: inherit; color: inherit; }
 
@@ -73,19 +77,21 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .dg-field > span { font-weight: 700; font-size: var(--fs-sm); }
 .dg-input, .dg-select, .dg-textarea { width: 100%; min-height: 48px; padding: .65rem .85rem; border: 2px solid var(--line); border-radius: var(--r-md);
   background: var(--surface); }
-.dg-input:focus, .dg-select:focus, .dg-textarea:focus { border-color: var(--ochre); outline: none; }
+.dg-input:focus, .dg-select:focus, .dg-textarea:focus { border-color: var(--ochre-deep); outline: 2px solid transparent; }
+.dg-input[aria-invalid="true"], .dg-select[aria-invalid="true"], .dg-textarea[aria-invalid="true"] { border-color: var(--earth); }
+.dg-field-error { color: var(--earth-ink); font-size: var(--fs-sm); font-weight: 700; display: flex; gap: .35em; align-items: flex-start; }
 .dg-textarea { min-height: 96px; resize: vertical; }
 .dg-check { display: flex; gap: .6rem; align-items: flex-start; padding: .5rem 0; cursor: pointer; }
 .dg-check input { width: 22px; height: 22px; accent-color: var(--ochre); margin-top: 2px; flex: none; }
 
 .dg-chip { display: inline-flex; align-items: center; gap: .35em; padding: .2rem .65rem; border-radius: var(--r-pill); font-size: var(--fs-xs); font-weight: 700;
-  background: var(--dusk-soft); color: var(--dusk); white-space: nowrap; }
-.dg-chip--green { background: var(--saltbush-soft); color: var(--saltbush); }
+  background: var(--dusk-soft); color: var(--dusk-ink); white-space: nowrap; }
+.dg-chip--green { background: var(--saltbush-soft); color: var(--saltbush-ink); }
 .dg-chip--ochre { background: var(--ochre-soft); color: var(--ochre-deep); }
-.dg-chip--red { background: var(--earth-soft); color: var(--earth); }
+.dg-chip--red { background: var(--earth-soft); color: var(--earth-ink); }
 .dg-chip--night { background: var(--night); color: var(--gum); }
 
-.dg-error { background: var(--earth-soft); color: var(--earth); padding: .75rem 1rem; border-radius: var(--r-md); font-weight: 700; }
+.dg-error { background: var(--earth-soft); color: var(--earth-ink); padding: .75rem 1rem; border-radius: var(--r-md); font-weight: 700; }
 .dg-note { background: var(--ochre-soft); color: var(--text); padding: .75rem 1rem; border-radius: var(--r-md); }
 .dg-muted { color: var(--muted); }
 .dg-money { font-variant-numeric: tabular-nums; font-weight: 700; }
@@ -94,5 +100,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
 
 /* Leaflet tweaks */
+.leaflet-container .leaflet-control-attribution { background: rgba(255, 255, 255, .92); color: #3A4152; }
+.leaflet-container .leaflet-control-attribution a { color: #005A80; }
 .leaflet-container { font-family: var(--font-body); background: #EDE6DA; }
 .dg-pin { border-radius: 50%; border: 3px solid #fff; box-shadow: 0 2px 6px rgba(0,0,0,.35); }

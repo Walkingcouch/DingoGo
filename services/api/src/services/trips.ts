@@ -295,7 +295,7 @@ export async function getTrip(id: string, c: Q = pool) {
          'lat', d.lat, 'lng', d.lng, 'heading', d.heading, 'languages', d.languages) END AS driver,
        CASE WHEN v.id IS NOT NULL THEN json_build_object('rego', v.rego, 'make', v.make, 'model', v.model, 'colour', v.colour, 'battery_pct', v.battery_pct,
          'fuel_type', v.fuel_type, 'green', v.fuel_type IN ('electric','plug_in_hybrid','hybrid'), 'is_ev', v.fuel_type = 'electric') END AS vehicle,
-       json_build_object('id', ru.id, 'name', ru.name, 'phone', ru.phone, 'rating', ru.rating_avg) AS rider,
+       json_build_object('id', ru.id, 'name', ru.name, 'phone', ru.phone, 'rating', ru.rating_avg, 'accessibility', ru.accessibility) AS rider,
        (SELECT count(*)::int FROM trip_offers o WHERE o.trip_id = t.id AND o.status IN ('cancelled','released')) AS driver_releases
      FROM trips t
      JOIN users ru ON ru.id = t.rider_id
@@ -304,8 +304,19 @@ export async function getTrip(id: string, c: Q = pool) {
      LEFT JOIN vehicles v ON v.id = t.vehicle_id
      WHERE t.id = $1`, [id], c);
   if (!t) throw notFound('Trip');
+  if (t.rider) { t.rider.needs = riderNeeds(t.rider.accessibility, t.kind); delete t.rider.accessibility; }
   if (t.kind === 'courier') t.parcel = await one('SELECT * FROM parcels WHERE trip_id = $1', [id], c);
   return t;
+}
+
+/** What the driver needs to know from the rider's accessibility profile (Account → Profile): Deaf or hard of hearing (message,
+ *  don't call), blind or low vision (come to the door, say who you are), mobility aid, and a free-text note. Only sent to the driver
+ *  offered or on the trip, and to ops. Parcels: the sender isn't travelling, so nothing is sent. Null when nothing is set. */
+export function riderNeeds(a: any, kind?: string): { hearing: boolean; vision: boolean; mobility: boolean; notes: string | null } | null {
+  if (!a || typeof a !== 'object' || kind === 'courier') return null;
+  const notes = typeof a.notes === 'string' && a.notes.trim() ? a.notes.trim().slice(0, 300) : null;
+  const n = { hearing: a.hearing === true, vision: a.vision === true, mobility: a.wheelchair === true, notes };
+  return n.hearing || n.vision || n.mobility || n.notes ? n : null;
 }
 
 /** Strip secrets a viewer shouldn't see. */
@@ -402,6 +413,7 @@ export async function dispatchTrip(tripId: string): Promise<'offered' | 'waiting
     const pickupM = Math.round(pick.toPickup);
     await event(c, tripId, 'offered', null, { driver_id: pick.user_id, eta_s: etaS, pickup_m: pickupM });
     const dp = await offerPay(c, t, pick.user_id, pickupM);
+    const ru = await one('SELECT accessibility FROM users WHERE id = $1', [t.rider_id], c);
     const offer = {
       trip_id: t.id, ref: t.ref, kind: t.kind, service: t.service,
       pickup: { lat: t.pickup_lat, lng: t.pickup_lng, address: t.pickup_address },
@@ -411,7 +423,7 @@ export async function dispatchTrip(tripId: string): Promise<'offered' | 'waiting
       pickup_eta_s: etaS, expires_in_s: config.dispatch.offerTimeoutS, has_pet: t.has_pet,
       pickup_m: pickupM, total_m: pickupM + t.est_distance_m, driver_pay: dp,
       assistance_animal: t.assistance_animal, needs_wheelchair: t.needs_wheelchair, passengers: t.passengers,
-      payment_method: t.payment_method, notes: t.notes,
+      payment_method: t.payment_method, notes: t.notes, rider_needs: riderNeeds(ru?.accessibility, t.kind),
     };
     setImmediate(() => toUser(pick.user_id, 'offer.new', offer));
     return 'offered';
@@ -1078,6 +1090,24 @@ async function flagAssistanceAnimal(tripId: string, driverId: string, what: stri
       [driverId, tripId, `Driver ${what} on a trip with an assistance animal`]);
     toOps('compliance.flag', { kind: 'assistance_animal_refusal', trip_id: tripId, driver_id: driverId });
   }
+}
+
+/** Rider reports an assistance-animal refusal on one of their trips: flag the driver on the trip, or the last driver who was
+ *  offered it and declined, cancelled or let it lapse. One open flag per trip and driver (a driver-side cancel may have flagged it
+ *  already). Returns false when no driver can be identified (the support ticket still goes to the team). */
+export async function flagRiderReportedRefusal(t: { id: string; driver_id: string | null }, message: string) {
+  const driverId = t.driver_id ?? (await one(
+    `SELECT driver_id FROM trip_offers WHERE trip_id = $1 AND status IN ('declined','cancelled','released','expired','accepted')
+     ORDER BY offered_at DESC LIMIT 1`, [t.id]))?.driver_id;
+  if (!driverId) return false;
+  const open = await one(`SELECT 1 FROM compliance_flags WHERE kind = 'assistance_animal_refusal' AND trip_id = $1 AND driver_id = $2 AND status = 'open'`,
+    [t.id, driverId]);
+  if (!open) {
+    await q(`INSERT INTO compliance_flags (kind, driver_id, trip_id, detail) VALUES ('assistance_animal_refusal', $1, $2, $3)`,
+      [driverId, t.id, `Rider reported the driver refused their assistance animal: ${message.slice(0, 300)}`]);
+  }
+  toOps('compliance.flag', { kind: 'assistance_animal_refusal', trip_id: t.id, driver_id: driverId, reported_by: 'rider' });
+  return true;
 }
 
 /** Distance (m) from point P to segment AB, using a local equirectangular projection — fine at town scale. */

@@ -1331,3 +1331,77 @@ test('earnings floor: weekly top-up per engaged hour, paid once; off by default;
   assert.equal(e.floor.week_start, weekStartOf(new Date()));
   await q(`DELETE FROM settings WHERE key = 'driver_pay'`);
 });
+
+// ───────────── Round 5: accessibility ─────────────
+test('rider accessibility profile reaches the offered and assigned driver (not parcels, not other viewers)', async () => {
+  await clearOpenTrips();
+  await onlyOnline(['d1']);
+  const set = await call('PATCH', '/me', 'rider', { accessibility: { hearing: true, vision: false, wheelchair: true, assistance_animal: false, notes: '  Guide dog called Rusty  ' } });
+  assert.equal(set.status, 200, JSON.stringify(set));
+  const want = { hearing: true, vision: false, mobility: true, notes: 'Guide dog called Rusty' };
+  try {
+    const trip = await book();
+    const offer = await waitForOffer('d1');
+    assert.equal(offer.trip_id, trip.id);
+    assert.deepEqual(offer.rider_needs, want, 'polled offer carries the needs');
+    assert.equal(offer.rider_accessibility, undefined, 'raw profile JSON is not sent');
+    const acc = await call('POST', `/driver/offers/${trip.id}/accept`, 'd1');
+    assert.deepEqual(acc.trip.rider.needs, want);
+    assert.deepEqual((await call('GET', '/driver/trips/active', 'd1')).trip.rider.needs, want);
+    assert.deepEqual((await call('GET', `/admin/trips/${trip.id}`, 'admin')).trip.rider.needs, want, 'ops see it');
+    const own = await call('GET', `/trips/${trip.id}`, 'rider');
+    assert.deepEqual(own.trip.rider, { name: own.trip.rider.name }, 'rider view stays name only');
+    assert.equal((await call('GET', `/public/track/${own.trip.share_token}`)).trip.rider_needs, undefined, 'share link shows nothing');
+    await call('POST', `/trips/${trip.id}/cancel`, 'rider', { reason: 'test' });
+
+    // Parcels: the sender isn't travelling.
+    const p = await call('POST', '/trips', 'rider', {
+      kind: 'courier', service: 'courier_s', pickup: TODD_MALL, dropoff: HOSPITAL, payment_method: 'card',
+      parcel: { size: 'S', description: 'Keys', sender_name: 'Demo', sender_phone: '0400000100', recipient_name: 'Nan', recipient_phone: '0400000555', prohibited_ack: true },
+    });
+    assert.equal(p.status, 201, JSON.stringify(p));
+    assert.equal((await waitForOffer('d1')).rider_needs, null);
+    await call('POST', `/trips/${p.trip.id}/cancel`, 'rider', { reason: 'test' });
+  } finally {
+    await call('PATCH', '/me', 'rider', { accessibility: {} });
+  }
+  // Nothing set → null.
+  const t2 = await book();
+  assert.equal((await waitForOffer('d1')).rider_needs, null);
+  await call('POST', `/trips/${t2.id}/cancel`, 'rider', { reason: 'test' });
+});
+
+test('rider report of an assistance-animal refusal flags the driver once; own trips only', async () => {
+  await clearOpenTrips();
+  await onlyOnline(['d1']);
+  const trip = await book(); // assistance animal not ticked: the driver saw the dog and left
+  await waitForOffer('d1');
+  assert.equal((await call('POST', `/driver/offers/${trip.id}/decline`, 'd1')).status, 200);
+  assert.equal(await one(`SELECT 1 FROM compliance_flags WHERE trip_id = $1`, [trip.id]), null, 'plain decline is not flagged');
+
+  const body = { trip_id: trip.id, category: 'assistance_animal_refused', subject: 'Driver refused my dog', message: 'He saw my guide dog and drove off.' };
+  const r = await call('POST', '/support', 'rider', body);
+  assert.equal(r.status, 201, JSON.stringify(r));
+  assert.equal(r.ticket.flagged, true);
+  const again = await call('POST', '/support', 'rider', body);
+  assert.equal(again.status, 201);
+  const flags = await q(`SELECT driver_id, detail FROM compliance_flags WHERE trip_id = $1 AND kind = 'assistance_animal_refusal'`, [trip.id]);
+  assert.equal(flags.length, 1, 'one open flag per trip and driver');
+  assert.equal(flags[0].driver_id, await driverId('+61400000011'));
+  assert.match(flags[0].detail, /Rider reported/);
+
+  // Someone else's trip: forbidden. No trip: a ticket, no flag.
+  await login('rider2', '0400 000 177');
+  assert.equal((await call('POST', '/support', 'rider2', body)).status, 403);
+  const plain = await call('POST', '/support', 'rider', { category: 'assistance_animal_refused', subject: 'Refused', message: 'Last week a car refused my dog.' });
+  assert.equal(plain.status, 201);
+  assert.equal(plain.ticket.flagged, undefined);
+  // A trip nobody was offered yet: ticket only.
+  await q(`UPDATE trips SET status = 'cancelled_admin' WHERE id = $1`, [trip.id]);
+  await onlyOnline([]);
+  const lonely = await book();
+  const r3 = await call('POST', '/support', 'rider', { ...body, trip_id: lonely.id });
+  assert.equal(r3.status, 201);
+  assert.equal(r3.ticket.flagged, undefined);
+  await call('POST', `/trips/${lonely.id}/cancel`, 'rider', { reason: 'test' });
+});

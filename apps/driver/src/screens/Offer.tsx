@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { ApiError, Icon, SERVICE_ICON_NAME, km, mins, money, post } from '@dingogo/shared';
-import { FEE_BASIS, estimateEarnings, useDriver } from '../state';
+import { FEE_BASIS, estimateEarnings, needFlags, useDriver } from '../state';
 
 const LABEL: Record<string, string> = { ride: 'Ride', pet: 'Pet-friendly ride', courier_s: 'Small parcel', courier_m: 'Medium parcel', courier_l: 'Large parcel', tour: 'Private tour', hourly: 'Hourly hire' };
 
@@ -89,6 +89,7 @@ export function Offer() {
           {offer.has_pet && <span className="flag"><Icon name="paw" size={18} />Pet on board</span>}
           {offer.needs_wheelchair && <span className="flag"><Icon name="access" size={18} />Wheelchair</span>}
           {offer.assistance_animal && <span className="flag legal"><Icon name="shield" size={18} /><span><strong>Assistance animal.</strong> By law (Disability Discrimination Act) you must accept assistance animals. Refusals are reviewed.</span></span>}
+          {needFlags(offer.rider_needs).map(([ic, text]) => <span key={text} className="flag flag-need"><Icon name={ic} size={18} />{text}</span>)}
           {offer.notes && <span className="flag flag-note"><Icon name="chat" size={18} />“{offer.notes}”</span>}
         </div>
         {error && <p className="dg-error">{error}</p>}

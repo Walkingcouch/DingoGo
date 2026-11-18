@@ -287,16 +287,23 @@ export default async function riderRoutes(app: FastifyInstance) {
   app.post('/support', async (req, reply) => {
     const me = await requireUser(req);
     const b = parse(z.object({
-      trip_id: z.string().uuid().optional(), category: z.enum(['lost_item', 'fare', 'safety', 'driver', 'parcel', 'accessibility', 'app', 'other']),
+      trip_id: z.string().uuid().optional(), category: z.enum(['lost_item', 'fare', 'safety', 'driver', 'parcel', 'accessibility', 'assistance_animal_refused', 'app', 'other']),
       subject: z.string().min(3).max(120), message: z.string().min(5).max(2000),
     }), req.body);
+    let trip: any = null;
     if (b.trip_id) {
-      const t = await trips.getTrip(b.trip_id);
-      if (!trips.canView(t, me)) throw forbidden();
+      trip = await trips.getTrip(b.trip_id);
+      if (!trips.canView(trip, me)) throw forbidden();
     }
     const t = await one(`INSERT INTO support_tickets (user_id, trip_id, category, subject, message) VALUES ($1,$2,$3,$4,$5) RETURNING *`,
       [me.id, b.trip_id ?? null, b.category, b.subject, b.message]);
     toOps('support.new', t);
+    // A rider saying a driver refused their assistance animal (unlawful under the DDA) gets the same compliance review as a driver
+    // declining or cancelling such a trip, even if the rider didn't tick "assistance animal" when booking (the driver saw the dog and left).
+    if (b.category === 'assistance_animal_refused' && trip && trip.rider_id === me.id) {
+      const flagged = await trips.flagRiderReportedRefusal(trip, b.message);
+      if (flagged) t.flagged = true;
+    }
     void notify(me.id, 'We got your message', `Ticket #${t.id.slice(0, 8)} — our team will reply soon.`, { ticket_id: t.id }, 'account');
     reply.code(201);
     return { ticket: t };

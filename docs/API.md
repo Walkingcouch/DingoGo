@@ -409,3 +409,16 @@ Top-up = max(0, rate × engaged hours − counted earnings). Table `driver_pay_w
   503 `migration_pending` (table missing). Safe to run twice / at once (advisory lock + primary key). Drivers are notified. With `auto_weekly`, the dispatch tick
   settles last week (checked hourly per instance).
 - `GET /admin/trips/:id` adds `driver_ledger` (what the driver was paid for the trip).
+
+## Accessibility (Round 5)
+
+- **Rider needs reach the driver.** The rider's profile `accessibility` (`PATCH /me`: `hearing`, `vision`, `wheelchair`, `notes`) is sent as
+  `rider_needs { hearing, vision, mobility, notes|null } | null` on offers (`offer.new` and `GET /driver/offers`), and as `trip.rider.needs` (same shape) on trips
+  seen by the assigned driver and ops (`GET /trips/:id`, `/driver/trips/active`, accept/arrive/start responses, `/admin/trips/:id`). Null when nothing is set and
+  for parcels. Riders, share links and other viewers don't get it. The raw profile JSON is never sent to drivers.
+- **Assistance-animal refusal reports.** `POST /support` accepts `category: 'assistance_animal_refused'`. With a `trip_id` of the rider's own trip, the driver on the
+  trip (or the last driver offered it who declined, cancelled, passed it on or let it lapse) gets an `assistance_animal_refusal` compliance flag (one open flag per
+  trip and driver; ops get `compliance.flag` with `reported_by: 'rider'`); the ticket comes back with `flagged: true`. Without a trip, or with no driver to name,
+  it's a normal ticket.
+- **Clients (shared `api()`).** GET requests time out after 15 s and retry twice (0.8 s, 2.5 s) on network failure; writes are never retried. Network failures and
+  bare 502–504 gateway answers throw `ApiError` code `offline`. `isOnline()` / `onNetworkChange()` / `useOnline()` expose the connection state for "no signal" UI.

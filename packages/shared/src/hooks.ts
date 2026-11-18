@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ApiError } from './api';
+import { ApiError, isOnline, onNetworkChange } from './api';
 
 /** Load data with loading/error state and a reload function. */
 export function useLoad<T>(fn: () => Promise<T>, deps: unknown[] = []) {
@@ -47,4 +47,11 @@ export function useGeolocation(enabled = true) {
     return () => navigator.geolocation.clearWatch(id);
   }, [enabled]);
   return { pos, denied };
+}
+
+/** True while the app can reach DingoGo (see onNetworkChange in api.ts). */
+export function useOnline() {
+  const [on, setOn] = useState(isOnline());
+  useEffect(() => onNetworkChange(setOn), []);
+  return on;
 }

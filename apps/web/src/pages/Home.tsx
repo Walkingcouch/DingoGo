@@ -246,7 +246,7 @@ function Phones() {
   const [qr, setQr] = useState<string>('');
   useEffect(() => { QRCode.toDataURL('DG7KQX2M', { margin: 0, width: 220, color: { dark: '#14213D', light: '#FFFFFF' } }).then(setQr).catch(() => {}); }, []);
   return (
-    <div className="phones" aria-label="Screens from the DingoGo app" role="img">
+    <div className="phones" aria-label="Screens from the DingoGo app" role="img" tabIndex={0}>
       <div className="phone phone--a">
         <div className="phone-screen">
           <div className="ph-map"><Scene tone="night" sun={false} ground="transparent" /><span className="ph-car" /><span className="ph-pin" /></div>

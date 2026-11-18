@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { ApiError, Icon, assetUrl, get, km, money, post, uploadFile } from '@dingogo/shared';
 import { DgMap, type MapMarker } from '@dingogo/shared/map';
-import { useDriver } from '../state';
+import { needFlags, useDriver } from '../state';
 import { SignaturePad } from './SignaturePad';
 
 const mapsLinks = (lat: number, lng: number) => ({
@@ -132,6 +132,7 @@ function TripFlags({ t }: { t: any }) {
   if (t.has_pet) flags.push(['paw', `Pet${t.pet_details ? `: ${t.pet_details}` : ''}`]);
   if (t.assistance_animal) flags.push(['shield', 'Assistance animal']);
   if (t.needs_wheelchair) flags.push(['access', 'Wheelchair']);
+  flags.push(...needFlags(t.rider?.needs));
   if (t.notes) flags.push(['chat', `“${t.notes}”`]);
   if (!flags.length) return null;
   return <ul className="trip-flags">{flags.map(([ic, f]) => <li key={f}><Icon name={ic} size={18} />{f}</li>)}</ul>;

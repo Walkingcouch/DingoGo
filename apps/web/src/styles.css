@@ -307,7 +307,9 @@ p { text-wrap: pretty; }
 /* Dark band (inner pages) */
 .band { background: var(--night); color: var(--gum); }
 .band h2 { color: #fff; }
-.band .section-intro, .band .dg-muted, .band .prose p { color: #C9CFDD; }
+.band .section-intro, .band .dg-muted, .band .prose p, .band .steps span { color: #C9CFDD; }
+/* Forms sit on a light card inside dark bands: their hints go back to the normal muted colour. */
+.band .dg-field .dg-muted, .band form .dg-muted { color: var(--muted); }
 .band a:not(.dg-btn) { color: var(--ochre); }
 .store-row { display: flex; flex-wrap: wrap; gap: 12px; margin: 22px 0 10px; }
 

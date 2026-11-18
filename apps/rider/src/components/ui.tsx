@@ -1,4 +1,5 @@
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 import { Link } from 'react-router-dom';
 
 export function Page({ title, back, children, actions }: { title: string; back?: string; children: ReactNode; actions?: ReactNode }) {
@@ -41,22 +42,49 @@ export function Spinner({ label = 'Loading' }: { label?: string }) {
   return <div className="spinner" role="status"><span className="spinner__dot" /><span>{label}…</span></div>;
 }
 
-/** Simple modal dialog with focus on open. */
+const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+/** Modal dialog: rendered over the app with the rest of the page made inert, focus moved inside (and kept there while the content
+ *  changes, e.g. SOS "sending" → "sent"), Tab wraps within it, Escape closes, and focus goes back to whatever opened it. */
 export function Dialog({ open, onClose, title, children }: { open: boolean; onClose: () => void; title: string; children: ReactNode }) {
+  const box = useRef<HTMLDivElement>(null);
+  const titleId = useId();
+  const closeRef = useRef(onClose); closeRef.current = onClose;
   useEffect(() => {
     if (!open) return;
-    const k = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
+    const opener = document.activeElement as HTMLElement | null;
+    const root = document.getElementById('root');
+    root?.setAttribute('inert', ''); root?.setAttribute('aria-hidden', 'true');
+    const k = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') { e.preventDefault(); closeRef.current(); return; }
+      if (e.key !== 'Tab' || !box.current) return;
+      const els = Array.from(box.current.querySelectorAll<HTMLElement>(FOCUSABLE));
+      if (!els.length) { e.preventDefault(); box.current.focus(); return; }
+      const first = els[0], last = els[els.length - 1];
+      if (e.shiftKey && (document.activeElement === first || document.activeElement === box.current)) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    };
     window.addEventListener('keydown', k);
-    return () => window.removeEventListener('keydown', k);
-  }, [open, onClose]);
+    return () => {
+      window.removeEventListener('keydown', k);
+      root?.removeAttribute('inert'); root?.removeAttribute('aria-hidden');
+      if (opener && document.contains(opener)) opener.focus();
+    };
+  }, [open]);
+  // After every render: if focus has fallen out of the dialog (first open, or the button that had it was replaced), bring it back.
+  useEffect(() => {
+    if (!open || !box.current || box.current.contains(document.activeElement)) return;
+    (box.current.querySelector<HTMLElement>(FOCUSABLE) ?? box.current).focus();
+  });
   if (!open) return null;
-  return (
-    <div className="dialog" role="dialog" aria-modal="true" aria-label={title} onClick={onClose}>
-      <div className="dialog__box" onClick={(e) => e.stopPropagation()}>
-        <h2>{title}</h2>
+  return createPortal(
+    <div className="dialog" onClick={onClose}>
+      <div className="dialog__box" role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1} ref={box} onClick={(e) => e.stopPropagation()}>
+        <h2 id={titleId}>{title}</h2>
         {children}
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 

@@ -36,7 +36,8 @@ npm install
 npm run db:setup                                   # migrations + demo data
 npm run dev:api                                    # http://localhost:4000
 npm run dev:web    # and/or dev:rider, dev:driver, dev:admin, dev:partner, dev:roof
-npm test                                           # 60 API tests (needs a throwaway DB: they reset it)
+npm test                                           # 62 API tests (needs a throwaway DB: they reset it)
+node scripts/a11y-check.mjs                        # WCAG 2.2 AA check (axe-core + Playwright) of the website and rider app; needs api, web and rider running
 ```
 
 Demo sign-ins (development only — any SMS code is shown on screen, and `000000` always works):
@@ -57,7 +58,7 @@ All partner businesses, advertisers and people in the demo data are fictional.
 
 ## What the platform does
 
-**Riders:** book rides, pet-friendly rides, parcels (S/M/L), fixed-price tours and event hire; upfront itemised prices with GST and the NT passenger levy; schedule ahead; assistance-animal, women-preferred driver and NDIS options; live tracking; trip PIN; share-trip link; SOS (000 + alert to DingoGo and emergency contact); tips, ratings, tax invoices; Dingo Points, café rewards with QR codes, referrals, DingoGo Pass subscription; DingoGo credit and prepaid vouchers; data export and account deletion.
+**Riders:** book rides, pet-friendly rides, parcels (S/M/L), fixed-price tours and event hire; upfront itemised prices with GST and the NT passenger levy; schedule ahead; assistance-animal, women-preferred driver and NDIS options; accessibility profile shared with the driver (Deaf/hard of hearing, low vision, mobility aid), assistance-animal refusal reports; live tracking with spoken status updates and a "no signal" mode that keeps the last trip on screen; trip PIN; share-trip link; SOS (000 + alert to DingoGo and emergency contact); tips, ratings, tax invoices; Dingo Points, café rewards with QR codes, referrals, DingoGo Pass subscription; DingoGo credit and prepaid vouchers; data export and account deletion.
 
 **Drivers:** onboarding against NT accreditation requirements with document upload; can't go online until licence, H endorsement, ABN, GST, vehicle CVL, rego and insurance are current; offers with countdown, their pay and total km (incl. the drive to the pickup); PIN-verified pickups; courier proof of delivery (recipient PIN, signature or photo); SOS; earnings with fee, pickup pay, tips, lease, charging, hours on trips and earnings-floor progress; GST-on-fares figure for the BAS; charging and battery logs.
 

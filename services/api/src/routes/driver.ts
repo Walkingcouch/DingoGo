@@ -309,6 +309,7 @@ export default async function driverRoutes(app: FastifyInstance) {
       `SELECT o.trip_id, o.expires_at, o.pickup_eta_s, t.ref, t.kind, t.service, t.pickup_address, t.pickup_lat, t.pickup_lng,
               t.dropoff_address, t.dropoff_lat, t.dropoff_lng, t.est_distance_m, t.est_duration_s, t.quote_cents, (t.fare_breakdown->>'trip_cents')::int AS trip_cents, t.has_pet,
               t.assistance_animal, t.needs_wheelchair, t.passengers, t.payment_method, t.notes, t.fare_breakdown,
+              (SELECT u.accessibility FROM users u WHERE u.id = t.rider_id) AS rider_accessibility,
               (SELECT (e.data->>'pickup_m')::int FROM trip_events e WHERE e.trip_id = t.id AND e.type = 'offered' AND e.data->>'driver_id' = o.driver_id::text
                ORDER BY e.at DESC, e.id DESC LIMIT 1) AS pickup_m
        FROM trip_offers o JOIN trips t ON t.id = o.trip_id
@@ -318,7 +319,8 @@ export default async function driverRoutes(app: FastifyInstance) {
     for (const o of offers) {
       o.driver_pay = await trips.offerPay(pool, o, me.id, o.pickup_m, rules);
       o.total_m = (o.pickup_m ?? 0) + o.est_distance_m;
-      delete o.fare_breakdown;
+      o.rider_needs = trips.riderNeeds(o.rider_accessibility, o.kind);
+      delete o.fare_breakdown; delete o.rider_accessibility;
     }
     return { offers };
   });

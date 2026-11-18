@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link, Route, Routes, useNavigate, useSearchParams } from 'react-router-dom';
 import { ApiError, Icon, ago, date, del, get, money, patch, post, useLoad, Ranges } from '@dingogo/shared';
 import { Dialog, Page, Spinner } from '../components/ui';
@@ -191,7 +191,8 @@ function Inbox() {
 
 const CATS = [
   ['lost_item', 'I left something in the car'], ['fare', 'A question about my fare'], ['safety', 'A safety concern'], ['driver', 'Feedback about my driver'],
-  ['parcel', 'A parcel problem'], ['accessibility', 'Accessibility'], ['app', 'The app isn’t working'], ['other', 'Something else'],
+  ['parcel', 'A parcel problem'], ['accessibility', 'Accessibility'], ['assistance_animal_refused', 'A driver refused my assistance animal'],
+  ['app', 'The app isn’t working'], ['other', 'Something else'],
 ] as const;
 
 function Help() {
@@ -199,14 +200,17 @@ function Help() {
   const tripId = sp.get('trip') ?? undefined;
   const tickets = useLoad(() => get<{ tickets: any[] }>('/support'));
   const cfg = useLoad(() => get('/public/config'));
-  const [f, setF] = useState({ category: 'lost_item', subject: '', message: '' });
+  const startCat = sp.get('category');
+  const [f, setF] = useState({ category: CATS.some((c) => c[0] === startCat) ? startCat! : 'lost_item', subject: '', message: '' });
   const [err, setErr] = useState<string | null>(null);
   const [sent, setSent] = useState(false);
+  const sentRef = useRef<HTMLParagraphElement>(null);
   async function send(e: React.FormEvent) {
     e.preventDefault(); setErr(null);
     try {
       await post('/support', { ...f, subject: f.subject || CATS.find((c) => c[0] === f.category)![1], trip_id: tripId });
       setSent(true); setF({ ...f, subject: '', message: '' }); await tickets.reload();
+      sentRef.current?.focus();
     } catch (e2) { setErr(e2 instanceof ApiError ? e2.message : 'Could not send'); }
   }
   const phone = cfg.data?.support?.phone;
@@ -216,12 +220,15 @@ function Help() {
       {phone && <p>Talk to a person: <a href={`tel:${phone.replace(/\s/g, '')}`}>{phone}</a>, {cfg.data?.support?.hours}.</p>}
       <form onSubmit={send} className="block">
         <h2 className="section__title">Send us a message{tripId ? ' about this trip' : ''}</h2>
+        {f.category === 'assistance_animal_refused' && (
+          <p className="callout callout--dusk">Refusing an assistance animal is against the law and DingoGo policy. Tell us what happened. We review every report and follow it up with the driver.</p>
+        )}
         <label className="dg-field"><span>What's it about?</span>
           <select className="dg-select" value={f.category} onChange={(e) => setF({ ...f, category: e.target.value })}>{CATS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select></label>
         <label className="dg-field"><span>Subject (optional)</span><input className="dg-input" value={f.subject} onChange={(e) => setF({ ...f, subject: e.target.value })} /></label>
         <label className="dg-field"><span>Tell us what happened</span><textarea className="dg-textarea" required minLength={5} value={f.message} onChange={(e) => setF({ ...f, message: e.target.value })} /></label>
         {err && <p className="dg-error" role="alert">{err}</p>}
-        {sent && <p className="callout callout--green" role="status">Message sent. We'll reply in the app and by SMS.</p>}
+        {sent && <p className="callout callout--green" role="status" tabIndex={-1} ref={sentRef}>Message sent. We'll reply in the app and by SMS.</p>}
         <button className="dg-btn dg-btn--dark">Send message</button>
       </form>
       {tickets.data && tickets.data.tickets.length > 0 && (

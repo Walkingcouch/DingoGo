@@ -38,22 +38,24 @@ export function Login({ title, subtitle, onDone, askName = false, askReferral = 
         {step === 'phone' ? (
           <form onSubmit={send} style={{ marginTop: 24 }}>
             <label className="dg-field"><span>Mobile number</span>
-              <input className="dg-input" type="tel" inputMode="tel" autoComplete="tel" placeholder="04xx xxx xxx" value={phone} onChange={(e) => setPhone(e.target.value)} required />
+              <input className="dg-input" type="tel" inputMode="tel" autoComplete="tel" placeholder="04xx xxx xxx" value={phone} onChange={(e) => setPhone(e.target.value)} required
+                aria-invalid={!!error} aria-describedby={error ? 'login-err' : 'login-sms'} />
             </label>
-            {error && <p className="dg-error" role="alert">{error}</p>}
+            {error && <p className="dg-error" role="alert" id="login-err">{error}</p>}
             <button className="dg-btn dg-btn--block" disabled={busy || phone.replace(/\D/g, '').length < 8}>{busy ? 'Sending…' : 'Text me a code'}</button>
-            <p className="dg-muted" style={{ fontSize: 'var(--fs-sm)' }}>We'll send a 6-digit code by SMS. Standard message rates may apply.</p>
+            <p className="dg-muted" id="login-sms" style={{ fontSize: 'var(--fs-sm)' }}>We'll send a 6-digit code by SMS. Standard message rates may apply.</p>
           </form>
         ) : (
           <form onSubmit={verify} style={{ marginTop: 24 }}>
             <label className="dg-field"><span>Code sent to {phone}</span>
               <input className="dg-input" inputMode="numeric" autoComplete="one-time-code" maxLength={6} value={code} onChange={(e) => setCode(e.target.value.replace(/\D/g, ''))} required autoFocus
+                aria-invalid={!!error} aria-describedby={error ? 'login-err' : undefined}
                 style={{ fontSize: 'var(--fs-xl)', letterSpacing: '.3em' }} />
             </label>
             {devCode && <p className="dg-note" style={{ fontSize: 'var(--fs-sm)' }}>Demo account: your code is <strong>{devCode}</strong></p>}
             {askName && <label className="dg-field"><span>Your name (if you're new)</span><input className="dg-input" autoComplete="name" value={name} onChange={(e) => setName(e.target.value)} /></label>}
             {askReferral && <label className="dg-field"><span>Friend's referral code (optional)</span><input className="dg-input" value={referral} onChange={(e) => setReferral(e.target.value.toUpperCase())} /></label>}
-            {error && <p className="dg-error" role="alert">{error}</p>}
+            {error && <p className="dg-error" role="alert" id="login-err">{error}</p>}
             <button className="dg-btn dg-btn--block" disabled={busy || code.length !== 6}>{busy ? 'Checking…' : 'Sign in'}</button>
             <button type="button" className="dg-btn dg-btn--ghost dg-btn--block" style={{ marginTop: 8 }} onClick={() => { setStep('phone'); setCode(''); }}>Use a different number</button>
           </form>
