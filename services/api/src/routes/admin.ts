@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { one, q, tx } from '../db.js';
 import { requireUser } from '../auth.js';
-import { bad, notFound } from '../lib/errors.js';
+import { bad, conflict, notFound } from '../lib/errors.js';
 import { displayKey, referralCode, voucherCode } from '../lib/ids.js';
 import { parse, phone, z } from '../lib/validate.js';
 import { VERIFIED_SOURCES, greenSql, normaliseRego, vehicleAgeRule, vehicleOut } from '../lib/vehicles.js';
@@ -16,6 +16,8 @@ import * as trips from '../services/trips.js';
 import { complianceIssues } from './driver.js';
 import { DRIVER_PAY_DEFAULTS, loadDriverPay, mergeDriverPay } from '../lib/driverPay.js';
 import { floorReport, runEarningsFloor } from '../services/earningsFloor.js';
+import { gstReport, levyReport, tripFilters } from '../services/reports.js';
+import { audit as writeAudit } from '../lib/audit.js';
 
 /** Driver pay rules (all optional on update; merged over what is stored). Bounds keep a typo from paying out wildly. */
 const driverPayBody = z.object({
@@ -45,9 +47,7 @@ async function saveDriverPay(actorId: string, body: unknown) {
 const ops = (req: FastifyRequest) => requireUser(req, 'admin', 'dispatcher');
 const admin = (req: FastifyRequest) => requireUser(req, 'admin');
 
-async function audit(actorId: string, action: string, entity: string, entityId: string, data?: unknown) {
-  await q('INSERT INTO audit_log (actor_id, action, entity, entity_id, data) VALUES ($1,$2,$3,$4,$5)', [actorId, action, entity, entityId, data ?? null]);
-}
+const audit = (actorId: string, action: string, entity: string, entityId: string, data?: unknown) => writeAudit(actorId, action, entity, entityId, data);
 
 /** Minimal CRUD for config-style tables. Only whitelisted columns are writable. */
 function crud(app: FastifyInstance, path: string, table: string, cols: string[],
@@ -118,6 +118,24 @@ async function prepareAdminVehicle(data: Record<string, any>, id?: string) {
     }
   }
   return out;
+}
+
+/** Approve or reject one driver document, mirror key expiries onto the driver record, and audit it. Null if not found (or, with
+ *  onlyPending, no longer waiting). The caller notifies the driver. */
+async function reviewDocument(actorId: string, id: string, b: { status: 'approved' | 'rejected'; note?: string; expires_at?: string }, opts: { onlyPending?: boolean } = {}) {
+  const doc = await one(
+    `UPDATE driver_documents SET status = $2, note = $3, expires_at = coalesce($4, expires_at), reviewer_id = $5, reviewed_at = now()
+     WHERE id = $1 ${opts.onlyPending ? `AND status = 'pending'` : ''} RETURNING *`,
+    [id, b.status, b.note ?? null, b.expires_at ?? null, actorId]);
+  if (!doc) return null;
+  // Mirror key expiries onto the driver record so the online-check stays fast.
+  const map: Record<string, string> = { licence: 'licence_expiry', h_endorsement: 'h_endorsement_expiry', police_check: 'police_check_date', medical: 'medical_date', disability_awareness: 'da_training_date' };
+  if (b.status === 'approved' && map[doc.type]) {
+    const val = ['police_check', 'medical', 'disability_awareness'].includes(doc.type) ? (doc.created_at as Date).toISOString().slice(0, 10) : doc.expires_at;
+    if (val) await q(`UPDATE drivers SET ${map[doc.type]} = $2 WHERE user_id = $1`, [doc.driver_id, val]);
+  }
+  await writeAudit(actorId, 'document_review', 'driver_document', doc.id, { driver_id: doc.driver_id, type: doc.type, status: b.status, note: b.note ?? null });
+  return doc;
 }
 
 export default async function adminRoutes(app: FastifyInstance) {
@@ -199,17 +217,12 @@ export default async function adminRoutes(app: FastifyInstance) {
   // ───────────── Trips ─────────────
   app.get('/admin/trips', async (req) => {
     await ops(req);
-    const { status, q: s, kind, limit = '100' } = req.query as Record<string, string>;
-    const where: string[] = []; const vals: unknown[] = [];
-    if (status === 'active') where.push(`t.status IN ('requested','accepted','arrived','in_progress')`);
-    else if (status) { vals.push(status); where.push(`t.status = $${vals.length}`); }
-    if (kind) { vals.push(kind); where.push(`t.kind = $${vals.length}`); }
-    if (s) { vals.push(`%${s}%`); where.push(`(t.ref ILIKE $${vals.length} OR ru.name ILIKE $${vals.length} OR ru.phone ILIKE $${vals.length} OR t.pickup_address ILIKE $${vals.length} OR t.dropoff_address ILIKE $${vals.length})`); }
-    vals.push(Math.min(Number(limit) || 100, 500));
+    const { where, vals } = tripFilters(req.query as Record<string, string>);
+    vals.push(Math.min(Number((req.query as any).limit) || 100, 500));
     return { trips: await q(
       `SELECT t.id, t.ref, t.kind, t.service, t.status, t.channel, t.pickup_address, t.dropoff_address, t.requested_at, t.scheduled_for, t.completed_at,
-              t.quote_cents, t.final_cents, t.tip_cents, t.payment_method, t.payment_status, t.rider_rating, ru.name AS rider_name, du.name AS driver_name
-       FROM trips t JOIN users ru ON ru.id = t.rider_id LEFT JOIN users du ON du.id = t.driver_id
+              t.quote_cents, t.final_cents, t.tip_cents, t.payment_method, t.payment_status, t.rider_rating, ru.name AS rider_name, du.name AS driver_name, v.rego
+       FROM trips t JOIN users ru ON ru.id = t.rider_id LEFT JOIN users du ON du.id = t.driver_id LEFT JOIN vehicles v ON v.id = t.vehicle_id
        ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY t.requested_at DESC LIMIT $${vals.length}`, vals) };
   });
 
@@ -227,8 +240,10 @@ export default async function adminRoutes(app: FastifyInstance) {
 
   app.post('/admin/trips/:id/cancel', async (req) => {
     const me = await ops(req);
-    const b = parse(z.object({ reason: z.string().max(200).optional() }), req.body);
-    return { trip: await trips.cancelTrip(me, (req.params as any).id, b.reason ?? 'Cancelled by DingoGo') };
+    const b = parse(z.object({ reason: z.string().max(200).optional() }), req.body ?? {});
+    const trip = await trips.cancelTrip(me, (req.params as any).id, b.reason ?? 'Cancelled by DingoGo');
+    await audit(me.id, 'cancel', 'trip', (req.params as any).id, { reason: b.reason ?? null });
+    return { trip };
   });
 
   app.post('/admin/trips/:id/redispatch', async (req) => {
@@ -437,18 +452,34 @@ export default async function adminRoutes(app: FastifyInstance) {
   app.post('/admin/documents/:id/review', async (req) => {
     const me = await admin(req);
     const b = parse(z.object({ status: z.enum(['approved', 'rejected']), note: z.string().max(300).optional(), expires_at: z.string().date().optional() }), req.body);
-    const doc = await one(
-      `UPDATE driver_documents SET status = $2, note = $3, expires_at = coalesce($4, expires_at), reviewer_id = $5, reviewed_at = now() WHERE id = $1 RETURNING *`,
-      [(req.params as any).id, b.status, b.note ?? null, b.expires_at ?? null, me.id]);
+    const doc = await reviewDocument(me.id, (req.params as any).id, b);
     if (!doc) throw notFound('Document');
-    // Mirror key expiries onto the driver record so the online-check stays fast.
-    const map: Record<string, string> = { licence: 'licence_expiry', h_endorsement: 'h_endorsement_expiry', police_check: 'police_check_date', medical: 'medical_date', disability_awareness: 'da_training_date' };
-    if (b.status === 'approved' && map[doc.type]) {
-      const val = ['police_check', 'medical', 'disability_awareness'].includes(doc.type) ? (doc.created_at as Date).toISOString().slice(0, 10) : doc.expires_at;
-      if (val) await q(`UPDATE drivers SET ${map[doc.type]} = $2 WHERE user_id = $1`, [doc.driver_id, val]);
-    }
     void notify(doc.driver_id, `Document ${b.status}`, `${doc.type.replace(/_/g, ' ')}: ${b.status}${b.note ? ' — ' + b.note : ''}`, {}, 'account');
     return { document: doc };
+  });
+
+  /** Review many documents at once (the "Documents to review" queue). Only documents still waiting are changed, so an old screen or a
+   *  double click can't overturn someone else's decision. One notification per driver. */
+  app.post('/admin/documents/review', async (req) => {
+    const me = await admin(req);
+    const b = parse(z.object({
+      ids: z.array(z.string().uuid()).min(1).max(50), status: z.enum(['approved', 'rejected']), note: z.string().max(300).optional(),
+    }), req.body);
+    if (b.status === 'rejected' && !b.note?.trim()) throw bad('note_required', 'Give the driver a reason for rejecting');
+    const ids = [...new Set(b.ids)];
+    const reviewed: any[] = []; const skipped: { id: string; reason: string }[] = [];
+    for (const id of ids) {
+      const doc = await reviewDocument(me.id, id, { status: b.status, note: b.note }, { onlyPending: true });
+      if (doc) reviewed.push(doc);
+      else skipped.push({ id, reason: (await one('SELECT 1 FROM driver_documents WHERE id = $1', [id])) ? 'not_pending' : 'not_found' });
+    }
+    const byDriver = new Map<string, string[]>();
+    for (const d of reviewed) byDriver.set(d.driver_id, [...(byDriver.get(d.driver_id) ?? []), d.type.replace(/_/g, ' ')]);
+    for (const [driverId, types] of byDriver) {
+      void notify(driverId, types.length === 1 ? `Document ${b.status}` : `${types.length} documents ${b.status}`,
+        `${types.join(', ')}: ${b.status}${b.note ? ' — ' + b.note : ''}`, {}, 'account');
+    }
+    return { reviewed: reviewed.map((d) => d.id), skipped };
   });
 
   // ───────────── Fleet ─────────────
@@ -757,9 +788,17 @@ export default async function adminRoutes(app: FastifyInstance) {
   });
   app.patch('/admin/sos/:id', async (req) => {
     const me = await ops(req);
-    const b = parse(z.object({ status: z.enum(['acknowledged', 'resolved']), notes: z.string().max(1000).optional() }), req.body);
-    const s = await one(`UPDATE sos_alerts SET status = $2, notes = coalesce($3, notes), handled_by = $4, resolved_at = CASE WHEN $2 = 'resolved' THEN now() END WHERE id = $1 RETURNING *`,
-      [(req.params as any).id, b.status, b.notes ?? null, me.id]);
+    const b = parse(z.object({ status: z.enum(['acknowledged', 'resolved']), notes: z.string().trim().max(1000).optional() }), req.body);
+    const id = (req.params as any).id;
+    const cur = await one('SELECT status FROM sos_alerts WHERE id = $1', [id]);
+    if (!cur) throw notFound('Alert');
+    if (cur.status === 'resolved') throw conflict('already_resolved', 'This alert is already resolved. Add a note to the incident instead.');
+    // Notes are added to what is already recorded (incident history), never written over.
+    const s = await one(
+      `UPDATE sos_alerts SET status = $2, handled_by = $4, resolved_at = CASE WHEN $2 = 'resolved' THEN now() END,
+         notes = CASE WHEN $3::text IS NULL OR $3::text = '' THEN notes WHEN notes IS NULL OR notes = '' THEN $3::text ELSE notes || E'\n' || $3::text END
+       WHERE id = $1 RETURNING *`, [id, b.status, b.notes ?? null, me.id]);
+    await audit(me.id, b.status === 'resolved' ? 'sos_resolved' : 'sos_acknowledged', 'sos', id, b.notes ? { text: b.notes } : undefined);
     toOps('sos.updated', s);
     return { item: s };
   });
@@ -769,10 +808,12 @@ export default async function adminRoutes(app: FastifyInstance) {
     return { items: await q(`SELECT s.*, u.name AS user_name, u.phone AS user_phone, t.ref AS trip_ref FROM support_tickets s LEFT JOIN users u ON u.id = s.user_id LEFT JOIN trips t ON t.id = s.trip_id ORDER BY (s.status = 'open') DESC, s.created_at DESC LIMIT 300`) };
   });
   app.patch('/admin/support/:id', async (req) => {
-    await ops(req);
+    const me = await ops(req);
     const b = parse(z.object({ status: z.enum(['open', 'pending', 'resolved']), resolution: z.string().max(2000).optional() }), req.body);
     const t = await one(`UPDATE support_tickets SET status = $2, resolution = coalesce($3, resolution), updated_at = now() WHERE id = $1 RETURNING *`, [(req.params as any).id, b.status, b.resolution ?? null]);
-    if (t?.user_id && b.resolution) void notify(t.user_id, `Re: ${t.subject}`, b.resolution, { ticket_id: t.id }, 'account');
+    if (!t) throw notFound('Ticket');
+    await audit(me.id, 'ticket_' + b.status, 'support_ticket', t.id, b.resolution ? { resolution: b.resolution } : undefined);
+    if (t.user_id && b.resolution) void notify(t.user_id, `Re: ${t.subject}`, b.resolution, { ticket_id: t.id }, 'account');
     return { item: t };
   });
 
@@ -791,48 +832,26 @@ export default async function adminRoutes(app: FastifyInstance) {
     };
   });
   app.patch('/admin/compliance/:id', async (req) => {
-    await ops(req);
+    const me = await ops(req);
     const b = parse(z.object({ status: z.enum(['open', 'reviewed', 'actioned', 'dismissed']) }), req.body);
-    return { item: await one('UPDATE compliance_flags SET status = $2 WHERE id = $1 RETURNING *', [(req.params as any).id, b.status]) };
+    const item = await one('UPDATE compliance_flags SET status = $2 WHERE id = $1 RETURNING *', [(req.params as any).id, b.status]);
+    if (!item) throw notFound('Flag');
+    await audit(me.id, 'flag_' + b.status, 'compliance_flag', item.id, { kind: item.kind, driver_id: item.driver_id });
+    return { item };
   });
 
   // ───────────── Reports (levy, GST/BAS, corporate) ─────────────
   /** NT passenger services levy: $1 per completed passenger trip, lodged monthly by the dispatch network. */
   app.get('/admin/reports/levy', async (req) => {
     await ops(req);
-    const { month, state: st = 'NT' } = req.query as { month?: string; state?: string };
-    const m = month && /^\d{4}-\d{2}$/.test(month) ? month : new Date().toISOString().slice(0, 7);
-    const state = String(st).toUpperCase();
-    // Trips are counted against the state of their pickup zone (trips without a zone are NT, as before states existed).
-    const inState = `coalesce((SELECT z.state FROM zones z WHERE z.id = t.zone_id), 'NT') = $2`;
-    const r = await one(
-      `SELECT count(*)::int trips, coalesce(sum((fare_breakdown->>'levy_cents')::int),0)::int levy_collected_cents
-       FROM trips t WHERE status = 'completed' AND kind = 'ride'
-         AND to_char(completed_at AT TIME ZONE 'Australia/Darwin', 'YYYY-MM') = $1 AND ${inState}`, [m, state]);
-    const perDriver = await q(
-      `SELECT u.name, count(*)::int trips FROM trips t JOIN users u ON u.id = t.driver_id
-       WHERE t.status = 'completed' AND t.kind = 'ride' AND to_char(t.completed_at AT TIME ZONE 'Australia/Darwin', 'YYYY-MM') = $1 AND ${inState}
-       GROUP BY u.name ORDER BY trips DESC`, [m, state]);
-    const j = await getJurisdiction(state);
-    const levyRate = state === 'NT' ? await one(`SELECT value FROM settings WHERE key = 'nt_levy_cents'`) : null;
-    const rate = Number(levyRate?.value ?? j?.levy_cents ?? 100);
-    return { month: m, state, levy_label: j?.levy_label ?? 'NT passenger levy', passenger_trips: r!.trips, levy_rate_cents: rate,
-      levy_payable_cents: r!.trips * rate, levy_collected_cents: r!.levy_collected_cents, per_driver: perDriver };
+    const { month, state } = req.query as { month?: string; state?: string };
+    return levyReport(month, state ?? 'NT');
   });
 
   app.get('/admin/reports/gst', async (req) => {
     await ops(req);
     const { from, to } = req.query as { from?: string; to?: string };
-    const f = from ?? new Date(Date.now() - 90 * 864e5).toISOString().slice(0, 10);
-    const t = to ?? new Date().toISOString().slice(0, 10);
-    const rows = await q(
-      `SELECT kind, provider, count(*)::int n, sum(amount_cents)::int amount_cents, sum(gst_cents)::int gst_cents
-       FROM payments WHERE status IN ('succeeded','pending') AND kind IN ('capture','cash','invoice','subscription','refund','tip')
-         AND (created_at AT TIME ZONE 'Australia/Darwin')::date BETWEEN $1 AND $2
-       GROUP BY kind, provider ORDER BY kind`, [f, t]);
-    const fees = await one(
-      `SELECT coalesce(-sum(amount_cents),0)::int commission_cents FROM driver_ledger WHERE kind = 'commission' AND (created_at AT TIME ZONE 'Australia/Darwin')::date BETWEEN $1 AND $2`, [f, t]);
-    return { from: f, to: t, rows, dingogo_service_fees_cents: fees!.commission_cents, gst_on_service_fees_cents: Math.round(fees!.commission_cents / 11) };
+    return gstReport(from, to);
   });
 
   crud(app, 'corporate', 'corporate_accounts', ['name', 'kind', 'abn', 'billing_email', 'monthly_limit_cents', 'invoice_terms_days', 'discount_pct', 'active'], { order: 'name' });
@@ -867,11 +886,14 @@ export default async function adminRoutes(app: FastifyInstance) {
   for (const [path, table] of [['hire-requests', 'hire_requests'], ['applications', 'driver_applications'], ['enquiries', 'enquiries']] as const) {
     app.get(`/admin/${path}`, async (req) => { await ops(req); return { items: await q(`SELECT * FROM ${table} ORDER BY created_at DESC LIMIT 300`) }; });
     app.patch(`/admin/${path}/:id`, async (req) => {
-      await ops(req);
+      const me = await ops(req);
       const b = parse(z.object({ status: z.string().max(20), quote_cents: z.number().int().optional() }), req.body);
       const extra = table === 'hire_requests' && b.quote_cents != null ? ', quote_cents = $3' : '';
       const vals = [(req.params as any).id, b.status, ...(extra ? [b.quote_cents] : [])];
-      return { item: await one(`UPDATE ${table} SET status = $2${extra} WHERE id = $1 RETURNING *`, vals) };
+      const item = await one(`UPDATE ${table} SET status = $2${extra} WHERE id = $1 RETURNING *`, vals);
+      if (!item) throw notFound();
+      await audit(me.id, 'status', table, item.id, b);
+      return { item };
     });
   }
 
@@ -924,8 +946,5 @@ export default async function adminRoutes(app: FastifyInstance) {
     return { sent: users.length };
   });
 
-  app.get('/admin/audit', async (req) => {
-    await admin(req);
-    return { items: await q('SELECT a.*, u.name AS actor_name FROM audit_log a LEFT JOIN users u ON u.id = a.actor_id ORDER BY at DESC LIMIT 300') };
-  });
+  // GET /admin/audit (with filters) lives in routes/ops.ts.
 }

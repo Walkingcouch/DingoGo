@@ -1,12 +1,12 @@
 import { useState } from 'react';
 import { ApiError, get, post, money, date, dateTime, FileLink, useLoad, Icon } from '@dingogo/shared';
 import { Page, useOps } from '../ctx';
-import { Chip, CrudSection, Empty, ErrorMsg, Section, Table, Tabs, exportCsv, useRun, useToast, type Field } from '../ui';
+import { Chip, CrudSection, Empty, ErrorMsg, Section, Table, Tabs, downloadCsv, exportCsv, useRun, useToast, type Field } from '../ui';
 import { DOC_STATUS, DOC_TYPE, FUEL, OWNERSHIP, STATE_NAME, VEHICLE_STATUS, VEHICLE_STATUS_TONE, VERIFIED_SOURCE, docTone, isGreenFuel, label } from '../labels';
 import { PPSR_URL, findJ, jurisdictionList, minYearFor, vinYear, type Jurisdiction } from '../rules';
 
 const soon = (d?: string | null) => !d || new Date(d).getTime() < Date.now() + 30 * 864e5;
-const Exp = ({ d }: { d?: string | null }) => <span style={soon(d) ? { color: 'var(--earth)', fontWeight: 700 } : undefined}>{d ? date(d) : 'Missing'}</span>;
+const Exp = ({ d }: { d?: string | null }) => <span style={soon(d) ? { color: 'var(--earth-ink)', fontWeight: 700 } : undefined}>{d ? date(d) : 'Missing'}</span>;
 
 const PLUG = ['electric', 'plug_in_hybrid'];
 const fuelOf = (v: any): string => v?.fuel_type ?? 'electric';
@@ -44,10 +44,11 @@ export default function Fleet() {
   const [tab, setTab] = useState<'vehicles' | 'charging' | 'payouts'>('vehicles');
   return (
     <Page title="Fleet & charging">
-      <Tabs tabs={[['vehicles', 'Vehicles'], ['charging', 'Charging & battery'], ['payouts', 'Payouts & leases']]} value={tab} onChange={setTab} />
+      <Tabs tabs={[['vehicles', 'Vehicles'], ['charging', 'Charging & battery'], ['payouts', 'Payouts & leases']]} value={tab} onChange={setTab}>
       {tab === 'vehicles' && <Vehicles />}
       {tab === 'charging' && <Charging />}
       {tab === 'payouts' && <Payouts />}
+      </Tabs>
     </Page>
   );
 }
@@ -207,7 +208,7 @@ function ReviewCard({ v, j, lookupStatus, onDone }: { v: any; j: Jurisdiction; l
             <label className="dg-field"><span>Registration expiry</span><input className="dg-input" type="date" value={f.rego_expiry} onChange={set('rego_expiry')} required /></label>
             <label className="dg-field"><span>Insurance expiry</span><input className="dg-input" type="date" value={f.insurance_expiry} onChange={set('insurance_expiry')} required /></label>
             {!sa && <label className="dg-field"><span>Roadworthy date</span><input className="dg-input" type="date" value={f.roadworthy_date} onChange={set('roadworthy_date')} />
-              {rwOld ? <small style={{ color: 'var(--earth)', fontWeight: 700 }}>More than 6 weeks old. Check it was current when the CVL was issued.</small> : <small className="dg-muted">Must be under 6 weeks old when the CVL was applied for</small>}</label>}
+              {rwOld ? <small style={{ color: 'var(--earth-ink)', fontWeight: 700 }}>More than 6 weeks old. Check it was current when the CVL was issued.</small> : <small className="dg-muted">Must be under 6 weeks old when the CVL was applied for</small>}</label>}
           </div>
           {!canApprove && <p className="review__need"><Icon name="info" size={16} />{oldCar ? `Too old to approve: ${j.code} cars must be ${minYear} or newer.` : `To approve: ${[!/^\d{4}$/.test(c.verified_year) && 'enter the verified year', !c.rego_checked && 'tick rego current', sa && !c.inspection_expiry && 'enter the inspection expiry'].filter(Boolean).join(', ')}.`}</p>}
           <div className="actions">
@@ -341,7 +342,7 @@ function Charging() {
     <Section title="Battery and heat" right={<span className="dg-muted">Electric and plug-in hybrid cars</span>} />
     <Table rows={data?.fleet?.filter((r: any) => PLUG.includes(fuelOf(r)))} empty="No electric or plug-in hybrid cars on the road." rowKey={(r) => r.rego} cols={[
       { key: 'rego', label: 'Vehicle' },
-      { key: 'battery_pct', label: 'Battery now', num: true, render: (r) => r.battery_pct != null ? <span style={{ color: r.battery_pct < 25 ? 'var(--earth)' : undefined, fontWeight: 700 }}>{r.battery_pct}%</span> : '—' },
+      { key: 'battery_pct', label: 'Battery now', num: true, render: (r) => r.battery_pct != null ? <span style={{ color: r.battery_pct < 25 ? 'var(--earth-ink)' : undefined, fontWeight: 700 }}>{r.battery_pct}%</span> : '—' },
       { key: 'range', label: 'Usable range (hot day)', num: true, render: (r) => r.battery_pct != null && r.range_km && fuelOf(r) === 'electric' ? `${Math.round(r.range_km * r.battery_pct / 100 * 0.7)} km` : '—' },
       { key: 'avg_temp_c', label: 'Avg temp, 7 days', num: true, render: (r) => (r.avg_temp_c != null ? `${r.avg_temp_c}°C` : '—') },
       { key: 'odometer_km', label: 'Odometer', num: true, render: (r) => (r.odometer_km != null ? `${r.odometer_km.toLocaleString('en-AU')} km` : '—') },
@@ -361,6 +362,8 @@ function Charging() {
 function Payouts() {
   const { data, error, reload } = useLoad(() => get('/admin/payouts'));
   const run = useRun();
+  const today = new Date(Date.now() + 9.5 * 3600e3).toISOString().slice(0, 10);
+  const [range, setRange] = useState({ from: today.slice(0, 8) + '01', to: today });
   return (<>
     <p className="dg-muted" style={{ maxWidth: 760 }}>Balances include fares less the DingoGo service fee, pickup pay, fuel surcharges, earnings-floor top-ups, tips (100% to drivers), charging credits, cash already held by drivers, and weekly lease deductions. Pay positive balances by bank transfer, then record the payout here.</p>
     <div className="actions" style={{ marginBottom: 12 }}>
@@ -369,14 +372,19 @@ function Payouts() {
         const r = await run(() => post('/admin/lease/run'));
         if (r) { alert(`Lease charged to ${r.charged} driver(s).`); void reload(); }
       }}>Run weekly lease deductions</button>
-      {data && <button className="dg-btn dg-btn--sm dg-btn--ghost" onClick={() => exportCsv('driver-balances.csv', data.balances)}>Export CSV</button>}
+      {data && <button className="dg-btn dg-btn--sm dg-btn--ghost" onClick={() => exportCsv('driver-balances.csv', data.balances.map((r: any) => ({ driver: r.name, driver_id: r.driver_id, bank_details: r.has_bank ? 'On file' : 'Missing', last_payout: r.last_payout ?? '', balance: (r.balance_cents / 100).toFixed(2) })))}>Export balances CSV</button>}
     </div>
+    <form className="toolbar" aria-label="Export payouts" onSubmit={(e) => { e.preventDefault(); void run(() => downloadCsv(`/admin/export/payouts.csv?from=${range.from}&to=${range.to}`), 'Payouts downloaded'); }}>
+      <label className="inline-field"><span>Payouts from</span><input className="dg-input" type="date" value={range.from} onChange={(e) => setRange({ ...range, from: e.target.value })} required /></label>
+      <label className="inline-field"><span>To</span><input className="dg-input" type="date" value={range.to} onChange={(e) => setRange({ ...range, to: e.target.value })} required /></label>
+      <button className="dg-btn dg-btn--sm dg-btn--ghost">Export payouts CSV</button>
+    </form>
     <ErrorMsg error={error} />
     <Table rows={data?.balances} rowKey={(r) => r.driver_id} cols={[
       { key: 'name', label: 'Driver' },
-      { key: 'has_bank', label: 'Bank details', render: (r) => (r.has_bank ? 'On file' : <span style={{ color: 'var(--earth)' }}>Missing</span>) },
+      { key: 'has_bank', label: 'Bank details', render: (r) => (r.has_bank ? 'On file' : <span style={{ color: 'var(--earth-ink)' }}>Missing</span>) },
       { key: 'last_payout', label: 'Last payout', render: (r) => (r.last_payout ? date(r.last_payout) : 'Never') },
-      { key: 'balance_cents', label: 'Balance', num: true, render: (r) => <strong style={{ color: r.balance_cents < 0 ? 'var(--earth)' : undefined }}>{money(r.balance_cents)}</strong> },
+      { key: 'balance_cents', label: 'Balance', num: true, render: (r) => <strong style={{ color: r.balance_cents < 0 ? 'var(--earth-ink)' : undefined }}>{money(r.balance_cents)}</strong> },
       { key: 'x', label: '', render: (r) => r.balance_cents > 0 && (
         <button className="dg-btn dg-btn--sm" onClick={async () => { if (confirm(`Record a payout of ${money(r.balance_cents)} to ${r.name}?`)) { await run(() => post(`/admin/payouts/${r.driver_id}`), 'Payout recorded'); void reload(); } }}>Record payout</button>) },
     ]} />

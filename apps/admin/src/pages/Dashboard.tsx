@@ -1,8 +1,9 @@
 import type { ReactNode } from 'react';
+import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { get, money, useLoad, Icon, SERVICE_ICON_NAME } from '@dingogo/shared';
 import { Page, useOps } from '../ctx';
-import { Bars, ErrorMsg, Loading, Section } from '../ui';
+import { Bars, ErrorMsg, Loading, Section, exportCsv } from '../ui';
 import { SERVICE_NAME, label } from '../labels';
 
 const dayLabel = (day: string) => new Date(day + 'T00:00:00').toLocaleDateString('en-AU', { day: 'numeric', month: 'short' });
@@ -35,14 +36,14 @@ export default function Dashboard() {
   const y = d.daily.length > 1 ? d.daily[d.daily.length - 2] : undefined;
   const open: { label: string; n: number; to: string; icon: string; urgent?: boolean }[] = [
     { label: 'Emergency alerts', n: d.live.open_sos, to: '/safety', icon: 'sos', urgent: true },
-    { label: 'Compliance flags', n: d.live.open_flags, to: '/safety', icon: 'flag', urgent: true },
+    { label: 'Compliance flags', n: d.live.open_flags, to: '/safety?tab=flags', icon: 'flag', urgent: true },
     { label: 'Drivers awaiting approval', n: d.live.pending_drivers, to: '/drivers', icon: 'user' },
-    { label: 'Documents to review', n: d.live.pending_docs, to: '/drivers', icon: 'document' },
+    { label: 'Documents to review', n: d.live.pending_docs, to: '/safety?tab=docs', icon: 'document' },
     { label: 'Cars to check', n: d.live.pending_vehicles ?? counts.cars ?? 0, to: '/fleet', icon: 'car' },
     { label: 'Driver applications', n: d.live.new_applications, to: '/drivers', icon: 'users' },
     { label: 'Support tickets', n: d.live.open_tickets, to: '/support', icon: 'chat' },
     { label: 'Hire requests', n: d.live.new_hire_requests, to: '/support', icon: 'calendar' },
-    { label: 'Scheduled bookings', n: d.live.scheduled, to: '/trips', icon: 'clock' },
+    { label: 'Scheduled bookings', n: d.live.scheduled, to: '/trips?status=scheduled', icon: 'clock' },
   ];
   // Green-fleet stats: the API may send them at the top level or under lifetime.
   const greenPct: number | null = d.green_km_pct ?? d.lifetime?.green_km_pct ?? null;
@@ -111,6 +112,73 @@ export default function Dashboard() {
         <Kpi title="Average rider rating" value={d.avg_rating_30d ?? '—'} note={d.avg_rating_30d ? 'Last 30 days, out of 5' : 'No ratings in the last 30 days'} />
         <Kpi title="Roof screen plays" value={d.ad_plays_today} note="Today" to="/ads" />
       </div>
+
+      <DailySummary />
     </Page>
+  );
+}
+
+const darwinToday = () => new Date(Date.now() + 9.5 * 3600e3).toISOString().slice(0, 10);
+const CANCEL_REASON: Record<string, string> = { rider_no_show: 'Rider did not show', rider_asked: 'Rider asked to cancel', unsafe: 'Unsafe', prohibited_item: 'Prohibited parcel' };
+
+/** Daily ops summary for the handover: one Darwin day, plus what still needs attention now. Print or CSV. */
+function DailySummary() {
+  const [date, setDate] = useState(darwinToday);
+  const { data: s, error } = useLoad(() => get(`/admin/summary/daily?date=${date}`), [date]);
+  const rows: [string, string, ReactNode][] = s ? [
+    ['Trips', 'Requested', `${s.trips.requested} (${s.trips.rides} rides, ${s.trips.courier} courier; ${s.trips.phone_or_staff} by phone or staff)`],
+    ['Trips', 'Completed', String(s.completed.completed)],
+    ['Trips', 'Cancelled', `${s.trips.cancelled_rider} by riders, ${s.trips.cancelled_driver} by drivers, ${s.trips.cancelled_admin} by DingoGo`],
+    ['Trips', 'No driver free', String(s.trips.no_drivers)],
+    ['Trips', 'Still open or booked ahead', String(s.trips.still_open)],
+    ['Trips', 'Average wait for the car', s.completed.avg_pickup_min != null ? `${s.completed.avg_pickup_min} min (accept to arrival)` : 'No data'],
+    ['Trips', 'Distance', `${s.completed.distance_km} km`],
+    ['Trips', 'Average rider rating', s.completed.avg_rating != null ? `${s.completed.avg_rating} of 5` : 'No ratings'],
+    ['Money', 'Fares', money(s.completed.fares_cents)], ['Money', 'Tips (to drivers)', money(s.completed.tips_cents)],
+    ['Money', 'DingoGo service fees', money(s.money.service_fees_cents)], ['Money', 'Refunds', money(s.money.refunds_cents)],
+    ['Money', 'Payouts to drivers', `${money(s.money.payouts_cents)} (${s.money.payouts})`],
+    ['Money', 'Passenger trips for the levy', String(s.completed.passenger_trips)],
+    ['Safety', 'Emergency alerts', `${s.safety.raised} raised, ${s.safety.resolved} resolved`],
+    ['Safety', 'Compliance flags', s.safety.flags.length ? s.safety.flags.map((f: any) => `${f.n} ${f.kind.replace(/_/g, ' ')}`).join(', ') : 'None'],
+    ['Support', 'Tickets', `${s.support.opened} opened, ${s.support.resolved} resolved`],
+    ['Drivers', 'Drove', String(s.drivers.drove)], ['Drivers', 'Approved', String(s.drivers.approved)], ['Drivers', 'Applications', String(s.drivers.applications)],
+    ['Drivers', 'Documents reviewed', `${s.documents.approved} approved, ${s.documents.rejected} rejected`],
+  ] : [];
+  const att = s?.attention;
+  const attention: [string, number, string][] = att ? ([
+    ['Open emergency alerts', att.open_sos, '/safety'], ['Open compliance flags', att.open_flags, '/safety?tab=flags'], ['Open support tickets', att.open_tickets, '/support'],
+    ['Documents to review', att.pending_docs, '/safety?tab=docs'], ['Cars to check', att.pending_vehicles, '/fleet'], ['New driver applications', att.new_applications, '/drivers'],
+    ['Searching over 5 minutes', att.searching_over_5_min, '/trips?status=requested'], ['Booked in the next 2 hours', att.booked_next_2_hours, '/trips?status=scheduled'],
+  ] as [string, number, string][]).filter(([, n]) => n > 0) : [];
+  return (
+    <section className="daily" aria-labelledby="daily-h">
+      <div className="section"><h2 id="daily-h">Daily summary</h2><span className="spacer" />
+        <label className="inline-field"><span>Day</span><input className="dg-input" type="date" value={date} max={darwinToday()} onChange={(e) => e.target.value && setDate(e.target.value)} /></label>
+        <button className="dg-btn dg-btn--sm dg-btn--ghost no-print" onClick={() => window.print()}>Print</button>
+        <button className="dg-btn dg-btn--sm dg-btn--ghost no-print" disabled={!s} onClick={() => s && exportCsv(`dingogo-daily-${s.date}.csv`,
+          [...rows.map(([g, k, v]) => ({ section: g, item: k, value: String(v) })), ...attention.map(([k, n]) => ({ section: 'Needs attention now', item: k, value: String(n) }))])}>Export CSV</button>
+      </div>
+      <ErrorMsg error={error} />
+      {!s ? <Loading /> : (
+        <div className="grid2">
+          <div className="panel">
+            <table className="tbl tbl--kv"><caption className="sr-only">What happened on {s.date} (Darwin time)</caption>
+              <tbody>{rows.map(([g, k, v], i) => <tr key={i}><th scope="row"><span className="sub">{g}</span>{k}</th><td>{v}</td></tr>)}</tbody></table>
+          </div>
+          <div style={{ display: 'grid', gap: 'var(--sp-4)', alignContent: 'start' }}>
+            <div className="panel">
+              <div className="panel__head"><h3>Needs attention now</h3></div>
+              {attention.length ? <ul className="attn">{attention.map(([k, n, to]) => <li key={k}><Link to={to}><span className="attn__label">{k}</span><span className="count count--ochre">{n}</span></Link></li>)}</ul>
+                : <p className="empty-note">Nothing waiting.</p>}
+            </div>
+            <div className="panel">
+              <div className="panel__head"><h3>Why trips were cancelled</h3></div>
+              {s.cancellations.length ? <ul className="plain">{s.cancellations.map((c: any) => <li key={c.reason}>{CANCEL_REASON[c.reason] ?? c.reason}: <strong>{c.n}</strong></li>)}</ul>
+                : <p className="empty-note">No cancellations.</p>}
+            </div>
+          </div>
+        </div>
+      )}
+    </section>
   );
 }

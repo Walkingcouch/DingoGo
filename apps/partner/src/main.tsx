@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import ReactDOM from 'react-dom/client';
 import '@dingogo/shared/brand.css';
 import './partner.css';
@@ -13,9 +13,16 @@ function Redeem({ onDone }: { onDone: () => void }) {
   const [code, setCode] = useState('');
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<Result>(null);
+  const [short, setShort] = useState(false);
+  const redeemBtn = useRef<HTMLButtonElement>(null);
+  const outcome = useRef<HTMLDivElement>(null);
+  // Move focus to the outcome so a keyboard or screen-reader user lands on "Redeem and serve" or the verdict.
+  useEffect(() => { if (result?.kind === 'check') redeemBtn.current?.focus(); else if (result) outcome.current?.focus(); }, [result]);
 
   async function check(e: React.FormEvent) {
-    e.preventDefault(); setBusy(true); setResult(null);
+    e.preventDefault();
+    if (code.length < 4) { setShort(true); return; }
+    setShort(false); setBusy(true); setResult(null);
     try {
       const r = await post('/partner/check', { code });
       if (r.valid) setResult({ kind: 'check', r: r.redemption });
@@ -39,20 +46,23 @@ function Redeem({ onDone }: { onDone: () => void }) {
       <form onSubmit={check} className="p-card">
         <label className="dg-field"><span>Customer's reward code</span>
           <input className="dg-input p-code" value={code} onChange={(e) => { setCode(e.target.value.toUpperCase().replace(/\s/g, '')); setResult(null); }}
-            placeholder="DG······" autoCapitalize="characters" autoComplete="off" spellCheck={false} maxLength={20} required autoFocus />
+            placeholder="DG······" autoCapitalize="characters" autoComplete="off" spellCheck={false} maxLength={20} required autoFocus
+            aria-invalid={short || undefined} aria-describedby="code-hint" />
         </label>
-        <button className="dg-btn dg-btn--dark dg-btn--block p-cta" disabled={busy || code.length < 4}>{busy && result === null ? 'Checking…' : 'Check code'}</button>
+        <p id="code-hint" className={short ? 'dg-error' : 'dg-muted'} style={{ margin: '0 0 10px', fontSize: '.9rem' }}>{short ? 'Enter the whole code. It has at least 4 letters or numbers.' : 'The code is on the customer’s phone, under Rewards.'}</p>
+        <button className="dg-btn dg-btn--dark dg-btn--block p-cta" disabled={busy}>{busy && result === null ? 'Checking…' : 'Check code'}</button>
       </form>
+      <div className="sr-only" role="status" aria-live="polite">{result?.kind === 'check' ? `Valid: ${result.r.title}. Press Redeem and serve.` : result?.kind === 'ok' ? 'Redeemed.' : ''}</div>
       {result?.kind === 'check' && (
-        <div className="p-result p-result--check" aria-live="polite">
+        <div className="p-result p-result--check">
           <span className="p-result__tag"><Icon name="check" size={16} /> Valid for {result.r.customer || 'this customer'}</span>
           <h2>{result.r.title}</h2>
           <p className="dg-muted" style={{ marginTop: 0 }}>Expires {dateTime(result.r.expires_at)}</p>
-          <button className="dg-btn dg-btn--green dg-btn--block" style={{ minHeight: 64, fontSize: 'var(--fs-lg)' }} onClick={redeem} disabled={busy}>{busy ? 'Redeeming…' : 'Redeem and serve'}</button>
+          <button className="dg-btn dg-btn--green dg-btn--block" style={{ minHeight: 64, fontSize: 'var(--fs-lg)' }} onClick={redeem} disabled={busy} ref={redeemBtn}>{busy ? 'Redeeming…' : 'Redeem and serve'}</button>
         </div>
       )}
       {result?.kind === 'ok' && (
-        <div className="p-result p-result--ok" role="status">
+        <div className="p-result p-result--ok" tabIndex={-1} ref={outcome}>
           <div className="p-result__badge"><Icon name="check" size={40} strokeWidth={2.6} /></div>
           <h2>Redeemed</h2>
           <p style={{ margin: 0, fontSize: '1.15rem' }}>Serve {result.customer ? `${result.customer} ` : ''}one {result.title.replace(/^free /i, '').toLowerCase()}.</p>
@@ -60,7 +70,7 @@ function Redeem({ onDone }: { onDone: () => void }) {
         </div>
       )}
       {result?.kind === 'bad' && (
-        <div className="p-result p-result--bad" role="alert">
+        <div className="p-result p-result--bad" role="alert" tabIndex={-1} ref={outcome}>
           <div className="p-result__badge"><Icon name="x" size={40} strokeWidth={2.6} /></div>
           <h2>Don't serve</h2>
           <p style={{ margin: 0, fontSize: '1.1rem' }}>{result.msg}</p>
@@ -83,7 +93,7 @@ function Vouchers() {
       <p style={{ marginTop: 0 }}>Selling a DingoGo credit card over the counter? Enter the code printed on the card so it's recorded as sold by your business.</p>
       <label className="dg-field"><span>Voucher card code</span><input className="dg-input p-code" style={{ fontSize: '1.4rem' }} value={code} onChange={(e) => setCode(e.target.value.toUpperCase().trim())} required /></label>
       <button className="dg-btn dg-btn--block">Record sale</button>
-      {msg && <p className={msg.ok ? 'dg-note' : 'dg-error'} style={msg.ok ? { background: 'var(--saltbush-soft)', marginTop: 14 } : { marginTop: 14 }} role="status">{msg.text}</p>}
+      <div role="status" aria-live="polite">{msg && <p className={msg.ok ? 'dg-note' : 'dg-error'} style={msg.ok ? { background: 'var(--saltbush-soft)', marginTop: 14 } : { marginTop: 14 }}>{msg.text}</p>}</div>
       <p className="dg-muted" style={{ fontSize: '.9rem' }}>Customers add the code in the DingoGo app under Wallet, or quote it when they phone to book.</p>
     </form>
   );

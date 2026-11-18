@@ -253,3 +253,76 @@ Ideas for next rounds:
 - Rider side of poor signal: rating/tip/help queued with idempotency keys (the API pattern from this round), and "driver has poor signal" shown to the rider.
 - Driver heat map / "where to wait" from recent demand, and offer de-duplication when the same rider re-requests within a minute.
 - Run `scripts/a11y-check.mjs` (now web, rider and driver) in CI with the API and Postgres as services.
+
+### Round 7 — admin and operations tooling
+Scan: read every admin page, the admin API and the partner app. Found: several ops actions left no audit trail (document review, SOS acknowledge/resolve,
+compliance flag and support ticket status, inbound request status, ops trip cancel); resolving an SOS overwrote its notes (no incident history); the audit
+log was the last 300 rows with no filters; no way to find a trip, rider, driver or car from one box (trip search missed driver, driver phone and rego);
+CSV exports were client-side copies of the first 100–500 rows (trips) or odd mixed rows (levy), none for payouts; documents had to be approved one at a time
+with `prompt()`; no daily summary for the morning handover; admin drawers and modals didn't trap or return focus and the app behind stayed reachable; tabs
+had no arrow keys or panels; the partner app had no axe pass.
+
+Suggested:
+1. [fix] Audit trail gaps: document review, SOS acknowledge/resolve/notes, compliance flag status, support ticket status/replies, hire request /
+   application / enquiry status, ops trip cancel, CSV exports — all written to `audit_log`.
+2. [add] Audit log viewer: `GET /admin/audit` filters (who, action, entity, entity id, from/to, text) with keyset paging and the list of actions; admin
+   page with filters, expandable details, "load more" and CSV.
+3. [add] Search everything: `GET /admin/search?q=` finds trips (ref, rider/driver phone), riders and staff (name, phone in any format), drivers (name,
+   phone, rego) and cars (rego, VIN); a search box in the top of the console ("/" to focus) with keyboard-navigable results that open the right drawer.
+   Trip list search also matches driver name/phone and rego, and takes a date range.
+4. [add] Incident view for SOS: `GET /admin/sos/:id` gives the alert, who raised it, the trip (rider, driver, car, last position) and a timeline
+   (raised, acknowledged, notes, runbook steps, resolved, nearby trip events); `POST /admin/sos/:id/notes` adds a timestamped note or a runbook step;
+   resolve keeps earlier notes. Admin drawer with the runbook checklist (danger → 000, call them, check location, contact the other party, record outcome).
+5. [add] Server-side CSV exports (admin): trips (date range, status, kind; no phone numbers), payouts (ledger payouts in range), levy return (month/state,
+   one line per driver plus totals), GST (rows plus service fees). Audited. Buttons on Trips, Fleet → Payouts and Reports.
+6. [add] Bulk document review: `POST /admin/documents/review` `{ ids (≤50), status, note? }` with the same rules as one-by-one, one notification per driver;
+   checkboxes and "Approve selected" / "Reject selected" (reason dialog instead of `prompt()`).
+7. [add] Daily ops summary: `GET /admin/summary/daily?date=` (Darwin day) — trips by outcome and type, revenue, cancellations by reason, no-driver
+   trips, average pickup wait, SOS raised/resolved, flags, tickets, documents reviewed, drivers approved, payouts, passenger trips for the levy, and what
+   still needs attention. Dashboard section with a date picker and print/CSV.
+8. [add] Ops efficiency: keyboard shortcuts (`/` search, `g` then `l d t s i r` to go to a page, `?` for the list); saved trip filters (named, kept on this
+   computer) and filters kept in the URL so a link opens the same view.
+9. [fix] Admin + partner accessibility: Drawer/Modal become real modals (shared `useModal`: inert app, focus in/out, Tab wraps, Escape); tabs get arrow
+   keys and panels; toasts in a live region that always exists; skip link; SOS resolve / document reject / ticket quote use a dialog instead of
+   `prompt()`; partner app result announcements and button reasons; admin and partner pages added to `scripts/a11y-check.mjs` and fixed to 0 violations.
+
+Done (all 9). Migration: `services/api/migrations/013_ops_indexes.sql` (indexes only: `audit_log (entity, entity_id, at)` and `(action, id)`, `trips
+(requested_at)`, `trips (completed_at)`, `driver_ledger (kind, created_at)`, `driver_documents (reviewed_at)`; additive, IF NOT EXISTS). Everything works
+without it (incident notes and runbook steps live in the existing `audit_log`), just slower on big tables. Tests: 64 → 68 (search by ref/phone/rego in any
+format + trip filters incl. date range, cancelled group, bad status and audited ops cancel; SOS incident timeline, runbook step once, first action
+acknowledges, resolve appends notes, no reopen; bulk document review only touches pending docs, one notification per driver, reject needs a reason,
+audited, admin-only; CSV exports — headers, no phone numbers, formula defusing, year cap, admin-only money exports, levy/GST/payout totals, audited — daily
+summary for today/an old day/bad date, audit filters and keyset paging). axe: 0 violations on 15 admin pages and the partner app (signed out and in) in
+light and dark, plus the search popup, trip drawer, ask dialog, shortcuts list, incident drawer and audit log. Playwright: `/` focuses search, arrow +
+Enter opens the result's drawer, focus moves in and the app is inert, Escape closes it; `g t`; quick filter in the URL; saved filter via dialog; `?`
+list; runbook tick recorded; Escape on the resolve dialog closes only it and focus returns to the drawer; arrow keys move tabs; audit details expand.
+- API: new `src/routes/ops.ts` (search, `sosIncident` + notes, exports, daily summary, audit with filters), `src/services/reports.ts` (`levyReport`,
+  `gstReport`, `tripFilters`, `phoneTail`, Darwin dates), `src/lib/csv.ts`, `src/lib/audit.ts`; `routes/admin.ts` (audit gaps, `reviewDocument` + bulk
+  endpoint, SOS notes appended / no reopen, trip list filters, levy/GST via the service, old audit route removed).
+- Shared: `useModal` keeps a stack so only the top dialog handles Escape/Tab and focus (a dialog over a drawer; also the driver app's sheet over the offer).
+- Admin app: `ui.tsx` (portal Drawer/Modal on `useModal` with labelled titles, Tabs with arrow keys and a tab panel, toasts in an always-present live region
+  outside `#root`, `AskProvider`/`useAsk` replacing `prompt()`, `downloadCsv`), new `Search.tsx` (combobox), `main.tsx` (skip link, `<main>`, search bar,
+  shortcuts and their list), `Trips.tsx` (URL filters, dates, quick and saved filters, server CSV, rego column), `Safety.tsx` (incident drawer with runbook,
+  map, notes, timeline; bulk review; URL tab and incident), `Settings.tsx` (audit viewer), `Dashboard.tsx` (daily summary, deep links), `Reports.tsx` and
+  `Fleet.tsx` (server CSVs, payouts export), `Drivers.tsx` (`?open=`), `Ads.tsx` (roof preview as an image with a contrast warning), AA ink colours for red
+  and green text in dark mode. Partner app: hint instead of a silently disabled button, outcome announced and focused, sale message in a live region.
+- Behaviour changes to note: `PATCH /admin/sos/:id` appends notes and returns 409 on a resolved alert; `GET /admin/audit` returns 100 by default (was 300)
+  with `next_before`; levy/GST defaults use the Darwin date; `GET /admin/trips?status=<unknown>` is 400 (was a 500); client-side trips/levy/GST CSVs replaced by
+  server ones (trip CSV has more columns and no 500-row cap); hire request / application / enquiry / ticket / flag updates 404 when the id doesn't exist.
+- Deploy: apply migration 013 when convenient (indexes only, safe any time). No env vars. No data fix.
+
+Deferred:
+- Bulk actions beyond documents (flags, tickets, applications): wait to see which queues actually get long.
+- ABA bank file for payouts: needs full BSB/account in the export (the API masks bank details everywhere today) and a decision on who may download it.
+- Server-stored saved filters shared across staff: browser storage is enough for a two-person desk; shared views need a table.
+- Partner app has a single short flow; no further keyboard work needed. Admin Live map markers are still mouse-first (the side lists carry the same
+  actions by keyboard).
+
+Ideas for next rounds:
+- Ops "dispatch board" from Round 3 (searching > 2 min, bookings with no driver 10 min out, manual "offer to this driver"), now that search and the daily
+  summary exist.
+- Driver reliability page (acceptance, cancellations, silent episodes, flags, papers running out over 30 days) linked from search and the driver drawer.
+- Staff roles finer than admin/dispatcher (e.g. "safety lead" who can block and resolve SOS; "finance" for exports and payouts), with the audit log per role.
+- SMS from the incident drawer (welfare check text to the rider/driver, logged on the timeline) behind the Twilio config.
+- Scheduled daily summary emailed/pushed to the owner at 7 am Darwin, and a weekly levy/GST reminder before lodging dates.
+- Run `scripts/a11y-check.mjs` (now web, rider, driver, admin, partner) in CI with the API and Postgres as services.

@@ -1,5 +1,6 @@
-import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
-import { ApiError, del, get, money, patch, post, date, dateTime, useLoad, Icon } from '@dingogo/shared';
+import { createContext, useContext, useEffect, useId, useMemo, useRef, useState, type ReactNode, type KeyboardEvent as ReactKeyboardEvent } from 'react';
+import { createPortal } from 'react-dom';
+import { ApiError, apiBase, del, get, getToken, money, patch, post, date, dateTime, useLoad, useModal, Icon } from '@dingogo/shared';
 
 // ───────────── Toasts ─────────────
 const ToastCtx = createContext<(msg: string, err?: boolean) => void>(() => {});
@@ -10,7 +11,10 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   return (
     <ToastCtx.Provider value={(msg, err) => setT({ msg, err })}>
       {children}
-      {t && <div className={'toast' + (t.err ? ' err' : '')} role="status">{t.msg}</div>}
+      {/* Outside #root so it is still read out while a drawer or dialog makes the page inert. The region always exists. */}
+      {createPortal(<div className="toast-region" aria-live={t?.err ? 'assertive' : 'polite'} aria-atomic="true">
+        {t && <div className={'toast' + (t.err ? ' err' : '')}>{t.msg}</div>}
+      </div>, document.body)}
     </ToastCtx.Provider>
   );
 }
@@ -29,34 +33,98 @@ export function Section({ title, children, right }: { title: string; children?: 
   return (<><div className="section"><h2>{title}</h2><span className="spacer" />{right}</div>{children}</>);
 }
 
-export function Tabs<T extends string>({ tabs, value, onChange }: { tabs: [T, string][]; value: T; onChange: (t: T) => void }) {
-  return (
-    <div className="tabs" role="tablist">
-      {tabs.map(([k, l]) => <button key={k} role="tab" aria-selected={value === k} className={value === k ? 'on' : ''} onClick={() => onChange(k)}>{l}</button>)}
+/** Tabs with the content of the chosen tab as children (rendered in its tab panel). Arrow keys, Home and End move between tabs. */
+export function Tabs<T extends string>({ tabs, value, onChange, children, label }: { tabs: [T, string][]; value: T; onChange: (t: T) => void; children?: ReactNode; label?: string }) {
+  const id = useId();
+  const list = useRef<HTMLDivElement>(null);
+  const key = (e: ReactKeyboardEvent) => {
+    const i = tabs.findIndex(([k]) => k === value);
+    const n = e.key === 'ArrowRight' ? i + 1 : e.key === 'ArrowLeft' ? i - 1 : e.key === 'Home' ? 0 : e.key === 'End' ? tabs.length - 1 : null;
+    if (n == null) return;
+    e.preventDefault();
+    const next = tabs[(n + tabs.length) % tabs.length][0];
+    onChange(next);
+    requestAnimationFrame(() => list.current?.querySelector<HTMLElement>(`[data-tab="${next}"]`)?.focus());
+  };
+  return (<>
+    <div className="tabs" role="tablist" aria-label={label} ref={list} onKeyDown={key}>
+      {tabs.map(([k, l]) => <button key={k} type="button" role="tab" id={`${id}-tab-${k}`} data-tab={k} aria-selected={value === k} aria-controls={`${id}-panel`}
+        tabIndex={value === k ? 0 : -1} className={value === k ? 'on' : ''} onClick={() => onChange(k)}>{l}</button>)}
     </div>
+    <div role="tabpanel" id={`${id}-panel`} aria-labelledby={`${id}-tab-${value}`}>{children}</div>
+  </>);
+}
+
+/** Side drawer: a real modal (page behind inert, focus in and back, Tab wraps, Escape closes). */
+export function Drawer({ title, onClose, children, actions }: { title: ReactNode; onClose: () => void; children: ReactNode; actions?: ReactNode }) {
+  const box = useRef<HTMLElement>(null);
+  const id = useId();
+  useModal(box, onClose);
+  return createPortal(<div data-modal-open>
+    <div className="scrim" onClick={onClose} />
+    <aside className="drawer" role="dialog" aria-modal="true" aria-labelledby={id} tabIndex={-1} ref={box}>
+      <div className="drawer__head"><h2 id={id}>{title}</h2>{actions}<button className="x" onClick={onClose} aria-label="Close"><Icon name="x" size={22} /></button></div>
+      <div className="drawer__body">{children}</div>
+    </aside>
+  </div>, document.body);
+}
+
+export function Modal({ title, onClose, children, role = 'dialog' }: { title: string; onClose: () => void; children: ReactNode; role?: 'dialog' | 'alertdialog' }) {
+  const box = useRef<HTMLDivElement>(null);
+  const id = useId();
+  useModal(box, onClose);
+  return createPortal(<div data-modal-open>
+    <div className="scrim" onClick={onClose} />
+    <div className="modal" role={role} aria-modal="true" aria-labelledby={id} tabIndex={-1} ref={box}>
+      <div style={{ display: 'flex', alignItems: 'center' }}><h2 id={id} style={{ flex: 1, margin: 0, fontSize: 'var(--fs-xl)' }}>{title}</h2><button className="x" onClick={onClose} aria-label="Close"><Icon name="x" size={22} /></button></div>
+      <div style={{ marginTop: 12 }}>{children}</div>
+    </div>
+  </div>, document.body);
+}
+
+type AskOpts = { title: string; label: string; help?: string; initial?: string; required?: boolean; multiline?: boolean; inputMode?: 'text' | 'decimal' | 'numeric'; ok?: string; danger?: boolean };
+const AskCtx = createContext<(o: AskOpts) => Promise<string | null>>(async () => null);
+/** `const ask = useAsk(); const reason = await ask({ title, label })` — an accessible replacement for window.prompt(). Null when cancelled. */
+export const useAsk = () => useContext(AskCtx);
+export function AskProvider({ children }: { children: ReactNode }) {
+  const [req, setReq] = useState<(AskOpts & { resolve: (v: string | null) => void }) | null>(null);
+  const [v, setV] = useState('');
+  const [err, setErr] = useState(false);
+  const fieldId = useId();
+  const close = (out: string | null) => { req?.resolve(out); setReq(null); };
+  return (
+    <AskCtx.Provider value={(o) => new Promise((resolve) => { setV(o.initial ?? ''); setErr(false); setReq({ ...o, resolve }); })}>
+      {children}
+      {req && (
+        <Modal title={req.title} onClose={() => close(null)}>
+          <form onSubmit={(e) => { e.preventDefault(); if (req.required !== false && !v.trim()) { setErr(true); return; } close(v.trim()); }}>
+            <label className="dg-field" htmlFor={fieldId}><span>{req.label}</span></label>
+            {req.multiline
+              ? <textarea id={fieldId} className="dg-textarea" value={v} onChange={(e) => setV(e.target.value)} data-autofocus aria-invalid={err || undefined} aria-describedby={err ? `${fieldId}-err` : req.help ? `${fieldId}-help` : undefined} />
+              : <input id={fieldId} className="dg-input" value={v} onChange={(e) => setV(e.target.value)} inputMode={req.inputMode} data-autofocus aria-invalid={err || undefined} aria-describedby={err ? `${fieldId}-err` : req.help ? `${fieldId}-help` : undefined} />}
+            {req.help && <small id={`${fieldId}-help`} className="dg-muted">{req.help}</small>}
+            {err && <p id={`${fieldId}-err`} className="dg-error" role="alert">Fill this in to continue.</p>}
+            <div className="actions"><button className={'dg-btn' + (req.danger ? ' dg-btn--danger' : '')}>{req.ok ?? 'Save'}</button>
+              <button type="button" className="dg-btn dg-btn--ghost" onClick={() => close(null)}>Cancel</button></div>
+          </form>
+        </Modal>
+      )}
+    </AskCtx.Provider>
   );
 }
 
-export function Drawer({ title, onClose, children, actions }: { title: ReactNode; onClose: () => void; children: ReactNode; actions?: ReactNode }) {
-  useEffect(() => { const h = (e: KeyboardEvent) => e.key === 'Escape' && onClose(); addEventListener('keydown', h); return () => removeEventListener('keydown', h); }, [onClose]);
-  return (<>
-    <div className="scrim" onClick={onClose} />
-    <aside className="drawer" role="dialog" aria-modal="true">
-      <div className="drawer__head"><h2>{title}</h2>{actions}<button className="x" onClick={onClose} aria-label="Close"><Icon name="x" size={22} /></button></div>
-      <div className="drawer__body">{children}</div>
-    </aside>
-  </>);
-}
-
-export function Modal({ title, onClose, children }: { title: string; onClose: () => void; children: ReactNode }) {
-  useEffect(() => { const h = (e: KeyboardEvent) => e.key === 'Escape' && onClose(); addEventListener('keydown', h); return () => removeEventListener('keydown', h); }, [onClose]);
-  return (<>
-    <div className="scrim" onClick={onClose} />
-    <div className="modal" role="dialog" aria-modal="true">
-      <div style={{ display: 'flex', alignItems: 'center' }}><h2 style={{ flex: 1, margin: 0, fontSize: 'var(--fs-xl)' }}>{title}</h2><button className="x" onClick={onClose} aria-label="Close"><Icon name="x" size={22} /></button></div>
-      <div style={{ marginTop: 12 }}>{children}</div>
-    </div>
-  </>);
+/** Download a server-made CSV (signed-in request, so not a plain link). */
+export async function downloadCsv(path: string) {
+  const r = await fetch(apiBase() + path, { headers: { authorization: `Bearer ${getToken()}` } });
+  if (!r.ok) {
+    const j = await r.json().catch(() => null);
+    throw new ApiError(r.status, j?.error ?? 'export_failed', j?.message ?? 'Could not make the export');
+  }
+  const name = /filename="([^"]+)"/.exec(r.headers.get('content-disposition') ?? '')?.[1] ?? 'dingogo-export.csv';
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(await r.blob());
+  a.download = name; document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
 
 export const Loading = () => <p className="dg-muted">Loading…</p>;

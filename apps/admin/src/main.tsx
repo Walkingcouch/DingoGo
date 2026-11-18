@@ -1,12 +1,13 @@
 import React, { useEffect, useRef, useState } from 'react';
 import ReactDOM from 'react-dom/client';
-import { BrowserRouter, NavLink, Navigate, Route, Routes, useLocation, Link } from 'react-router-dom';
+import { BrowserRouter, NavLink, Navigate, Route, Routes, useLocation, useNavigate, Link } from 'react-router-dom';
 import '@dingogo/shared/brand.css';
 import './admin.css';
 import { Login, connectRealtime, get, getToken, initAuth, setToken, Icon, type Msg } from '@dingogo/shared';
 import { ROLE, label } from './labels';
 import mascot from '@dingogo/shared/assets/mascot.png';
-import { ToastProvider } from './ui';
+import { AskProvider, Modal, ToastProvider } from './ui';
+import { GlobalSearch } from './Search';
 import { Ops } from './ctx';
 import Live from './pages/Live';
 import Dashboard from './pages/Dashboard';
@@ -35,6 +36,9 @@ const NAV: { group: string; items: { to: string; label: string; icon: string; ba
     { to: '/pricing', label: 'Pricing & tours', icon: 'cash' }, { to: '/loyalty', label: 'Loyalty & vouchers', icon: 'gift' }, { to: '/ads', label: 'Roof advertising', icon: 'bolt' }] },
   { group: 'Admin', items: [{ to: '/reports', label: 'Reports', icon: 'document' }, { to: '/settings', label: 'Settings & broadcast', icon: 'settings' }] },
 ];
+
+const GO: Record<string, string> = { l: '/live', d: '/dashboard', t: '/trips', s: '/safety', i: '/support', r: '/drivers', f: '/fleet' };
+const GO_LABEL: Record<string, string> = { '/live': 'Live map', '/dashboard': 'Dashboard', '/trips': 'Trips', '/safety': 'Safety & compliance', '/support': 'Support & inbox', '/drivers': 'Drivers', '/fleet': 'Fleet & charging' };
 
 function Shell({ me, onSignOut }: { me: any; onSignOut: () => void }) {
   const [events, setEvents] = useState<Msg[]>([]);
@@ -69,8 +73,32 @@ function Shell({ me, onSignOut }: { me: any; onSignOut: () => void }) {
   }, []);
   useEffect(() => setMenu(false), [loc.pathname]);
 
+  // Keyboard shortcuts: "/" search, "g" then a letter to go to a page, "?" for the list. Off while typing or in a dialog.
+  const searchRef = useRef<HTMLInputElement>(null);
+  const [help, setHelp] = useState(false);
+  const nav = useNavigate();
+  useEffect(() => {
+    let g = 0;
+    const h = (e: KeyboardEvent) => {
+      if (e.ctrlKey || e.metaKey || e.altKey || e.defaultPrevented) return;
+      const el = e.target as HTMLElement;
+      if (el.closest('input, textarea, select, [contenteditable="true"]') || document.querySelector('[data-modal-open]')) return;
+      if (e.key === '/') { e.preventDefault(); searchRef.current?.focus(); searchRef.current?.select(); return; }
+      if (e.key === '?') { e.preventDefault(); setHelp(true); return; }
+      if (e.key === 'g') { g = Date.now(); return; }
+      if (Date.now() - g < 1500) {
+        const to = GO[e.key];
+        g = 0;
+        if (to) { e.preventDefault(); nav(to); requestAnimationFrame(() => document.getElementById('main')?.focus()); }
+      }
+    };
+    addEventListener('keydown', h);
+    return () => removeEventListener('keydown', h);
+  }, [nav]);
+
   return (
     <Ops.Provider value={{ events, counts, refreshCounts, openSos }}>
+      <a href="#main" className="skip-link" onClick={(e) => { e.preventDefault(); document.getElementById('main')?.focus(); }}>Skip to content</a>
       <div className="shell">
         <aside className={'rail' + (menu ? ' open' : '')} aria-label="Main navigation">
           <Link to="/live" className="rail__brand"><img src={mascot} alt="" /><span><strong>DingoGo</strong><small>Operations</small></span></Link>
@@ -91,7 +119,12 @@ function Shell({ me, onSignOut }: { me: any; onSignOut: () => void }) {
           <div className="rail__foot"><span className="rail__who">Signed in as<br /><strong>{me?.name || me?.phone}</strong></span><button onClick={onSignOut}><Icon name="logout" size={16} /> Sign out</button></div>
         </aside>
         {menu && <div className="scrim" style={{ zIndex: 1100 }} onClick={() => setMenu(false)} />}
-        <div className="main">
+        <main className="main" id="main" tabIndex={-1}>
+          <div className="opsbar">
+            <button className="dg-btn dg-btn--ghost dg-btn--sm menu-btn" onClick={() => setMenu(true)} aria-label="Open menu"><Icon name="list" size={18} /> Menu</button>
+            <GlobalSearch ref={searchRef} />
+            <button type="button" className="dg-btn dg-btn--ghost dg-btn--sm keys-btn" onClick={() => setHelp(true)} aria-label="Keyboard shortcuts"><kbd>?</kbd></button>
+          </div>
           {openSos.length > 0 && (
             <div className="sos-banner" role="alert">
               <span className="pulse" aria-hidden="true" /><Icon name="sos" size={20} />
@@ -99,7 +132,6 @@ function Shell({ me, onSignOut }: { me: any; onSignOut: () => void }) {
               <Link to="/safety">Respond now</Link>
             </div>
           )}
-          <button className="dg-btn dg-btn--ghost dg-btn--sm menu-btn" style={{ margin: '12px 16px 0' }} onClick={() => setMenu(true)} aria-label="Open menu"><Icon name="list" size={18} /> Menu</button>
           <Routes>
             <Route path="/live" element={<Live />} />
             <Route path="/dashboard" element={<Dashboard />} />
@@ -116,8 +148,20 @@ function Shell({ me, onSignOut }: { me: any; onSignOut: () => void }) {
             <Route path="/settings" element={<Settings />} />
             <Route path="*" element={<Navigate to="/live" replace />} />
           </Routes>
-        </div>
+        </main>
       </div>
+      {help && (
+        <Modal title="Keyboard shortcuts" onClose={() => setHelp(false)}>
+          <table className="tbl tbl--kv keys"><caption className="sr-only">Shortcuts (not while typing in a box)</caption><tbody>
+            <tr><th scope="row"><kbd>/</kbd></th><td>Search trips, drivers, riders and cars</td></tr>
+            <tr><th scope="row"><kbd>?</kbd></th><td>Show this list</td></tr>
+            {Object.entries(GO).map(([k, to]) => <tr key={k}><th scope="row"><kbd>g</kbd> then <kbd>{k}</kbd></th><td>Go to {GO_LABEL[to]}</td></tr>)}
+            <tr><th scope="row"><kbd>Esc</kbd></th><td>Close a drawer or dialog</td></tr>
+            <tr><th scope="row"><kbd>←</kbd> <kbd>→</kbd></th><td>Move between tabs</td></tr>
+          </tbody></table>
+          <div className="actions"><button className="dg-btn" onClick={() => setHelp(false)}>Close</button></div>
+        </Modal>
+      )}
     </Ops.Provider>
   );
 }
@@ -134,7 +178,9 @@ function App() {
   return (
     <BrowserRouter basename={import.meta.env.BASE_URL.replace(/\/$/, "")}>
       <ToastProvider>
-        <Shell me={me} onSignOut={() => { setToken(null); setMe(null); }} />
+        <AskProvider>
+          <Shell me={me} onSignOut={() => { setToken(null); setMe(null); }} />
+        </AskProvider>
       </ToastProvider>
     </BrowserRouter>
   );

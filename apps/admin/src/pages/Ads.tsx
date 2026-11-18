@@ -4,12 +4,27 @@ import { Page } from '../ctx';
 import { Chip, CrudSection, Section, Table, Tabs, exportCsv, useRun, type Field } from '../ui';
 import { CAMPAIGN_STATUS, label } from '../labels';
 
-export function LedPreview({ headline, subline, bg, fg }: { headline?: string; subline?: string; bg?: string; fg?: string }) {
+/** WCAG contrast ratio of two #rrggbb colours (null if either can't be read). */
+function contrast(a?: string, b?: string): number | null {
+  const lum = (h?: string) => {
+    const m = /^#?([0-9a-f]{6})$/i.exec(h ?? ''); if (!m) return null;
+    const [r, g, bl] = [0, 2, 4].map((i) => { const c = parseInt(m[1].slice(i, i + 2), 16) / 255; return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4; });
+    return 0.2126 * r + 0.7152 * g + 0.0722 * bl;
+  };
+  const x = lum(a), y = lum(b);
+  if (x == null || y == null) return null;
+  return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05);
+}
+
+/** Picture of the roof screen in the advertiser's own colours, with a warning when they are hard to read (in daylight, from the street). */
+export function LedPreview({ headline, subline, bg, fg, warn = false }: { headline?: string; subline?: string; bg?: string; fg?: string; warn?: boolean }) {
+  const ratio = contrast(bg || '#000000', fg || '#ffffff');
   return (
     <div style={{ containerType: 'inline-size' }}>
-      <div className="ledpreview" style={{ background: bg || '#000', color: fg || '#fff' }} aria-label="Roof screen preview">
-        <b>{headline || 'Headline'}</b>{subline && <span>{subline}</span>}
+      <div className="ledpreview" role="img" aria-label={`Roof screen preview: ${headline || 'Headline'}${subline ? `. ${subline}` : ''}`} style={{ background: bg || '#000', color: fg || '#fff' }}>
+        <b aria-hidden="true">{headline || 'Headline'}</b>{subline && <span aria-hidden="true">{subline}</span>}
       </div>
+      {warn && ratio != null && ratio < 4.5 && <small className="dg-field-error">Hard to read: colour contrast {ratio.toFixed(1)}:1. Use at least 4.5:1 for a street screen.</small>}
     </div>
   );
 }
@@ -41,9 +56,9 @@ export default function Ads() {
         <strong>Screens are currently {roof?.mode === 'off' ? 'switched off' : 'showing ads'}.</strong> {roof?.note ?? 'NT rules say rideshare vehicles must not carry signage that makes them look available for hire. Get written approval before using roof screens in service.'}
         {' '}Screens never show availability messages. Change this in Settings.
       </div>
-      <Tabs tabs={[['campaigns', 'Campaigns'], ['advertisers', 'Advertisers'], ['report', 'Plays & billing']]} value={tab} onChange={setTab} />
+      <Tabs tabs={[['campaigns', 'Campaigns'], ['advertisers', 'Advertisers'], ['report', 'Plays & billing']]} value={tab} onChange={setTab}>
       {tab === 'campaigns' && <CrudSection key={k} title="Campaigns" path="campaigns" newLabel="New campaign" fields={fields}
-        preview={(f) => <div style={{ marginBottom: 12 }}><LedPreview headline={f.headline} subline={f.subline} bg={f.bg_colour} fg={f.fg_colour} /></div>}
+        preview={(f) => <div style={{ marginBottom: 12 }}><LedPreview headline={f.headline} subline={f.subline} bg={f.bg_colour} fg={f.fg_colour} warn /></div>}
         cols={[
           { key: 'preview', label: 'Screen', render: (c) => <div style={{ width: 180 }}><LedPreview headline={c.headline} subline={c.subline} bg={c.bg_colour} fg={c.fg_colour} /></div> },
           { key: 'name', label: 'Campaign', render: (c) => <><strong>{c.name}</strong><br /><span className="dg-muted" style={{ fontSize: '.85rem' }}>{advOpts.find(([id]) => id === c.advertiser_id)?.[1]}</span></> },
@@ -62,6 +77,7 @@ export default function Ads() {
       ]} cols={[{ key: 'name', label: 'Advertiser', render: (a) => <strong>{a.name}</strong> }, { key: 'contact_name', label: 'Contact' }, { key: 'email', label: 'Email' }, { key: 'phone', label: 'Phone' },
         { key: 'community', label: '', render: (a) => a.community && <Chip tone="green">Community</Chip> }]} />}
       {tab === 'report' && <Report />}
+      </Tabs>
     </Page>
   );
 }

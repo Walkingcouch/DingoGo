@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { get, patch, money, date, dateTime, useLoad } from '@dingogo/shared';
 import { Page, useOps } from '../ctx';
-import { Chip, Drawer, Table, Tabs, useRun } from '../ui';
+import { Chip, Drawer, Table, Tabs, useAsk, useRun } from '../ui';
 import { TICKET_STATUS, label } from '../labels';
 
 const CAT: Record<string, string> = { lost_item: 'Lost item', fare: 'Fare', safety: 'Safety', driver: 'Driver', parcel: 'Parcel', accessibility: 'Accessibility', assistance_animal_refused: 'Assistance animal refused', app: 'App', other: 'Other' };
@@ -14,10 +14,11 @@ export default function Support() {
   const [open, setOpen] = useState<any>(null);
   const { refreshCounts } = useOps();
   const run = useRun();
+  const ask = useAsk();
   const n = (d: any, s: string) => d.data?.items.filter((x: any) => x.status === s).length ?? 0;
   return (
     <Page title="Support & inbox">
-      <Tabs tabs={[['tickets', `Support tickets (${n(tickets, 'open')} open)`], ['hire', `Hire requests (${n(hire, 'new')} new)`], ['enquiries', `Enquiries (${n(enq, 'new')} new)`]]} value={tab} onChange={setTab} />
+      <Tabs tabs={[['tickets', `Support tickets (${n(tickets, 'open')} open)`], ['hire', `Hire requests (${n(hire, 'new')} new)`], ['enquiries', `Enquiries (${n(enq, 'new')} new)`]]} value={tab} onChange={setTab}>
       {tab === 'tickets' && <Table rows={tickets.data?.items} onRow={setOpen} empty="No tickets." cols={[
         { key: 'created_at', label: 'Received', nowrap: true, render: (t) => dateTime(t.created_at) },
         { key: 'category', label: 'Type', render: (t) => <Chip tone={t.category === 'safety' || t.category === 'assistance_animal_refused' ? 'red' : ''}>{CAT[t.category] ?? t.category}</Chip> },
@@ -36,7 +37,7 @@ export default function Support() {
               onChange={async (e) => { await run(() => patch(`/admin/hire-requests/${h.id}`, { status: e.target.value }), 'Updated'); void hire.reload(); refreshCounts(); }}>
               {['new', 'quoted', 'confirmed', 'declined'].map((s) => <option key={s} value={s}>{label(TICKET_STATUS, s)}</option>)}
             </select>
-            <button className="dg-btn dg-btn--sm dg-btn--ghost" onClick={async () => { const q = prompt('Quote amount in dollars (incl. GST):'); if (q) { await run(() => patch(`/admin/hire-requests/${h.id}`, { status: 'quoted', quote_cents: Math.round(Number(q) * 100) }), 'Quote saved'); void hire.reload(); } }}>Quote</button>
+            <button className="dg-btn dg-btn--sm dg-btn--ghost" onClick={async () => { const q = await ask({ title: 'Quote for hire request', label: 'Quote amount in dollars (incl. GST)', inputMode: 'decimal', initial: h.quote_cents ? (h.quote_cents / 100).toFixed(2) : '', ok: 'Save quote' }); if (q && Number(q) > 0) { await run(() => patch(`/admin/hire-requests/${h.id}`, { status: 'quoted', quote_cents: Math.round(Number(q) * 100) }), 'Quote saved'); void hire.reload(); } }}>Quote</button>
           </span>) },
       ]} />}
       {tab === 'enquiries' && <Table rows={enq.data?.items} empty="No enquiries." cols={[
@@ -50,6 +51,7 @@ export default function Support() {
           </select>) },
       ]} />}
       {open && <Ticket t={open} onClose={() => { setOpen(null); void tickets.reload(); refreshCounts(); }} />}
+      </Tabs>
     </Page>
   );
 }

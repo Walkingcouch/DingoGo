@@ -1,13 +1,14 @@
 import { useEffect, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { get, patch, post, money, date, dateTime, FileLink, useLoad } from '@dingogo/shared';
 import { Page } from '../ctx';
-import { Chip, Drawer, ErrorMsg, Table, Tabs, useRun, type Col } from '../ui';
+import { Chip, Drawer, ErrorMsg, Table, Tabs, useAsk, useRun, type Col } from '../ui';
 import { APPLICATION_STATUS, DOC_STATUS, DOC_TYPE, DRIVER_STATUS, DRIVER_STATUS_TONE, FLAG_KIND, FLAG_STATUS, FUEL, LEDGER_KIND, VEHICLE_STATUS, complianceText, docTone, label } from '../labels';
 
 /** Second line under a driver's rego: car check status if it isn't approved, else charge (cars with a plug) or fuel. */
 function carSub(d: any) {
   const st = d.vehicle_status;
-  if (st && st !== 'approved') return <span className="sub" style={{ color: st === 'rejected' ? 'var(--earth)' : undefined }}>{label(VEHICLE_STATUS, st)}</span>;
+  if (st && st !== 'approved') return <span className="sub" style={{ color: st === 'rejected' ? 'var(--earth-ink)' : undefined }}>{label(VEHICLE_STATUS, st)}</span>;
   if (d.fuel_type && !['electric', 'plug_in_hybrid'].includes(d.fuel_type)) return <span className="sub">{label(FUEL, d.fuel_type)}</span>;
   return <span className="sub">{d.battery_pct != null ? `${d.battery_pct}% charge` : d.fuel_type ? label(FUEL, d.fuel_type) : 'Charge unknown'}</span>;
 }
@@ -15,7 +16,9 @@ function carSub(d: any) {
 
 export default function Drivers() {
   const [tab, setTab] = useState<'drivers' | 'applications'>('drivers');
-  const [open, setOpen] = useState<string | null>(null);
+  const [params, setParams] = useSearchParams();
+  const open = params.get('open');
+  const setOpen = (id: string | null) => setParams((p) => { const n = new URLSearchParams(p); if (id) n.set('open', id); else n.delete('open'); return n; });
   const { data, error, reload } = useLoad(() => get('/admin/drivers'));
   const apps = useLoad(() => get('/admin/applications'));
   const run = useRun();
@@ -36,7 +39,7 @@ export default function Drivers() {
 
   return (
     <Page title="Drivers">
-      <Tabs tabs={[['drivers', `Drivers (${data?.drivers.length ?? '…'})`], ['applications', `Website applications (${apps.data?.items.filter((a: any) => a.status === 'new').length ?? 0} new)`]]} value={tab} onChange={setTab} />
+      <Tabs tabs={[['drivers', `Drivers (${data?.drivers.length ?? '…'})`], ['applications', `Website applications (${apps.data?.items.filter((a: any) => a.status === 'new').length ?? 0} new)`]]} value={tab} onChange={setTab}>
       {tab === 'drivers' && (<><ErrorMsg error={error} /><Table rows={data?.drivers} cols={cols} empty="No drivers yet. Applicants appear here when they sign in to the driver app." onRow={(d) => setOpen(d.user_id)} rowKey={(d) => d.user_id} /></>)}
       {tab === 'applications' && (
         <Table rows={apps.data?.items} empty="No applications yet. They arrive from the Drive with us form on the website." cols={[
@@ -56,12 +59,14 @@ export default function Drivers() {
         ]} />
       )}
       {open && <DriverDrawer id={open} onClose={() => { setOpen(null); void reload(); }} />}
+      </Tabs>
     </Page>
   );
 }
 
 
 function DriverDrawer({ id, onClose }: { id: string; onClose: () => void }) {
+  const ask = useAsk();
   const { data, error, reload } = useLoad(() => get(`/admin/drivers/${id}`), [id]);
   const vehicles = useLoad(() => get('/admin/vehicles?status=all'));
   const regoOf = (id?: string | null) => vehicles.data?.items.find((v: any) => v.id === id)?.rego;
@@ -82,7 +87,7 @@ function DriverDrawer({ id, onClose }: { id: string; onClose: () => void }) {
     void reload();
   }
   async function review(docId: string, status: 'approved' | 'rejected') {
-    const note = status === 'rejected' ? prompt('Reason for rejecting (sent to the driver):') ?? undefined : undefined;
+    const note = status === 'rejected' ? (await ask({ title: 'Reject document', label: 'Reason (sent to the driver)', multiline: true, ok: 'Reject', danger: true })) ?? undefined : undefined;
     if (status === 'rejected' && !note) return;
     await run(() => post(`/admin/documents/${docId}/review`, { status, note }), `Document ${status}`);
     void reload();

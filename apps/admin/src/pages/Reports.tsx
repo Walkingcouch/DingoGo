@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { get, money, useLoad } from '@dingogo/shared';
 import { Page } from '../ctx';
-import { ErrorMsg, Section, Table, exportCsv } from '../ui';
+import { ErrorMsg, Section, Table, downloadCsv, useRun } from '../ui';
 
 const KIND: Record<string, string> = { capture: 'Card fares', cash: 'Cash fares', invoice: 'Account invoices', subscription: 'DingoGo Pass', refund: 'Refunds', tip: 'Tips (passed to drivers)' };
 
@@ -12,6 +12,7 @@ export default function Reports() {
   const [range, setRange] = useState({ from: new Date(Date.now() - 90 * 864e5).toISOString().slice(0, 10), to: today });
   const gst = useLoad(() => get(`/admin/reports/gst?from=${range.from}&to=${range.to}`), [range.from, range.to]);
   const l = levy.data;
+  const run = useRun();
   const g = gst.data;
   return (
     <Page title="Reports">
@@ -25,7 +26,7 @@ export default function Reports() {
           <div className="kpi"><b>{money(l.levy_payable_cents)}</b><span>Levy payable for {l.month}</span></div>
           <div className="kpi"><b>{money(l.levy_collected_cents)}</b><span>Collected from riders</span></div>
         </div>
-        <div className="actions" style={{ marginTop: 10 }}><button className="dg-btn dg-btn--sm dg-btn--ghost" onClick={() => exportCsv(`nt-levy-${l.month}.csv`, [{ month: l.month, passenger_trips: l.passenger_trips, levy_rate: l.levy_rate_cents / 100, levy_payable: l.levy_payable_cents / 100 }, ...l.per_driver.map((d: any) => ({ month: '', driver: d.name, trips: d.trips }))])}>Export levy return CSV</button></div>
+        <div className="actions" style={{ marginTop: 10 }}><button className="dg-btn dg-btn--sm dg-btn--ghost" onClick={() => run(() => downloadCsv(`/admin/export/levy.csv?month=${l.month}&state=${l.state}`), 'Levy return downloaded')}>Export levy return CSV</button></div>
         <div style={{ marginTop: 12 }}><Table rows={l.per_driver} rowKey={(r) => r.name} empty="No passenger trips this month." cols={[{ key: 'name', label: 'Driver' }, { key: 'trips', label: 'Passenger trips', num: true }]} /></div>
       </>)}
 
@@ -44,7 +45,7 @@ export default function Reports() {
           <div className="kpi"><b>{money(g.dingogo_service_fees_cents)}</b><span>DingoGo service fees</span></div>
           <div className="kpi"><b>{money(g.gst_on_service_fees_cents)}</b><span>GST on service fees</span></div>
         </div>
-        <div className="actions" style={{ marginTop: 10 }}><button className="dg-btn dg-btn--sm dg-btn--ghost" onClick={() => exportCsv(`gst-${g.from}-${g.to}.csv`, g.rows)}>Export CSV</button></div>
+        <div className="actions" style={{ marginTop: 10 }}><button className="dg-btn dg-btn--sm dg-btn--ghost" onClick={() => run(() => downloadCsv(`/admin/export/gst.csv?from=${g.from}&to=${g.to}`), 'GST summary downloaded')}>Export GST CSV</button></div>
       </>)}
     </Page>
   );

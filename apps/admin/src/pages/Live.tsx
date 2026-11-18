@@ -96,8 +96,8 @@ export default function Live() {
               {drivers.map((d: any) => (
                 <tr key={d.id}><td>{d.name}<br /><span className="dg-muted" style={{ fontSize: '.82rem' }}>{d.rego ?? 'No vehicle'}</span></td>
                   <td><Chip tone={!d.online ? '' : d.trip_status ? 'ochre' : 'green'}>{!d.online ? 'Offline' : d.trip_status ? 'On trip' : 'Available'}</Chip>
-                    {(d.online || d.trip_status) && (silentMin(d.last_seen_at) ?? 0) >= SILENT_AFTER_MIN && <><br /><span className="dg-muted" style={{ fontSize: '.82rem', color: 'var(--earth)' }}>No signal {silentMin(d.last_seen_at)} min</span></>}</td>
-                  <td className="num" title="Battery">{d.battery_pct != null ? <span style={{ color: d.battery_pct < 25 ? 'var(--earth)' : undefined }}>{d.battery_pct}%</span> : '—'}</td></tr>
+                    {(d.online || d.trip_status) && (silentMin(d.last_seen_at) ?? 0) >= SILENT_AFTER_MIN && <><br /><span className="dg-muted" style={{ fontSize: '.82rem', color: 'var(--earth-ink)' }}>No signal {silentMin(d.last_seen_at)} min</span></>}</td>
+                  <td className="num" title="Battery">{d.battery_pct != null ? <span style={{ color: d.battery_pct < 25 ? 'var(--earth-ink)' : undefined }}>{d.battery_pct}%</span> : '—'}</td></tr>
               ))}
             </tbody></table>
           </div>
@@ -106,7 +106,7 @@ export default function Live() {
             {!feed.length && <p className="dg-muted" style={{ margin: 0 }}>Events appear here as they happen.</p>}
             <ul className="feed">
               {feed.map((e, i) => (
-                <li key={i} style={e.type === 'sos.new' ? { color: 'var(--earth)', fontWeight: 700 } : undefined}>
+                <li key={i} style={e.type === 'sos.new' ? { color: 'var(--earth-ink)', fontWeight: 700 } : undefined}>
                   <time>{time(e.at)}</time><span>{EVENT_TEXT[e.type](e.data)}</span>
                 </li>
               ))}
@@ -114,7 +114,7 @@ export default function Live() {
           </div>
           {data?.sos.length > 0 && (
             <div className="panel" style={{ borderColor: 'var(--earth)' }}>
-              <h3 style={{ color: 'var(--earth)' }}>Open emergency alerts</h3>
+              <h3 style={{ color: 'var(--earth-ink)' }}>Open emergency alerts</h3>
               {data.sos.map((s: any) => <p key={s.id} style={{ margin: '4px 0' }}>{s.user_name} ({label(ROLE, s.role).toLowerCase()}) {ago(s.created_at)} {s.trip_ref && `on ${s.trip_ref}`}</p>)}
               <Link to="/safety" className="dg-btn dg-btn--danger dg-btn--sm">Respond</Link>
             </div>

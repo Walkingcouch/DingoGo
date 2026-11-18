@@ -1,49 +1,101 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { get, post, money, dateTime, time, km, mins, STATUS_LABEL, COURIER_STATUS_LABEL, statusTone, useLoad, Icon, FileLink } from '@dingogo/shared';
 import { DgMap, type MapMarker } from '@dingogo/shared/map';
 import { Page } from '../ctx';
-import { Chip, Drawer, ErrorMsg, Modal, Table, exportCsv, useRun, type Col } from '../ui';
+import { Chip, Drawer, ErrorMsg, Modal, Table, downloadCsv, useAsk, useRun, type Col } from '../ui';
 import { CHANNEL, EVENT_TYPE, LEDGER_KIND, OFFER_STATUS, PARCEL_SIZE, PAYMENT_KIND, PAYMENT_METHOD, PAYMENT_STATUS, SERVICE_NAME, label } from '../labels';
 
 const SERVICES: [string, string][] = [['ride', 'Ride'], ['pet', 'Pet-friendly'], ['courier_s', 'Courier small'], ['courier_m', 'Courier medium'], ['courier_l', 'Courier large'], ['hourly', 'Hourly hire']];
 
+type Filters = { q: string; status: string; kind: string; from: string; to: string };
+const NO_FILTERS: Filters = { q: '', status: '', kind: '', from: '', to: '' };
+const SAVED_KEY = 'dingogo.admin.tripFilters';
+function loadSaved(): { name: string; f: Filters }[] {
+  try { const v = JSON.parse(localStorage.getItem(SAVED_KEY) ?? '[]'); return Array.isArray(v) ? v.slice(0, 20) : []; } catch { return []; }
+}
+function storeSaved(v: { name: string; f: Filters }[]) { try { localStorage.setItem(SAVED_KEY, JSON.stringify(v)); } catch { /* private window */ } }
+const darwinDay = (offset = 0) => new Date(Date.now() + 9.5 * 3600e3 + offset * 864e5).toISOString().slice(0, 10);
+
 export default function Trips() {
-  const [status, setStatus] = useState('');
-  const [kind, setKind] = useState('');
-  const [q, setQ] = useState('');
-  const [search, setSearch] = useState('');
-  const [open, setOpen] = useState<string | null>(null);
+  // Filters live in the URL, so a link (or the back button) opens the same view.
+  const [params, setParams] = useSearchParams();
+  const applied: Filters = { q: params.get('q') ?? '', status: params.get('status') ?? '', kind: params.get('kind') ?? '', from: params.get('from') ?? '', to: params.get('to') ?? '' };
+  const key = JSON.stringify(applied);
+  const [f, setF] = useState<Filters>(applied);
+  useEffect(() => setF(applied), [key]); // eslint-disable-line
+  const open = params.get('open');
+  const apply = (next: Filters, extra: Record<string, string | null> = {}) => setParams(() => {
+    const n = new URLSearchParams();
+    for (const [k, v] of Object.entries(next)) if (v) n.set(k, v);
+    for (const [k, v] of Object.entries(extra)) if (v) n.set(k, v);
+    return n;
+  });
+  const setOpen = (id: string | null) => setParams((p) => { const n = new URLSearchParams(p); if (id) n.set('open', id); else n.delete('open'); return n; });
   const [booking, setBooking] = useState(false);
-  const { data, error, reload } = useLoad(() => get(`/admin/trips?status=${status}&kind=${kind}&q=${encodeURIComponent(search)}`), [status, kind, search]);
+  const [saved, setSaved] = useState(loadSaved);
+  const run = useRun();
+  const ask = useAsk();
+  const qs = new URLSearchParams(Object.entries(applied).filter(([, v]) => v)).toString();
+  const { data, error, reload } = useLoad(() => get(`/admin/trips?${qs}`), [qs]);
+  const filtered = Object.values(applied).some(Boolean);
+
+  async function saveCurrent() {
+    const name = await ask({ title: 'Save these filters', label: 'Name', help: 'Kept on this computer. Pick it from “Saved filters” next time.', ok: 'Save' });
+    if (!name) return;
+    const next = [...saved.filter((x) => x.name !== name), { name: name.slice(0, 40), f: applied }];
+    setSaved(next); storeSaved(next);
+  }
+  const removeSaved = (name: string) => { const next = saved.filter((x) => x.name !== name); setSaved(next); storeSaved(next); };
 
   const cols: Col<any>[] = [
     { key: 'ref', label: 'Ref', nowrap: true, render: (t) => <strong>{t.ref}</strong> },
-    { key: 'status', label: 'Status', render: (t) => <Chip tone={statusTone(t.status)}>{(t.service.startsWith('courier') ? COURIER_STATUS_LABEL : STATUS_LABEL)[t.status] ?? label({}, t.status)}</Chip>, csv: (t) => t.status },
+    { key: 'status', label: 'Status', render: (t) => <Chip tone={statusTone(t.status)}>{(t.service.startsWith('courier') ? COURIER_STATUS_LABEL : STATUS_LABEL)[t.status] ?? label({}, t.status)}</Chip> },
     { key: 'service', label: 'Service', nowrap: true, render: (t) => label(SERVICE_NAME, t.service) },
-    { key: 'when', label: 'When', nowrap: true, render: (t) => dateTime(t.scheduled_for ?? t.requested_at), csv: (t) => t.scheduled_for ?? t.requested_at },
+    { key: 'when', label: 'When', nowrap: true, render: (t) => dateTime(t.scheduled_for ?? t.requested_at) },
     { key: 'rider_name', label: 'Rider', truncate: 160 },
-    { key: 'driver_name', label: 'Driver', truncate: 160 },
-    { key: 'route', label: 'Route', render: (t) => <span className="route" title={`${t.pickup_address} to ${t.dropoff_address}`}><span className="trunc">{t.pickup_address}</span><span className="trunc sub">to {t.dropoff_address}</span></span>, csv: (t) => `${t.pickup_address} -> ${t.dropoff_address}` },
+    { key: 'driver_name', label: 'Driver', truncate: 160, render: (t) => t.driver_name ? <>{t.driver_name}{t.rego && <span className="sub">{t.rego}</span>}</> : <span className="dg-muted">—</span> },
+    { key: 'route', label: 'Route', render: (t) => <span className="route" title={`${t.pickup_address} to ${t.dropoff_address}`}><span className="trunc">{t.pickup_address}</span><span className="trunc sub">to {t.dropoff_address}</span></span> },
     { key: 'payment_method', label: 'Payment', nowrap: true, render: (t) => label(PAYMENT_METHOD, t.payment_method) },
-    { key: 'final_cents', label: 'Fare', num: true, render: (t) => money(t.final_cents ?? t.quote_cents), csv: (t) => ((t.final_cents ?? t.quote_cents) / 100).toFixed(2) },
+    { key: 'final_cents', label: 'Fare', num: true, render: (t) => money(t.final_cents ?? t.quote_cents) },
   ];
+  const set = (k: keyof Filters, v: string) => setF({ ...f, [k]: v });
 
   return (
     <Page title="Trips" right={<>
-      <button className="dg-btn dg-btn--sm dg-btn--ghost" onClick={() => data && exportCsv('dingogo-trips.csv', data.trips, cols)}>Export CSV</button>
+      <button className="dg-btn dg-btn--sm dg-btn--ghost" onClick={() => run(() => downloadCsv(`/admin/export/trips.csv?${new URLSearchParams(Object.entries({ ...applied, from: applied.from || darwinDay(-30), to: applied.to || darwinDay() }).filter(([, v]) => v))}`), 'Export downloaded')}
+        title="All trips matching these filters (up to a year; last 30 days if no dates are set)">Export CSV</button>
       <button className="dg-btn dg-btn--sm" onClick={() => setBooking(true)}>New phone booking</button>
     </>}>
-      <form className="toolbar" onSubmit={(e) => { e.preventDefault(); setSearch(q); }}>
-        <input className="dg-input" placeholder="Ref, name, phone or address" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Search trips" style={{ minWidth: 200, flex: '1 1 220px', maxWidth: 320 }} />
-        <select className="dg-select" value={status} onChange={(e) => setStatus(e.target.value)} aria-label="Status">
-          <option value="">All statuses</option><option value="active">In progress</option>
+      <form className="toolbar" role="search" aria-label="Filter trips" onSubmit={(e) => { e.preventDefault(); apply(f); }}>
+        <input className="dg-input" type="search" placeholder="Ref, name, phone, rego or address" value={f.q} onChange={(e) => set('q', e.target.value)} aria-label="Search trips" style={{ minWidth: 200, flex: '1 1 220px', maxWidth: 320 }} />
+        <select className="dg-select" value={f.status} onChange={(e) => set('status', e.target.value)} aria-label="Status">
+          <option value="">All statuses</option><option value="active">In progress</option><option value="cancelled">Cancelled (any)</option>
           {Object.entries(STATUS_LABEL).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
         </select>
-        <select className="dg-select" value={kind} onChange={(e) => setKind(e.target.value)} aria-label="Type"><option value="">Rides and courier</option><option value="ride">Rides</option><option value="courier">Courier</option></select>
+        <select className="dg-select" value={f.kind} onChange={(e) => set('kind', e.target.value)} aria-label="Type"><option value="">Rides and courier</option><option value="ride">Rides</option><option value="courier">Courier</option></select>
+        <label className="inline-field"><span>From</span><input className="dg-input" type="date" value={f.from} onChange={(e) => set('from', e.target.value)} /></label>
+        <label className="inline-field"><span>To</span><input className="dg-input" type="date" value={f.to} onChange={(e) => set('to', e.target.value)} /></label>
         <button className="dg-btn dg-btn--sm dg-btn--dark">Search</button>
+        {filtered && <button type="button" className="dg-btn dg-btn--sm dg-btn--ghost" onClick={() => apply(NO_FILTERS)}>Clear</button>}
       </form>
+      <div className="toolbar saved-filters" aria-label="Quick filters" role="group">
+        <span className="dg-muted">Quick:</span>
+        <button type="button" className="chip-btn" onClick={() => apply({ ...NO_FILTERS, status: 'active' })}>In progress</button>
+        <button type="button" className="chip-btn" onClick={() => apply({ ...NO_FILTERS, from: darwinDay(), to: darwinDay() })}>Today</button>
+        <button type="button" className="chip-btn" onClick={() => apply({ ...NO_FILTERS, status: 'no_drivers', from: darwinDay(-7) })}>No drivers, 7 days</button>
+        <button type="button" className="chip-btn" onClick={() => apply({ ...NO_FILTERS, status: 'scheduled' })}>Booked ahead</button>
+        {saved.map((x) => (
+          <span key={x.name} className="chip-btn chip-btn--saved">
+            <button type="button" onClick={() => apply(x.f)}>{x.name}</button>
+            <button type="button" aria-label={`Delete saved filter ${x.name}`} onClick={() => removeSaved(x.name)}><Icon name="x" size={14} /></button>
+          </span>
+        ))}
+        {filtered && <button type="button" className="chip-btn chip-btn--add" onClick={saveCurrent}>Save these filters</button>}
+      </div>
       <ErrorMsg error={error} />
-      <Table rows={data?.trips} cols={cols} onRow={(t) => setOpen(t.id)} empty={search || status || kind ? 'No trips match these filters.' : 'No trips yet. Phone bookings and app requests appear here.'} />
+      <p className="sr-only" role="status">{data ? `${data.trips.length} trips${data.trips.length >= 100 ? ' shown (newest 100)' : ''}` : ''}</p>
+      <Table rows={data?.trips} cols={cols} onRow={(t) => setOpen(t.id)} empty={filtered ? 'No trips match these filters.' : 'No trips yet. Phone bookings and app requests appear here.'} />
       {open && <TripDrawer id={open} onClose={() => { setOpen(null); void reload(); }} />}
       {booking && <PhoneBooking onClose={(id) => { setBooking(false); void reload(); if (id) setOpen(id); }} />}
     </Page>
@@ -83,7 +135,7 @@ function TripDrawer({ id, onClose }: { id: string; onClose: () => void }) {
           {t.ndis_number && <><dt>NDIS no.</dt><dd>{t.ndis_number}</dd></>}
           {t.notes && <><dt>Notes</dt><dd>{t.notes}</dd></>}
           {t.cancel_reason && <><dt>Cancel reason</dt><dd>{t.cancel_reason}</dd></>}
-          {t.rider_rating && <><dt>Rating</dt><dd><span className="stars" aria-label={`${t.rider_rating} out of 5`}>{Array.from({ length: 5 }, (_, i) => <Icon key={i} name="star" size={16} style={{ fill: i < t.rider_rating ? 'var(--ochre)' : 'none', color: i < t.rider_rating ? 'var(--ochre)' : 'var(--line)' }} />)}</span> {t.rider_feedback}</dd></>}
+          {t.rider_rating && <><dt>Rating</dt><dd><span className="stars" role="img" aria-label={`${t.rider_rating} out of 5`}>{Array.from({ length: 5 }, (_, i) => <Icon key={i} name="star" size={16} style={{ fill: i < t.rider_rating ? 'var(--ochre)' : 'none', color: i < t.rider_rating ? 'var(--ochre)' : 'var(--line)' }} />)}</span> {t.rider_feedback}</dd></>}
         </dl>
         {t.parcel && (<>
           <h3 style={{ marginTop: 18 }}>Parcel</h3>

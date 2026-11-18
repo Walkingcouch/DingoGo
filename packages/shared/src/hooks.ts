@@ -58,16 +58,21 @@ export function useOnline() {
 
 const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
+const modalStack: object[] = [];
 /** Modal behaviour for a dialog rendered outside #root (in a portal): the app behind is made inert, focus moves into the
  *  dialog (and back in if the button that had it disappears), Tab wraps inside it, Escape calls onClose (if given), and focus
- *  returns to whatever opened it. */
+ *  returns to whatever opened it. With dialogs stacked (a confirm over a drawer) only the top one handles keys and focus. */
 export function useModal(box: RefObject<HTMLElement>, onClose?: () => void) {
   const closeRef = useRef(onClose); closeRef.current = onClose;
+  const meRef = useRef<object>({});
   useEffect(() => {
+    const me = meRef.current;
+    modalStack.push(me);
     const opener = document.activeElement as HTMLElement | null;
     const root = document.getElementById('root');
     root?.setAttribute('inert', ''); root?.setAttribute('aria-hidden', 'true');
     const k = (e: KeyboardEvent) => {
+      if (modalStack[modalStack.length - 1] !== me) return;
       if (e.key === 'Escape' && closeRef.current) { e.preventDefault(); closeRef.current(); return; }
       if (e.key !== 'Tab' || !box.current) return;
       const els = Array.from(box.current.querySelectorAll<HTMLElement>(FOCUSABLE));
@@ -79,13 +84,14 @@ export function useModal(box: RefObject<HTMLElement>, onClose?: () => void) {
     window.addEventListener('keydown', k);
     return () => {
       window.removeEventListener('keydown', k);
+      modalStack.splice(modalStack.indexOf(me), 1);
       // Another modal may still be open (e.g. a sheet over the offer): only release the app when none is left.
       if (!document.querySelector('[data-modal-open]')) { root?.removeAttribute('inert'); root?.removeAttribute('aria-hidden'); }
       if (opener && document.contains(opener)) opener.focus();
     };
   }, []); // eslint-disable-line
   useEffect(() => {
-    if (!box.current || box.current.contains(document.activeElement)) return;
+    if (!box.current || box.current.contains(document.activeElement) || modalStack[modalStack.length - 1] !== meRef.current) return;
     (box.current.querySelector<HTMLElement>('[autofocus], [data-autofocus]') ?? box.current.querySelector<HTMLElement>(FOCUSABLE) ?? box.current).focus();
   });
 }

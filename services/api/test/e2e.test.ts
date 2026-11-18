@@ -1519,3 +1519,159 @@ test('document expiry: driver sees what runs out within 30 days; reminders at 30
     await q(`DELETE FROM driver_documents WHERE id = ANY($1::uuid[])`, [added]);
   }
 });
+
+// ───────────── Round 7: ops tooling ─────────────
+async function rawAs(method: string, url: string, who: string) {
+  return app.inject({ method: method as any, url, headers: { authorization: `Bearer ${tokens[who]}` } });
+}
+const parseCsv = (body: string) => body.replace(/^﻿/, '').trim().split('\r\n');
+
+test('ops search: trips by ref and phone, drivers by rego and phone, people by name; trip list filters', async () => {
+  if (!tokens.dispatcher) await login('dispatcher', '+61400000002', 'admin');
+  const d1 = await one(`SELECT d.user_id, u.phone, v.rego FROM drivers d JOIN users u ON u.id = d.user_id JOIN vehicles v ON v.id = d.vehicle_id WHERE u.phone = '+61400000011'`);
+  const pb = await call('POST', '/admin/bookings', 'admin', { phone: '0400 765 432', name: 'Search Testperson', trip: { kind: 'courier', service: 'courier_s', pickup: TODD_MALL, dropoff: HOSPITAL,
+    parcel: { size: 'S', description: 'Papers', sender_name: 'Search Testperson', sender_phone: '0400765432', recipient_name: 'Friend', recipient_phone: '0400765431', prohibited_ack: true } } });
+  assert.equal(pb.status, 201, JSON.stringify(pb));
+  // Ref, in lower case, finds the trip first.
+  const byRef = await call('GET', `/admin/search?q=${encodeURIComponent(pb.trip.ref.toLowerCase())}`, 'dispatcher');
+  assert.equal(byRef.trips[0].id, pb.trip.id);
+  // Phone in local format with spaces finds the rider's trip and the person (stored as +61…).
+  const byPhone = await call('GET', `/admin/search?q=${encodeURIComponent('0400 765 432')}`, 'dispatcher');
+  assert.ok(byPhone.trips.some((t: any) => t.id === pb.trip.id));
+  assert.ok(byPhone.people.some((p: any) => p.name === 'Search Testperson'));
+  // Rego with odd spacing / case finds the driver and the car; driver phone in local format finds the driver.
+  const messy = d1!.rego.toLowerCase().replace(/\s+/g, '').split('').join(' ');
+  const byRego = await call('GET', `/admin/search?q=${encodeURIComponent(messy)}`, 'dispatcher');
+  assert.ok(byRego.drivers.some((d: any) => d.id === d1!.user_id), JSON.stringify(byRego));
+  assert.ok(byRego.vehicles.some((v: any) => v.rego === d1!.rego));
+  const byDriverPhone = await call('GET', `/admin/search?q=${encodeURIComponent('0400 000 011')}`, 'dispatcher');
+  assert.ok(byDriverPhone.drivers.some((d: any) => d.id === d1!.user_id));
+  assert.equal(byDriverPhone.people.some((p: any) => p.role === 'driver'), false, 'drivers listed once, under drivers');
+  assert.deepEqual((await call('GET', '/admin/search?q=x', 'dispatcher')).trips, [], 'too short');
+  assert.equal((await call('GET', '/admin/search?q=test', 'rider')).status, 403);
+  // Trip list: phone search, date range, cancelled group, bad status.
+  const list = await call('GET', `/admin/trips?q=${encodeURIComponent('+61 400 765 432')}`, 'dispatcher');
+  assert.deepEqual(list.trips.map((t: any) => t.id), [pb.trip.id]);
+  const today = new Date(Date.now() + 9.5 * 3600e3).toISOString().slice(0, 10);
+  assert.ok((await call('GET', `/admin/trips?from=${today}&to=${today}&q=Search%20Testperson`, 'dispatcher')).trips.length === 1);
+  assert.equal((await call('GET', `/admin/trips?from=2001-01-01&to=2001-01-02`, 'dispatcher')).trips.length, 0);
+  await call('POST', `/admin/trips/${pb.trip.id}/cancel`, 'dispatcher', {});
+  assert.ok((await call('GET', `/admin/trips?status=cancelled&q=${pb.trip.ref}`, 'dispatcher')).trips.length === 1);
+  assert.equal((await call('GET', '/admin/trips?status=nonsense', 'dispatcher')).error, 'invalid_status');
+  // The ops cancel is in the audit log.
+  const a = await call('GET', `/admin/audit?entity=trip&entity_id=${pb.trip.id}`, 'admin');
+  assert.equal(a.items[0].action, 'cancel');
+  assert.equal(a.items[0].actor_name, 'Dispatch Desk');
+});
+
+test('SOS incident: timeline, runbook steps once, first action acknowledges, resolve keeps notes, no reopen', async () => {
+  if (!tokens.dispatcher) await login('dispatcher', '+61400000002', 'admin');
+  const raised = await call('POST', '/driver/sos', 'd3', { lat: -23.7, lng: 133.88, message: 'Passenger aggressive' });
+  const id = raised.alert.id;
+  let inc = await call('GET', `/admin/sos/${id}`, 'dispatcher');
+  assert.equal(inc.alert.status, 'open');
+  assert.equal(inc.timeline[0].kind, 'raised');
+  assert.match(inc.timeline[0].text, /Passenger aggressive/);
+  assert.ok(inc.runbook.length >= 5 && inc.runbook.every((s: any) => s.done_at === null));
+  // Ticking a step acknowledges the alert and is recorded once, even if ticked twice.
+  inc = await call('POST', `/admin/sos/${id}/notes`, 'dispatcher', { step: 'call_raiser' });
+  inc = await call('POST', `/admin/sos/${id}/notes`, 'dispatcher', { step: 'call_raiser' });
+  assert.equal(inc.alert.status, 'acknowledged');
+  assert.equal(inc.alert.handled_by_name, 'Dispatch Desk');
+  assert.ok(inc.runbook.find((s: any) => s.key === 'call_raiser').done_at);
+  assert.equal(inc.timeline.filter((e: any) => e.kind === 'step').length, 1);
+  assert.equal(inc.timeline.filter((e: any) => e.kind === 'acknowledged').length, 1);
+  inc = await call('POST', `/admin/sos/${id}/notes`, 'dispatcher', { text: 'Driver safe, passenger left the car' });
+  assert.ok(inc.timeline.some((e: any) => e.kind === 'note' && e.by === 'Dispatch Desk'));
+  assert.equal((await call('POST', `/admin/sos/${id}/notes`, 'dispatcher', {})).status, 400);
+  assert.equal((await call('POST', `/admin/sos/${id}/notes`, 'dispatcher', { step: 'not_a_step' })).status, 400);
+  assert.equal((await call('GET', '/admin/sos/not-a-uuid', 'dispatcher')).status, 404);
+  // Resolve: earlier notes kept, outcome added; no going back to acknowledged.
+  await call('PATCH', `/admin/sos/${id}`, 'dispatcher', { status: 'acknowledged', notes: 'Called driver' });
+  const res = await call('PATCH', `/admin/sos/${id}`, 'dispatcher', { status: 'resolved', notes: 'No injuries. Rider account blocked.' });
+  assert.equal(res.item.status, 'resolved');
+  assert.equal(res.item.notes, 'Called driver\nNo injuries. Rider account blocked.');
+  assert.equal((await call('PATCH', `/admin/sos/${id}`, 'dispatcher', { status: 'acknowledged' })).error, 'already_resolved');
+  inc = await call('GET', `/admin/sos/${id}`, 'dispatcher');
+  assert.deepEqual(inc.timeline.map((e: any) => e.kind), ['raised', 'step', 'acknowledged', 'note', 'acknowledged', 'resolved']);
+  assert.equal((await call('GET', `/admin/sos/${id}`, 'rider')).status, 403);
+});
+
+test('bulk document review: only pending docs change, one notification per driver, audited; reject needs a reason', async () => {
+  const d2 = (await one(`SELECT user_id FROM drivers d JOIN users u ON u.id = d.user_id WHERE u.phone = '+61400000012'`))!.user_id;
+  const docs = (await q(`INSERT INTO driver_documents (driver_id, type, number, expires_at, status) VALUES
+      ($1,'first_aid','FA1','2030-01-01','pending'), ($1,'wwcc','W1','2030-01-01','pending'), ($1,'medical','M1',null,'approved') RETURNING id`, [d2])).map((r: any) => r.id);
+  try {
+    assert.equal((await call('POST', '/admin/documents/review', 'admin', { ids: docs, status: 'rejected' })).error, 'note_required');
+    const before = (await one(`SELECT count(*)::int n FROM notifications WHERE user_id = $1`, [d2]))!.n;
+    const ghost = '00000000-0000-4000-8000-000000000000';
+    const r = await call('POST', '/admin/documents/review', 'admin', { ids: [...docs, docs[0], ghost], status: 'approved' });
+    assert.deepEqual(r.reviewed.sort(), docs.slice(0, 2).sort());
+    assert.deepEqual(r.skipped.map((s: any) => s.reason).sort(), ['not_found', 'not_pending']);
+    await flushBackground(2000);
+    const notes = await q(`SELECT title FROM notifications WHERE user_id = $1 ORDER BY id DESC LIMIT 3`, [d2]);
+    assert.equal((await one(`SELECT count(*)::int n FROM notifications WHERE user_id = $1`, [d2]))!.n, before + 1, 'one notification for the batch');
+    assert.equal(notes[0].title, '2 documents approved');
+    const a = await call('GET', `/admin/audit?action=document_review&q=${docs[0]}`, 'admin');
+    assert.equal(a.items.length, 1);
+    assert.equal((await call('POST', '/admin/documents/review', 'dispatcher', { ids: docs, status: 'approved' })).status, 403);
+  } finally { await q(`DELETE FROM driver_documents WHERE id = ANY($1::uuid[])`, [docs]); }
+});
+
+test('CSV exports, daily summary and audit log filters', async () => {
+  if (!tokens.dispatcher) await login('dispatcher', '+61400000002', 'admin');
+  const today = new Date(Date.now() + 9.5 * 3600e3).toISOString().slice(0, 10);
+  // Trips CSV: dispatchers may export trips; no phone numbers; formula-looking text is defused.
+  const evil = await call('POST', '/admin/bookings', 'admin', { phone: '0400 765 999', name: '=HYPERLINK("x")', trip: { kind: 'courier', service: 'courier_s', pickup: { ...TODD_MALL, address: '+SUM(A1)' }, dropoff: HOSPITAL,
+    parcel: { size: 'S', description: 'Box', sender_name: 'Evil', sender_phone: '0400765999', recipient_name: 'Friend', recipient_phone: '0400765998', prohibited_ack: true } } });
+  assert.equal(evil.status, 201, JSON.stringify(evil));
+  const res = await rawAs('GET', `/admin/export/trips.csv?from=${today}&to=${today}`, 'dispatcher');
+  assert.equal(res.statusCode, 200);
+  assert.match(String(res.headers['content-type']), /^text\/csv/);
+  assert.match(String(res.headers['content-disposition']), /attachment; filename="dingogo-trips-/);
+  assert.equal(res.headers['cache-control'], 'no-store');
+  const lines = parseCsv(res.body);
+  assert.match(lines[0], /^Ref,Type,Service,Status/);
+  const row = lines.find((l) => l.startsWith(evil.trip.ref))!;
+  assert.ok(row.includes(`"'=HYPERLINK(""x"")"`), row);
+  assert.ok(row.includes(`'+SUM(A1)`), row);
+  assert.ok(!/\+61\d{9}|0400765999/.test(res.body), 'no phone numbers in exports');
+  assert.equal((await rawAs('GET', '/admin/export/trips.csv?from=2020-01-01&to=2026-01-01', 'dispatcher')).statusCode, 400, 'over a year');
+  // Money exports are admin-only.
+  assert.equal((await rawAs('GET', '/admin/export/payouts.csv', 'dispatcher')).statusCode, 403);
+  assert.equal((await rawAs('GET', '/admin/export/nope.csv', 'admin')).statusCode, 404);
+  const levy = await call('GET', '/admin/reports/levy', 'admin');
+  const lv = parseCsv((await rawAs('GET', `/admin/export/levy.csv?month=${levy.month}`, 'admin')).body);
+  assert.equal(lv[0], 'Month,State,Driver,Passenger trips,Levy per trip ($),Levy payable ($)');
+  assert.equal(lv[lv.length - 1], `${levy.month},NT,Total,${levy.passenger_trips},1.00,${(levy.levy_payable_cents / 100).toFixed(2)}`);
+  const gst = parseCsv((await rawAs('GET', '/admin/export/gst.csv', 'admin')).body);
+  assert.match(gst[gst.length - 1], /DingoGo service fees,driver ledger/);
+  const pay = parseCsv((await rawAs('GET', `/admin/export/payouts.csv?from=2020-01-01&to=${today}`, 'admin')).body);
+  assert.match(pay[pay.length - 1], /,Total,/);
+  // Exports are audited.
+  const ex = await call('GET', '/admin/audit?action=export&entity_id=trips.csv', 'admin');
+  assert.ok(ex.items.length >= 1 && ex.items[0].actor_name === 'Dispatch Desk');
+
+  // Daily summary (Darwin day).
+  const s = await call('GET', `/admin/summary/daily?date=${today}`, 'dispatcher');
+  assert.equal(s.date, today);
+  assert.ok(s.trips.requested >= 2 && s.trips.courier >= 2 && s.trips.phone_or_staff >= 2);
+  assert.ok(s.safety.raised >= 1);
+  assert.equal(typeof s.attention.open_sos, 'number');
+  assert.ok(s.documents.approved >= 2, 'bulk review counted');
+  assert.ok(Array.isArray(s.cancellations));
+  const old = await call('GET', '/admin/summary/daily?date=2001-02-03', 'dispatcher');
+  assert.equal(old.trips.requested, 0);
+  assert.equal((await call('GET', '/admin/summary/daily?date=garbage', 'dispatcher')).date, today);
+
+  // Audit filters + paging.
+  const page1 = await call('GET', '/admin/audit?limit=2', 'admin');
+  assert.equal(page1.items.length, 2);
+  assert.ok(page1.next_before && page1.actions.length && page1.actors.length);
+  const page2 = await call('GET', `/admin/audit?limit=2&before=${page1.next_before}`, 'admin');
+  assert.ok(Number(page2.items[0].id) < Number(page1.items[1].id));
+  assert.equal(page2.actions, undefined, 'menus only on the first page');
+  assert.equal((await call('GET', '/admin/audit?before=abc', 'admin')).status, 400);
+  assert.equal((await call('GET', `/admin/audit?from=2001-01-01&to=2001-01-02`, 'admin')).items.length, 0);
+  assert.equal((await call('GET', '/admin/audit', 'dispatcher')).status, 403);
+});

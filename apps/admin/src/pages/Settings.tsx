@@ -1,18 +1,19 @@
 import { useEffect, useState } from 'react';
 import { get, patch, post, put, dateTime, useLoad } from '@dingogo/shared';
 import { Page } from '../ctx';
-import { Chip, ErrorMsg, Section, Table, Tabs, useRun } from '../ui';
+import { Chip, ErrorMsg, Section, Table, Tabs, exportCsv, useAsk, useRun } from '../ui';
 import { ROLE, humanize, label } from '../labels';
 
 export default function Settings() {
   const [tab, setTab] = useState<'settings' | 'broadcast' | 'users' | 'audit'>('settings');
   return (
     <Page title="Settings & broadcast">
-      <Tabs tabs={[['settings', 'Settings'], ['broadcast', 'Broadcast'], ['users', 'Users & roles'], ['audit', 'Audit log']]} value={tab} onChange={setTab} />
+      <Tabs tabs={[['settings', 'Settings'], ['broadcast', 'Broadcast'], ['users', 'Users & roles'], ['audit', 'Audit log']]} value={tab} onChange={setTab}>
       {tab === 'settings' && <SettingsForm />}
       {tab === 'broadcast' && <Broadcast />}
       {tab === 'users' && <Users />}
       {tab === 'audit' && <Audit />}
+      </Tabs>
     </Page>
   );
 }
@@ -84,6 +85,7 @@ function Users() {
   const { data, reload } = useLoad(() => get(`/admin/users?q=${encodeURIComponent(search)}`), [search]);
   const partners = useLoad(() => get('/admin/partners'));
   const run = useRun();
+  const ask = useAsk();
   const roles = ['rider', 'driver', 'admin', 'dispatcher', 'partner', 'corporate_admin'];
   return (<>
     <NewTestAccount roles={roles} partners={partners.data?.items ?? []} onCreated={() => void reload()} />
@@ -106,7 +108,7 @@ function Users() {
           <option value="">None</option>{partners.data?.items.map((p: any) => <option key={p.id} value={p.id}>{p.name}</option>)}
         </select>) : null },
       { key: 'x', label: '', render: (u) => <button className="dg-btn dg-btn--sm dg-btn--ghost" onClick={async () => {
-        const pts = prompt(`Add (or subtract with -) Dingo Points for ${u.name}:`); if (pts && Number(pts)) { await run(() => patch(`/admin/users/${u.id}`, { add_points: Number(pts) }), 'Points adjusted'); void reload(); }
+        const pts = await ask({ title: 'Adjust Dingo Points', label: `Points to add for ${u.name || 'this user'} (use - to take away)`, inputMode: 'numeric', ok: 'Adjust' }); if (pts && Number(pts)) { await run(() => patch(`/admin/users/${u.id}`, { add_points: Number(pts) }), 'Points adjusted'); void reload(); }
       }}>Adjust points</button> },
     ]} />
   </>);
@@ -161,11 +163,61 @@ function NewTestAccount({ roles, partners, onCreated }: { roles: string[]; partn
   );
 }
 
+const AUDIT_ENTITY: Record<string, string> = { trip: 'Trip', driver: 'Driver', user: 'User', sos: 'Emergency alert', driver_document: 'Driver document', vehicle: 'Car',
+  settings: 'Settings', report: 'Report / export', compliance_flag: 'Compliance flag', support_ticket: 'Support ticket', hire_requests: 'Hire request',
+  driver_applications: 'Driver application', enquiries: 'Enquiry', notifications: 'Broadcast' };
+
 function Audit() {
-  const { data } = useLoad(() => get('/admin/audit'));
-  return <Table rows={data?.items} empty="No admin actions recorded yet." cols={[
-    { key: 'at', label: 'When', nowrap: true, render: (a) => dateTime(a.at) }, { key: 'actor_name', label: 'Who' }, { key: 'action', label: 'Action', render: (a) => humanize(a.action) },
-    { key: 'entity', label: 'What', render: (a) => `${a.entity ?? ''} ${a.entity_id ? String(a.entity_id).slice(0, 12) : ''}` },
-    { key: 'data', label: 'Details', render: (a) => <code style={{ fontSize: '.78rem', wordBreak: 'break-all' }}>{a.data ? JSON.stringify(a.data).slice(0, 160) : ''}</code> },
-  ]} />;
+  const blank = { actor: '', action: '', entity: '', entity_id: '', from: '', to: '', q: '' };
+  const [f, setF] = useState(blank);
+  const [applied, setApplied] = useState(blank);
+  const [items, setItems] = useState<any[] | null>(null);
+  const [menus, setMenus] = useState<any>({ actions: [], entities: [], actors: [] });
+  const [next, setNext] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [open, setOpen] = useState<number | null>(null);
+  const qs = (x: typeof blank, before?: string) => new URLSearchParams(Object.entries({ ...x, ...(before ? { before } : {}) }).filter(([, v]) => v)).toString();
+  async function load(x: typeof blank, before?: string) {
+    setErr(null);
+    try {
+      const r = await get(`/admin/audit?${qs(x, before)}`);
+      setItems((cur) => (before ? [...(cur ?? []), ...r.items] : r.items));
+      if (!before) setMenus({ actions: r.actions, entities: r.entities, actors: r.actors });
+      setNext(r.next_before);
+    } catch (e: any) { setErr(e.message); setItems([]); }
+  }
+  useEffect(() => { void load(applied); }, [applied]); // eslint-disable-line
+  const set = (k: keyof typeof blank, v: string) => setF({ ...f, [k]: v });
+  const sel = { minHeight: 38, width: 'auto' } as const;
+  return (<>
+    <form className="toolbar" onSubmit={(e) => { e.preventDefault(); setApplied(f); }} aria-label="Filter the audit log">
+      <select className="dg-select" style={sel} value={f.actor} onChange={(e) => set('actor', e.target.value)} aria-label="Who">
+        <option value="">Anyone</option>{menus.actors?.map((a: any) => <option key={a.id} value={a.id}>{a.name || a.id.slice(0, 8)} ({label(ROLE, a.role)})</option>)}</select>
+      <select className="dg-select" style={sel} value={f.action} onChange={(e) => set('action', e.target.value)} aria-label="Action">
+        <option value="">Any action</option>{menus.actions?.map((a: any) => <option key={a.action} value={a.action}>{humanize(a.action)} ({a.n})</option>)}</select>
+      <select className="dg-select" style={sel} value={f.entity} onChange={(e) => set('entity', e.target.value)} aria-label="Record type">
+        <option value="">Any record</option>{menus.entities?.map((a: any) => <option key={a.entity} value={a.entity}>{AUDIT_ENTITY[a.entity] ?? humanize(a.entity)} ({a.n})</option>)}</select>
+      <input className="dg-input" style={{ ...sel, maxWidth: 220 }} value={f.q} onChange={(e) => set('q', e.target.value)} placeholder="Text in details or record id" aria-label="Search details" />
+      <label className="inline-field"><span>From</span><input className="dg-input" type="date" style={sel} value={f.from} onChange={(e) => set('from', e.target.value)} /></label>
+      <label className="inline-field"><span>To</span><input className="dg-input" type="date" style={sel} value={f.to} onChange={(e) => set('to', e.target.value)} /></label>
+      <button className="dg-btn dg-btn--sm dg-btn--dark">Filter</button>
+      <button type="button" className="dg-btn dg-btn--sm dg-btn--ghost" onClick={() => { setF(blank); setApplied(blank); }}>Clear</button>
+      <button type="button" className="dg-btn dg-btn--sm dg-btn--ghost" disabled={!items?.length} onClick={() => items && exportCsv('dingogo-audit-log.csv', items, [
+        { key: 'at', label: 'When' }, { key: 'actor_name', label: 'Who' }, { key: 'actor_role', label: 'Role' }, { key: 'action', label: 'Action' },
+        { key: 'entity', label: 'Record type' }, { key: 'entity_id', label: 'Record id' }, { key: 'data', label: 'Details' }])}>Export shown ({items?.length ?? 0})</button>
+    </form>
+    <ErrorMsg error={err} />
+    <Table rows={items} rowKey={(a) => String(a.id)} empty="No staff actions match." cols={[
+      { key: 'at', label: 'When', nowrap: true, render: (a) => dateTime(a.at) },
+      { key: 'actor_name', label: 'Who', render: (a) => <>{a.actor_name ?? <span className="dg-muted">System</span>}{a.actor_role && <span className="sub">{label(ROLE, a.actor_role)}</span>}</> },
+      { key: 'action', label: 'Action', render: (a) => humanize(a.action) },
+      { key: 'entity', label: 'Record', render: (a) => <>{AUDIT_ENTITY[a.entity] ?? a.entity ?? ''}{a.entity_id && <span className="sub"><code>{String(a.entity_id).slice(0, 13)}</code></span>}</> },
+      { key: 'data', label: 'Details', render: (a) => !a.data ? null : (
+        <span>
+          <button type="button" className="linkish" aria-expanded={open === a.id} onClick={() => setOpen(open === a.id ? null : a.id)}>{open === a.id ? 'Hide' : 'Show'} details</button>
+          {open === a.id ? <pre className="audit-json">{JSON.stringify(a.data, null, 2)}</pre> : <code className="audit-peek">{JSON.stringify(a.data).slice(0, 90)}</code>}
+        </span>) },
+    ]} />
+    {next && <div className="actions"><button className="dg-btn dg-btn--sm dg-btn--ghost" onClick={() => void load(applied, next)}>Load older</button></div>}
+  </>);
 }

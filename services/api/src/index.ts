@@ -14,6 +14,7 @@ import authRoutes from './routes/auth.js';
 import riderRoutes from './routes/rider.js';
 import driverRoutes from './routes/driver.js';
 import adminRoutes from './routes/admin.js';
+import opsRoutes from './routes/ops.js';
 import publicRoutes from './routes/public.js';
 import partnerRoutes from './routes/partner.js';
 import displayRoutes from './routes/display.js';
@@ -128,6 +129,7 @@ export async function buildServer() {
   await app.register(riderRoutes);
   await app.register(driverRoutes);
   await app.register(adminRoutes);
+  await app.register(opsRoutes);
   await app.register(partnerRoutes);
   await app.register(displayRoutes);
   await app.register(uploadRoutes);

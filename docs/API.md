@@ -113,6 +113,7 @@ Base URL: `http://localhost:4000` in development. Auth: `Authorization: Bearer <
 | GET | `/admin/drivers/:id` |
 | PATCH | `/admin/drivers/:id` |
 | POST | `/admin/documents/:id/review` |
+| POST | `/admin/documents/review` (bulk, Round 7) |
 | GET | `/admin/vehicles?status=pending\|approved\|rejected\|all` |
 | POST | `/admin/vehicles/:id/review` |
 | POST | `/admin/vehicles/:id/display-key` |
@@ -126,7 +127,9 @@ Base URL: `http://localhost:4000` in development. Auth: `Authorization: Bearer <
 | GET | `/admin/payouts` |
 | POST | `/admin/payouts/:driverId` |
 | GET | `/admin/sos` |
+| GET | `/admin/sos/:id` (incident view, Round 7) |
 | PATCH | `/admin/sos/:id` |
+| POST | `/admin/sos/:id/notes` (Round 7) |
 | GET | `/admin/support` |
 | PATCH | `/admin/support/:id` |
 | GET | `/admin/compliance` |
@@ -140,7 +143,10 @@ Base URL: `http://localhost:4000` in development. Auth: `Authorization: Bearer <
 | GET | `/admin/settings` |
 | PUT | `/admin/settings/:key` |
 | POST | `/admin/broadcast` |
-| GET | `/admin/audit` |
+| GET | `/admin/audit` (filters, Round 7) |
+| GET | `/admin/search?q=` (Round 7) |
+| GET | `/admin/export/:name` (`trips.csv`, `payouts.csv`, `levy.csv`, `gst.csv`; Round 7) |
+| GET | `/admin/summary/daily?date=` (Round 7) |
 | POST | `/admin/vehicles` (table `vehicles`; GET is the custom list above) |
 | PATCH | `/admin/vehicles/:id` |
 | GET / POST | `/admin/fares` (table `fare_rules`) |
@@ -444,3 +450,34 @@ Top-up = max(0, rate × engaged hours − counted earnings). Table `driver_pay_w
   None while a replacement is waiting. No new table: de-duplicated against the driver's notifications.
 - **Clients.** Shared `api()`/`post()` take `{ headers, timeoutMs }`. Shared `useModal(ref, onClose?)` gives a portal dialog modal behaviour (inert app, focus in
   and back, Tab wraps, Escape).
+
+## Admin and operations tooling (Round 7)
+
+- **Search everything.** `GET /admin/search?q=` (admin, dispatcher; 2–100 chars) → `{ q, trips, drivers, people, vehicles }`, up to 8 each. Trips by ref
+  (exact ref first) or rider/driver phone; drivers by name, phone or rego; riders and staff (not drivers) by name, email or phone; cars by rego or VIN
+  (with `driver_id` of the driver using it or its owner). Phones match in any format (`0400 000 100`, `+61 400…`, the last digits); regos ignore case and spaces.
+- **Trip list filters.** `GET /admin/trips` adds `from`/`to` (Darwin dates on `requested_at`), `status=cancelled` (any cancel), `rider_id`, `driver_id`; `q` also
+  matches driver name and phone (any format) and rego; an unknown `status` is 400 `invalid_status`. Rows add `rego`.
+- **SOS incident view.** `GET /admin/sos/:id` → `{ alert (with user_name, user_phone, handled_by_name), trip (rider, driver, car, share_token, driver's last
+  position) | null, track (from 30 min before the alert), timeline: [{ at, kind: raised|acknowledged|step|note|resolved|trip, text, by }], runbook: [{ key, label,
+  done_at, done_by }], runbook_steps }`. `POST /admin/sos/:id/notes` `{ text? (≤1000), step? (runbook key) }` (one needed) adds a note or ticks a step (each
+  step once) and returns the incident; the first action on an open alert acknowledges it. `PATCH /admin/sos/:id` now **adds** `notes` to what is recorded
+  (never overwrites) and refuses to change a resolved alert (409 `already_resolved`). Notes, steps, acknowledge and resolve are kept in `audit_log`
+  (`entity = 'sos'`), so no new table.
+- **Bulk document review.** `POST /admin/documents/review` (admin) `{ ids: uuid[1..50], status: approved|rejected, note? }` → `{ reviewed: [id], skipped: [{ id,
+  reason: not_pending|not_found }] }`. Only documents still `pending` change; rejecting needs a `note` (400 `note_required`); one notification per driver.
+- **CSV exports.** `GET /admin/export/trips.csv?from&to&status&kind&q` (admin, dispatcher; default last 30 days, at most a year → else 400 `bad_range`; up to
+  50,000 rows; names, places and money but **no phone numbers or PINs**), `payouts.csv?from&to`, `levy.csv?month&state`, `gst.csv?from&to` (admin). UTF-8 with
+  BOM, CRLF, Darwin times; text that a spreadsheet would run as a formula gets a leading apostrophe. `Content-Disposition: attachment`, `Cache-Control:
+  no-store`. Every export is audited (`action = 'export'`, `entity_id` = the file name, the filters and row count).
+- **Daily ops summary.** `GET /admin/summary/daily?date=YYYY-MM-DD` (admin, dispatcher; Darwin day, default today) → `{ date, trips (requested by type/channel
+  and outcome), completed (count, passenger trips, fares, tips, average accept-to-arrival minutes, rating, km), cancellations [{ reason, n }], safety (alerts raised
+  and resolved, flags by kind), support, documents (approved/rejected), drivers (drove, approved, applications), money (payouts, refunds, service fees),
+  attention (now: open SOS/flags/tickets, documents and cars to check, new applications, trips searching > 5 min, bookings in the next 2 h) }`.
+- **Audit log.** `GET /admin/audit` (admin) filters `actor` (uuid), `action`, `entity`, `entity_id`, `from`/`to` (Darwin dates), `q` (text in details or ids),
+  `limit` (≤200, default 100), `before` (id cursor) → `{ items (with actor_name, actor_role), next_before, actions, entities, actors }` (menus on the first page
+  only). Newly audited: document review (`document_review`), SOS (`sos_*`), compliance flag status (`flag_<status>`), support tickets (`ticket_<status>`),
+  hire requests / applications / enquiries (`status`), ops trip cancel (`cancel`), exports.
+- **Admin app.** Search box on every page (`/`), `g` then `l d t s i r f` to change page, `?` for the list; trip filters in the URL plus quick and saved filters
+  (kept in the browser); incident drawer with runbook, map, notes and timeline; bulk approve/reject; daily summary on the Dashboard (print, CSV); audit log
+  filters; drawers and dialogs are real modals; tabs use arrow keys. Migration `013_ops_indexes.sql` only adds indexes.

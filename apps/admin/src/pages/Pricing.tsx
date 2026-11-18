@@ -21,7 +21,7 @@ export default function Pricing() {
   const [tab, setTab] = useState<'fares' | 'driver_pay' | 'zones' | 'states' | 'promos' | 'plans' | 'holidays' | 'tours'>('fares');
   return (
     <Page title="Pricing & tours">
-      <Tabs tabs={[['fares', 'Fares'], ['driver_pay', 'Driver pay'], ['zones', 'Service areas'], ['states', 'States'], ['promos', 'Promo codes'], ['plans', 'DingoGo Pass'], ['holidays', 'Public holidays'], ['tours', 'Tours']]} value={tab} onChange={setTab} />
+      <Tabs tabs={[['fares', 'Fares'], ['driver_pay', 'Driver pay'], ['zones', 'Service areas'], ['states', 'States'], ['promos', 'Promo codes'], ['plans', 'DingoGo Pass'], ['holidays', 'Public holidays'], ['tours', 'Tours']]} value={tab} onChange={setTab}>
       {tab === 'fares' && <CrudSection title="Fare rules" path="fares" pk="service" newLabel="Add service" fields={FARE_FIELDS}
         describe={<p className="dg-muted" style={{ marginTop: 0, maxWidth: 780 }}>Benchmark: the Alice Springs taxi maximum tariff from 1 July 2026 is $5.50 flagfall plus $2.45/km on weekdays by day, and $6.80 plus $2.89/km at night and on weekends (NT Government Gazette S53). Taxis add a card surcharge. All DingoGo fares include GST.</p>}
         cols={[
@@ -86,6 +86,7 @@ export default function Pricing() {
         { key: 'requires_permit', label: 'Permit', render: (t) => (t.requires_permit ? <Chip tone="ochre">Required</Chip> : 'No') },
         { key: 'active', label: 'Status', render: (t) => (t.active ? <Chip tone="green">Bookable</Chip> : <Chip>Hidden</Chip>) },
       ]} />}
+      </Tabs>
     </Page>
   );
 }

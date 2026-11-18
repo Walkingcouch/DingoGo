@@ -10,7 +10,7 @@ export default function Loyalty() {
   const opts: [string, string][] = (partners.data?.items ?? []).map((p: any) => [p.id, p.name]);
   return (
     <Page title="Loyalty & vouchers">
-      <Tabs tabs={[['partners', 'Partner cafés'], ['rewards', 'Rewards'], ['redemptions', 'Redemptions & settlement'], ['vouchers', 'Prepaid vouchers']]} value={tab} onChange={setTab} />
+      <Tabs tabs={[['partners', 'Partner cafés'], ['rewards', 'Rewards'], ['redemptions', 'Redemptions & settlement'], ['vouchers', 'Prepaid vouchers']]} value={tab} onChange={setTab}>
       {tab === 'partners' && <CrudSection title="Partners" path="partners" newLabel="Add partner" fields={[
         { key: 'name', label: 'Business name', required: true }, { key: 'kind', label: 'Type', type: 'select', required: true, options: [['cafe', 'Café'], ['shop', 'Shop'], ['community', 'Community organisation'], ['other', 'Other']] },
         { key: 'address', label: 'Address', full: true }, { key: 'lat', label: 'Latitude', type: 'number', step: 0.0001 }, { key: 'lng', label: 'Longitude', type: 'number', step: 0.0001 },
@@ -35,6 +35,7 @@ export default function Loyalty() {
       ]} />}
       {tab === 'redemptions' && <Redemptions />}
       {tab === 'vouchers' && <Vouchers partners={opts} />}
+      </Tabs>
     </Page>
   );
 }
