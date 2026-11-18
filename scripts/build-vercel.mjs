@@ -42,10 +42,19 @@ sh(`npx esbuild src/vercel.ts --bundle --platform=node --format=esm --target=nod
 fs.writeFileSync(path.join(fn, '.vc-config.json'), JSON.stringify({ runtime: 'nodejs22.x', handler: 'index.mjs', launcherType: 'Nodejs', maxDuration: 30, shouldAddHelpers: false }, null, 2));
 fs.writeFileSync(path.join(fn, 'package.json'), JSON.stringify({ type: 'module' }));
 
+// Security headers for the website and apps (the API sets its own). Referrer-Policy keeps share-trip tokens in /track/…
+// URLs from leaking to map-tile servers; Permissions-Policy allows only what the apps use (location, camera for POD photos).
+const staticHeaders = {
+  'X-Content-Type-Options': 'nosniff',
+  'Referrer-Policy': 'strict-origin-when-cross-origin',
+  'X-Frame-Options': 'SAMEORIGIN',
+  'Permissions-Policy': 'camera=(self), geolocation=(self), microphone=(), payment=(self), usb=(), interest-cohort=()',
+};
 const spa = (base) => ({ src: `^${base}(.*)$`, dest: `${base}index.html` });
 fs.writeFileSync(path.join(out, 'config.json'), JSON.stringify({
   version: 3,
   routes: [
+    { src: '^/(?!api(?:/|$)).*$', headers: staticHeaders, continue: true },
     { src: '^/(rider|driver|admin|partner|roof)$', status: 308, headers: { Location: '/$1/' } },
     { src: '^/api/?(.*)$', dest: '/api?__path=$1' },
     { handle: 'filesystem' },

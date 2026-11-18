@@ -1,12 +1,18 @@
 import type { FastifyInstance } from 'fastify';
 import { one, q } from '../db.js';
-import { notFound } from '../lib/errors.js';
+import { ApiError, notFound } from '../lib/errors.js';
+import { config } from '../config.js';
+import { limit } from '../lib/rateLimit.js';
 import { quoteFare } from '../lib/fares.js';
 import { lastRouteError, route } from '../lib/geo.js';
 import { searchPlaces } from '../lib/places.js';
 import { latLng, parse, z } from '../lib/validate.js';
 import { toOps } from '../realtime.js';
-import { zoneFor } from '../services/trips.js';
+import { shareLinkExpired, zoneFor } from '../services/trips.js';
+
+/** Website forms are open to anyone: cap them per IP so a bot can't flood the ops inbox. */
+const formLimit = (req: { ip: string }) =>
+  limit('public_form_ip', req.ip, config.rateLimits.publicFormPerIp, 3600, 'Thanks — we’ve had a lot of messages from this connection. Please try again in an hour, or call us.');
 import { FUEL_TYPES, vehicleAgeRule } from '../lib/vehicles.js';
 import { DOCUMENT_TYPES, listJurisdictions } from '../lib/jurisdictions.js';
 
@@ -36,11 +42,13 @@ export default async function publicRoutes(app: FastifyInstance) {
     document_types: DOCUMENT_TYPES,
   }));
 
-  app.get('/public/places', async (req) => ({ places: searchPlaces(String((req.query as any).q ?? '')) }));
+  app.get('/public/places', async (req) => ({ places: searchPlaces(String((req.query as any).q ?? '').slice(0, 100)) }));
 
   /** Anonymous fare estimate for the website. */
   app.post('/public/estimate', async (req) => {
-    const b = parse(z.object({ service: z.string().default('ride'), pickup: latLng, dropoff: latLng }), req.body);
+    const b = parse(z.object({ service: z.string().max(40).default('ride'), pickup: latLng, dropoff: latLng }), req.body);
+    // Each estimate can use a call to the routing provider (free daily quota): cap per IP.
+    await limit('estimate_ip', req.ip, config.rateLimits.estimatePerIp10Min, 600, 'Too many price checks. Please wait a few minutes.');
     const rule = await one('SELECT * FROM fare_rules WHERE service = $1 AND active', [b.service]);
     if (!rule) throw notFound('Service');
     const zone = await zoneFor(b.pickup);
@@ -62,15 +70,16 @@ export default async function publicRoutes(app: FastifyInstance) {
               t.requested_at, t.accepted_at, t.started_at, t.completed_at, t.est_duration_s,
               split_part(du.name, ' ', 1) AS driver_first_name, v.rego, v.make, v.model, v.colour, v.fuel_type,
               (v.fuel_type IN ('electric','plug_in_hybrid','hybrid')) AS green, (v.fuel_type = 'electric') AS is_ev, d.lat AS driver_lat, d.lng AS driver_lng,
-              split_part(ru.name, ' ', 1) AS rider_first_name
+              split_part(ru.name, ' ', 1) AS rider_first_name, t.cancelled_at
        FROM trips t JOIN users ru ON ru.id = t.rider_id LEFT JOIN users du ON du.id = t.driver_id
        LEFT JOIN drivers d ON d.user_id = t.driver_id LEFT JOIN vehicles v ON v.id = t.vehicle_id
-       WHERE t.share_token = $1`, [(req.params as any).token]);
+       WHERE t.share_token = $1`, [String((req.params as any).token).slice(0, 100)]);
     if (!t) throw notFound('Trip');
+    if (shareLinkExpired(t)) throw new ApiError(410, 'link_expired', 'This trip has finished. Tracking links stop working a day after the trip ends.');
     const live = ['accepted', 'arrived', 'in_progress'].includes(t.status);
     if (!live) { delete t.driver_lat; delete t.driver_lng; }
     const track = live ? await q('SELECT lat, lng FROM trip_track WHERE trip_id = $1 ORDER BY at DESC LIMIT 200', [t.id]) : [];
-    const { id, ...rest } = t;
+    const { id, cancelled_at, ...rest } = t;
     return { trip: rest, track: track.reverse(), live };
   });
 
@@ -80,6 +89,7 @@ export default async function publicRoutes(app: FastifyInstance) {
       has_licence_years: z.number().int().min(0).max(70).optional(), has_cpv_authority: z.boolean().default(false),
       wants_lease: z.boolean().default(false), languages: z.string().max(120).optional(), message: z.string().max(1000).optional(),
     }), req.body);
+    await formLimit(req);
     const row = await one(
       `INSERT INTO driver_applications (name, phone, email, suburb, has_licence_years, has_cpv_authority, wants_lease, languages, message)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id, created_at`,
@@ -96,6 +106,7 @@ export default async function publicRoutes(app: FastifyInstance) {
       organisation: z.string().max(120).optional(), event_date: z.string().date().optional(), passengers: z.number().int().min(1).max(500).optional(),
       vehicles: z.number().int().min(1).max(20).optional(), details: z.string().max(2000).optional(),
     }), req.body);
+    await formLimit(req);
     const row = await one(
       `INSERT INTO hire_requests (kind, contact_name, contact_email, contact_phone, organisation, event_date, passengers, vehicles, details)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id, created_at`,
@@ -110,6 +121,7 @@ export default async function publicRoutes(app: FastifyInstance) {
       kind: z.enum(['advertise', 'partner', 'general', 'media']), name: z.string().min(2).max(80), email: z.string().email(),
       phone: z.string().max(20).optional(), organisation: z.string().max(120).optional(), message: z.string().min(5).max(2000),
     }), req.body);
+    await formLimit(req);
     const row = await one(`INSERT INTO enquiries (kind, name, email, phone, organisation, message) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
       [b.kind, b.name, b.email, b.phone ?? null, b.organisation ?? null, b.message]);
     reply.code(201);

@@ -300,3 +300,40 @@ Events: `offer.new`, `offer.expired`, `trip.updated`, `driver.location`, `notifi
 - `PATCH /driver/me` — `female_driver` can't be changed by the driver (403); admins set it in `PATCH /admin/drivers/:id`.
 - `POST /wallet/voucher` — wrong codes are counted (5 per hour, then 429 `too_many_attempts`).
 - `GET /uploads/:name` sends `X-Content-Type-Options: nosniff`.
+
+## Privacy and security (Round 2, Nov 2026)
+
+**Private uploads.** Uploads with purpose `document` or `pod` are private. The database stores `/uploads/<name>`; every API response signs these
+references in `*_url` fields to `/uploads/<name>?exp=<unix>&sig=<hmac>` (about 1 h, `UPLOAD_LINK_TTL_S`; expiry rounded up to 10 minutes so polled pages get a stable URL).
+- `GET /uploads/:name` (private): valid `exp`+`sig` → file; expired → 403 `link_expired`; bad sig → 403; no sig → needs a bearer token of the owner, admin/dispatcher,
+  or (POD photo) the trip's rider/driver (401 without a token, 404 otherwise). `ad`/`avatar` uploads stay public. Responses: `nosniff`, `Referrer-Policy: no-referrer`,
+  images `CSP: default-src 'none'; sandbox`, PDFs `Content-Disposition: inline`.
+- `GET /uploads/:name/link` (signed in; same viewers) → `{ url }` fresh signed link. Shared `FileLink` component uses it when a link is about to lapse.
+- `POST /uploads` → `{ url, view_url }` (`view_url` signed for private kinds). Purposes by role: `ad` admin only; `document`, `pod` drivers and admins (403 otherwise).
+  The bytes must match the type (PNG/JPEG/WebP/PDF signature) → 400 `bad_file`. 30 uploads per hour per account → 429 `rate_limited`.
+- `POST /driver/documents` `file_url` and `POST /driver/trips/:id/complete` `pod_photo_url` must be the caller's own upload of that purpose (plain or signed form accepted,
+  stored plain) → 400 `invalid_file`.
+
+**Rate limits** (table `rate_events`, migration 011; client IP from `X-Forwarded-For` when `TRUST_PROXY`/Vercel). All 429:
+- `POST /auth/otp/request`: 30 per hour per IP (`rate_limited`), on top of 1 per 30 s and 5 per hour per number.
+- `POST /auth/otp/verify`: 30 wrong codes per hour per IP → `too_many_attempts`. Per code: the 6th try → `otp_locked` (counted atomically, so parallel guesses can't exceed 5).
+  A code is single-use even if sent twice at once (second → 400 `otp_expired`). Hashes compared in constant time.
+- `POST /public/driver-applications`, `/public/hire-requests`, `/public/enquiries`: 10 per hour per IP combined (`rate_limited`).
+- `POST /public/estimate`: 60 per 10 minutes per IP (`rate_limited`).
+- Partner `POST /partner/check`, `/partner/redeem`, `/partner/vouchers/sell`: 20 wrong codes per hour per login → `too_many_attempts`.
+  `POST /partner/redeem` is conditional on the code still being issued: a second (or simultaneous) redeem → 400 `already_redeemed`.
+
+**Share links.** `GET /public/track/:token` → 410 `link_expired` once the trip ended (completed, cancelled, no drivers) more than `SHARE_LINK_HOURS` (24) ago.
+`/ws?share=` closes with 4010 in that case.
+
+**Realtime.** `/ws?token=` checks the account in the database: deleted/blocked → close 4001; the `ops` channel follows the database role, not the token's claim.
+Re-checked every minute (role change → 4003). `PATCH /admin/users/:id` with `blocked: true` or a `role`, and `DELETE /me`, close the user's sockets at once (4003).
+Trip subscribe ids must be UUIDs; messages over 2 KB are ignored. Apps stop reconnecting after 4001/4004/4010.
+
+**Headers** on every API response: `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, `X-Frame-Options: DENY`, HSTS (production/Vercel);
+JSON adds `Content-Security-Policy: default-src 'none'; frame-ancestors 'none'` and `Cache-Control: no-store` when signed in or on `/public/track`.
+Website and apps (Vercel and Caddy): nosniff, `Referrer-Policy: strict-origin-when-cross-origin`, `X-Frame-Options: SAMEORIGIN`, Permissions-Policy (camera, location self only).
+
+**Other.** JWTs verified as HS256 only. Blocked or deleted drivers get no offers; blocking or deleting takes them offline. `POST /driver/offers/:tripId/decline` for a trip
+you were not offered is a no-op. New length caps: `delivery_pin`/`pin` ≤ 10, `pod_photo_url` ≤ 500, push token ≤ 4096, card `provider_ref` ≤ 255, `plan_code` ≤ 40,
+quote `service` ≤ 40, voucher-sell code 4–30, place search ≤ 100 chars, `accessibility` ≤ 2,000 chars of JSON; `PATCH /admin/drivers/:id` `abn` must be 11 digits.

@@ -6,7 +6,16 @@ import { requireUser, signToken } from '../auth.js';
 import { bad, ApiError } from '../lib/errors.js';
 import { referralCode, sha256 } from '../lib/ids.js';
 import { parse, phone, z } from '../lib/validate.js';
+import { limit, record, tooMany } from '../lib/rateLimit.js';
+import { disconnectUser } from '../realtime.js';
 import { sendSms } from '../services/notify.js';
+
+/** Compare two hex hashes in constant time. */
+function sameHash(a: string, b: string) {
+  const x = Buffer.from(a, 'hex'); const y = Buffer.from(b, 'hex');
+  return x.length === y.length && x.length > 0 && crypto.timingSafeEqual(x, y);
+}
+const OTP_MAX_TRIES = 5;
 
 const publicUser = (u: any) => ({
   id: u.id, phone: u.phone, email: u.email, name: u.name, role: u.role, language: u.language,
@@ -29,6 +38,8 @@ async function isDemoPhone(p: string) {
 export default async function authRoutes(app: FastifyInstance) {
   app.post('/auth/otp/request', async (req) => {
     const body = parse(z.object({ phone }), req.body);
+    // Per IP as well as per number: one sender can't pump SMS to many numbers.
+    await limit('otp_request_ip', req.ip, config.rateLimits.otpRequestPerIp, 3600, 'Too many sign-in codes from this connection. Try again in an hour.');
     // Rate limits (stop SMS pumping & harassment): 1 request / 30 s and 5 / hour per number.
     const recent = await one(`SELECT count(*)::int n, max(at) last FROM otp_requests WHERE phone = $1 AND at > now() - interval '1 hour'`, [body.phone]);
     if (recent && recent.last && Date.now() - new Date(recent.last).getTime() < 30_000) throw new ApiError(429, 'otp_too_soon', 'Please wait 30 seconds before asking for another code');
@@ -53,17 +64,26 @@ export default async function authRoutes(app: FastifyInstance) {
       referral_code: z.string().max(20).optional(), app: z.enum(['rider', 'driver', 'admin', 'partner']).default('rider'),
     }), req.body);
 
-    const otp = await one('SELECT * FROM otp_codes WHERE phone = $1', [body.phone]);
+    if (await tooMany('otp_verify_fail_ip', req.ip, config.rateLimits.otpVerifyFailPerIp, 3600)) {
+      throw new ApiError(429, 'too_many_attempts', 'Too many wrong codes from this connection. Try again in an hour.');
+    }
     const devBypass = body.code === '000000' && (config.otpDevMode || await isDemoPhone(body.phone));
-    if (!devBypass) {
-      if (!otp || new Date(otp.expires_at) < new Date()) throw bad('otp_expired', 'Code expired — request a new one');
-      if (otp.attempts >= 5) throw new ApiError(429, 'otp_locked', 'Too many attempts — request a new code');
-      if (otp.code_hash !== sha256(body.code)) {
-        await q('UPDATE otp_codes SET attempts = attempts + 1 WHERE phone = $1', [body.phone]);
+    if (devBypass) {
+      await q('DELETE FROM otp_codes WHERE phone = $1', [body.phone]);
+    } else {
+      // Count the try before comparing, in one statement, so guesses sent at the same time can't get past the limit.
+      const otp = await one<{ code_hash: string; attempts: number }>(
+        `UPDATE otp_codes SET attempts = attempts + 1 WHERE phone = $1 AND expires_at > now() RETURNING code_hash, attempts`, [body.phone]);
+      if (!otp) throw bad('otp_expired', 'Code expired — request a new one');
+      if (otp.attempts > OTP_MAX_TRIES) throw new ApiError(429, 'otp_locked', 'Too many attempts — request a new code');
+      if (!sameHash(otp.code_hash, sha256(body.code))) {
+        await record('otp_verify_fail_ip', req.ip);
         throw bad('otp_invalid', 'Incorrect code');
       }
+      // Single use: only one of two simultaneous correct requests gets the code.
+      const used = await one('DELETE FROM otp_codes WHERE phone = $1 AND code_hash = $2 RETURNING 1', [body.phone, otp.code_hash]);
+      if (!used) throw bad('otp_expired', 'Code expired — request a new one');
     }
-    await q('DELETE FROM otp_codes WHERE phone = $1', [body.phone]);
 
     const user = await tx(async (c) => {
       let u = await one('SELECT * FROM users WHERE phone = $1 AND deleted_at IS NULL', [body.phone], c);
@@ -111,7 +131,7 @@ export default async function authRoutes(app: FastifyInstance) {
       name: z.string().min(1).max(80).optional(),
       email: z.string().email().optional().or(z.literal('')),
       language: z.string().max(8).optional(),
-      accessibility: z.record(z.string(), z.any()).optional(),
+      accessibility: z.record(z.string().max(40), z.any()).refine((v) => JSON.stringify(v).length <= 2000, 'too much detail').optional(),
       emergency_contact: z.object({ name: z.string().max(80), phone: z.string().max(20) }).nullable().optional(),
       marketing_opt_in: z.boolean().optional(),
     }), req.body);
@@ -130,7 +150,9 @@ export default async function authRoutes(app: FastifyInstance) {
     await q(`UPDATE users SET name = 'Deleted user', email = NULL, phone = 'deleted:' || id::text, emergency_contact = NULL,
              accessibility = '{}'::jsonb, marketing_opt_in = false, deleted_at = now() WHERE id = $1`, [me.id]);
     await q('DELETE FROM push_tokens WHERE user_id = $1', [me.id]);
+    await q('UPDATE drivers SET online = false WHERE user_id = $1', [me.id]);
     await q(`INSERT INTO audit_log (actor_id, action, entity, entity_id) VALUES ($1, 'account_deleted', 'user', $1)`, [me.id]);
+    disconnectUser(me.id, 'account deleted');
     return { ok: true };
   });
 
@@ -145,7 +167,7 @@ export default async function authRoutes(app: FastifyInstance) {
 
   app.post('/me/push-token', async (req) => {
     const me = await requireUser(req);
-    const b = parse(z.object({ token: z.string().min(10), platform: z.enum(['ios', 'android', 'web']) }), req.body);
+    const b = parse(z.object({ token: z.string().min(10).max(4096), platform: z.enum(['ios', 'android', 'web']) }), req.body);
     await q(`INSERT INTO push_tokens (user_id, token, platform) VALUES ($1,$2,$3) ON CONFLICT (user_id, token) DO UPDATE SET updated_at = now()`,
       [me.id, b.token, b.platform]);
     return { ok: true };

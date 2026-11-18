@@ -45,7 +45,7 @@ export default async function displayRoutes(app: FastifyInstance) {
 
   app.post('/display/plays', async (req) => {
     const v = await vehicleFor(req);
-    const b = parse(z.object({ plays: z.array(z.object({ campaign_id: z.string(), at: z.string().datetime().optional(), lat: z.number().optional(), lng: z.number().optional(), seconds: z.number().int().min(1).max(120).default(10) })).max(500) }), req.body);
+    const b = parse(z.object({ plays: z.array(z.object({ campaign_id: z.string().max(64), at: z.string().datetime().optional(), lat: z.number().optional(), lng: z.number().optional(), seconds: z.number().int().min(1).max(120).default(10) })).max(500) }), req.body);
     let n = 0;
     for (const p of b.plays) {
       if (p.campaign_id.startsWith('house')) continue;

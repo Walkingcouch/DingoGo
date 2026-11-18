@@ -1,31 +1,45 @@
 # Each app is a single-page app: unknown paths fall back to index.html
+(security) {
+	header {
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+		X-Frame-Options SAMEORIGIN
+		Permissions-Policy "camera=(self), geolocation=(self), microphone=(), payment=(self), usb=(), interest-cohort=()"
+	}
+}
 :8080 {
 	root * /srv/web
 	try_files {path} /index.html
 	file_server
+	import security
 }
 :8081 {
 	root * /srv/rider
 	try_files {path} /index.html
 	file_server
+	import security
 }
 :8082 {
 	root * /srv/driver
 	try_files {path} /index.html
 	file_server
+	import security
 }
 :8083 {
 	root * /srv/admin
 	try_files {path} /index.html
 	file_server
+	import security
 }
 :8084 {
 	root * /srv/partner
 	try_files {path} /index.html
 	file_server
+	import security
 }
 :8085 {
 	root * /srv/roof
 	try_files {path} /index.html
 	file_server
+	import security
 }

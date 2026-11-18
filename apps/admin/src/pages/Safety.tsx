@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { get, patch, post, apiBase, date, dateTime, ago, assetUrl, useLoad } from '@dingogo/shared';
+import { get, patch, post, apiBase, date, dateTime, ago, FileLink, useLoad } from '@dingogo/shared';
 import { Page, useOps } from '../ctx';
 import { Chip, ErrorMsg, Section, Table, Tabs, useRun } from '../ui';
 import { DOC_TYPE, FLAG_KIND, FLAG_STATUS, ROLE, SOS_STATUS, label } from '../labels';
@@ -76,7 +76,7 @@ export default function Safety() {
         <Table rows={comp.data?.pending_documents} empty="Nothing waiting for review." cols={[
           { key: 'created_at', label: 'Uploaded', render: (d) => dateTime(d.created_at) }, { key: 'driver_name', label: 'Driver' }, { key: 'type', label: 'Document', render: (d) => label(DOC_TYPE, d.type) },
           { key: 'number', label: 'Number' }, { key: 'expires_at', label: 'Expires', render: (d) => date(d.expires_at) },
-          { key: 'file', label: 'File', render: (d) => (d.file_url ? <a href={assetUrl(d.file_url)} target="_blank" rel="noreferrer">View</a> : '—') },
+          { key: 'file', label: 'File', render: (d) => (d.file_url ? <FileLink href={d.file_url}>View</FileLink> : '—') },
           { key: 'x', label: '', render: (d) => <>
             <button className="dg-btn dg-btn--sm dg-btn--green" onClick={async () => { await run(() => post(`/admin/documents/${d.id}/review`, { status: 'approved' }), 'Approved'); reloadAll(); }}>Approve</button>{' '}
             <button className="dg-btn dg-btn--sm dg-btn--ghost" onClick={async () => { const note = prompt('Reason for rejecting (sent to the driver):'); if (note) { await run(() => post(`/admin/documents/${d.id}/review`, { status: 'rejected', note }), 'Rejected'); reloadAll(); } }}>Reject</button>

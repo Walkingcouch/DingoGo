@@ -7,6 +7,7 @@ import { FUEL_TYPES, VEHICLE_DOC_TYPES, isEv, normaliseRego, vehicleAgeRule, veh
 import { DOC_TYPE_KEYS, STATES, ageRule, docLabel, getJurisdiction, listJurisdictions } from '../lib/jurisdictions.js';
 import { decodeVin, normaliseVin, vinYearMismatch } from '../lib/vin.js';
 import { toOps } from '../realtime.js';
+import { ownUpload } from '../lib/uploads.js';
 import * as trips from '../services/trips.js';
 
 /** Credentials that must be current before a driver can go online. Rules come from the driver's state (jurisdictions table):
@@ -115,6 +116,8 @@ export default async function driverRoutes(app: FastifyInstance) {
       file_url: z.string().max(500).optional(), number: z.string().max(40).optional(), expires_at: z.string().date().optional(),
       vehicle_id: z.string().uuid().optional(),
     }), req.body);
+    // The file must be this driver's own document upload (not a link to anywhere, nor someone else's file).
+    const fileUrl = b.file_url ? await ownUpload(b.file_url, me.id, 'document') : null;
     let vehicleId: string | null = b.vehicle_id ?? null;
     if (vehicleId) {
       const own = await one('SELECT 1 FROM vehicles WHERE id = $1 AND owner_driver_id = $2', [vehicleId, me.id]);
@@ -124,7 +127,7 @@ export default async function driverRoutes(app: FastifyInstance) {
       vehicleId = (await one(`SELECT v.id FROM drivers d JOIN vehicles v ON v.id = d.vehicle_id AND v.owner_driver_id = d.user_id WHERE d.user_id = $1`, [me.id]))?.id ?? null;
     }
     const doc = await one(`INSERT INTO driver_documents (driver_id, type, file_url, number, expires_at, vehicle_id) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
-      [me.id, b.type, b.file_url ?? null, b.number ?? null, b.expires_at ?? null, vehicleId]);
+      [me.id, b.type, fileUrl, b.number ?? null, b.expires_at ?? null, vehicleId]);
     toOps('driver.document', { driver_id: me.id, type: b.type, vehicle_id: vehicleId });
     return { document: doc };
   });
@@ -329,16 +332,18 @@ export default async function driverRoutes(app: FastifyInstance) {
   });
   app.post('/driver/trips/:id/start', async (req) => {
     const me = await requireUser(req, 'driver');
-    const b = parse(z.object({ pin: z.string().optional() }), req.body);
+    const b = parse(z.object({ pin: z.string().max(10).optional() }), req.body);
     return { trip: trips.viewFor(await trips.startTrip(me.id, (req.params as any).id, b.pin), me) };
   });
   app.post('/driver/trips/:id/complete', async (req) => {
     const me = await requireUser(req, 'driver');
     const b = parse(z.object({
-      actual_distance_m: z.number().int().optional(), delivery_pin: z.string().optional(), pod_photo_url: z.string().optional(),
+      actual_distance_m: z.number().int().min(0).max(2_000_000).optional(), delivery_pin: z.string().max(10).optional(), pod_photo_url: z.string().max(500).optional(),
       pod_signature: z.string().max(200000).optional(), pod_received_by: z.string().max(80).optional(),
       lat: z.number().optional(), lng: z.number().optional(),
     }), req.body);
+    // Delivery photo must be one this driver took for a delivery.
+    if (b.pod_photo_url) b.pod_photo_url = await ownUpload(b.pod_photo_url, me.id, 'pod');
     return { trip: trips.viewFor(await trips.completeTrip(me.id, (req.params as any).id, b), me) };
   });
   app.post('/driver/trips/:id/cancel', async (req) => {

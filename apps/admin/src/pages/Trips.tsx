@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { get, post, money, dateTime, time, km, mins, STATUS_LABEL, COURIER_STATUS_LABEL, statusTone, useLoad, Icon } from '@dingogo/shared';
+import { get, post, money, dateTime, time, km, mins, STATUS_LABEL, COURIER_STATUS_LABEL, statusTone, useLoad, Icon, FileLink } from '@dingogo/shared';
 import { DgMap, type MapMarker } from '@dingogo/shared/map';
 import { Page } from '../ctx';
 import { Chip, Drawer, ErrorMsg, Modal, Table, exportCsv, useRun, type Col } from '../ui';
@@ -91,7 +91,7 @@ function TripDrawer({ id, onClose }: { id: string; onClose: () => void }) {
             <dt>Sender</dt><dd>{t.parcel.sender_name} {t.parcel.sender_phone}</dd>
             <dt>Recipient</dt><dd>{t.parcel.recipient_name} {t.parcel.recipient_phone}</dd>
             <dt>Delivery PIN</dt><dd>{t.parcel.delivery_pin}</dd>
-            <dt>Delivered</dt><dd>{t.parcel.delivered_at ? `${dateTime(t.parcel.delivered_at)} to ${t.parcel.pod_received_by ?? 'recipient'}` : 'Not yet'}</dd>
+            <dt>Delivered</dt><dd>{t.parcel.delivered_at ? `${dateTime(t.parcel.delivered_at)} to ${t.parcel.pod_received_by ?? 'recipient'}` : 'Not yet'}{t.parcel.pod_photo_url && <> · <FileLink href={t.parcel.pod_photo_url}>Delivery photo</FileLink></>}</dd>
           </dl>
         </>)}
         <h3 style={{ marginTop: 18 }}>Fare</h3>

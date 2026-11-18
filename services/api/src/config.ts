@@ -16,6 +16,28 @@ export const config = {
   /** True on Vercel/serverless: no long-running timers or WebSockets, dispatch runs on incoming requests. */
   serverless: !!env.VERCEL || env.SERVERLESS === 'true',
   corsOrigins: (env.CORS_ORIGINS ?? '*').split(','),
+  /** Trust X-Forwarded-For for the client IP (rate limits). On by default on Vercel, whose edge sets the header itself.
+   *  Set TRUST_PROXY=true (or a hop count / proxy IPs) behind your own reverse proxy; leave unset when the API faces the internet directly. */
+  trustProxy: (() => {
+    const v = env.TRUST_PROXY;
+    if (v === undefined || v === '') return !!env.VERCEL || env.SERVERLESS === 'true';
+    if (v === 'true' || v === 'false') return v === 'true';
+    return /^\d+$/.test(v) ? Number(v) : v;
+  })() as boolean | number | string,
+  /** Private uploads (driver documents, proof-of-delivery photos) are served only with a signed link this long-lived (seconds). */
+  uploadLinkTtlS: Number(env.UPLOAD_LINK_TTL_S ?? 3600),
+  /** Share-trip tracking links stop working this many hours after the trip ends (completed, cancelled or no drivers). */
+  shareLinkHours: Number(env.SHARE_LINK_HOURS ?? 24),
+  /** Rate limits (per hour unless noted). Shared through the database so they hold across serverless instances. */
+  rateLimits: {
+    otpRequestPerIp: Number(env.RATE_OTP_REQUEST_PER_IP ?? 30),
+    otpVerifyFailPerIp: Number(env.RATE_OTP_VERIFY_FAIL_PER_IP ?? 30),
+    publicFormPerIp: Number(env.RATE_PUBLIC_FORM_PER_IP ?? 10),
+    /** Per 10 minutes: each estimate may use a routing-provider call (free quota). */
+    estimatePerIp10Min: Number(env.RATE_ESTIMATE_PER_IP_10MIN ?? 60),
+    uploadsPerUser: Number(env.RATE_UPLOADS_PER_USER ?? 30),
+    partnerCodeFailsPerUser: Number(env.RATE_PARTNER_CODE_FAILS ?? 20),
+  },
   publicWebUrl: env.PUBLIC_WEB_URL ?? 'http://localhost:5173',
   stripeSecretKey: env.STRIPE_SECRET_KEY ?? '',            // sk_test_… — empty = mock payments
   twilio: {

@@ -27,7 +27,7 @@ export default function Track() {
       setTrip(r.trip); setTrack(r.track); setLive(r.live); setError(null);
       if (r.trip.driver_lat != null && r.trip.driver_lng != null) setCar({ lat: r.trip.driver_lat, lng: r.trip.driver_lng });
     } catch (e) {
-      setError(e instanceof ApiError && e.status === 404 ? 'notfound' : 'offline');
+      setError(e instanceof ApiError && e.status === 404 ? 'notfound' : e instanceof ApiError && e.status === 410 ? 'expired' : 'offline');
     }
   }, [token]);
 
@@ -41,6 +41,15 @@ export default function Track() {
   }, [token, load]);
   useInterval(() => (live ? void load() : tick((n) => n + 1)), live ? (REALTIME ? 30000 : 6000) : 60000);
 
+  if (error === 'expired' && !trip) {
+    return (
+      <section className="section"><div className="wrap prose">
+        <h1>This trip has finished</h1>
+        <p>To protect everyone's privacy, tracking links stop working a day after the trip ends.</p>
+        <Link className="dg-btn" to="/">Go to DingoGo</Link>
+      </div></section>
+    );
+  }
   if (error === 'notfound') {
     return (
       <section className="section"><div className="wrap prose">

@@ -12,7 +12,7 @@ import * as pay from '../services/payments.js';
 import * as trips from '../services/trips.js';
 
 const quoteSchema = z.object({
-  service: z.string(),
+  service: z.string().max(40),
   pickup: latLng,
   dropoff: latLng,
   scheduled_for: z.string().datetime().nullable().optional(),
@@ -52,7 +52,7 @@ const tripSchema = quoteSchema.extend({
 export default async function riderRoutes(app: FastifyInstance) {
   app.get('/places/search', async (req) => {
     const { q: s = '' } = req.query as { q?: string };
-    return { places: searchPlaces(String(s)) };
+    return { places: searchPlaces(String(s).slice(0, 100)) };
   });
 
   app.post('/quotes', async (req) => {
@@ -200,7 +200,7 @@ export default async function riderRoutes(app: FastifyInstance) {
 
   app.post('/subscriptions', async (req) => {
     const me = await requireUser(req);
-    const b = parse(z.object({ plan_code: z.string() }), req.body);
+    const b = parse(z.object({ plan_code: z.string().max(40) }), req.body);
     const plan = await one('SELECT * FROM plans WHERE code = $1 AND active', [b.plan_code]);
     if (!plan) throw notFound('Plan');
     const auth = await pay.authorise(plan.price_cents, { description: `DingoGo Pass ${plan.name}` });
@@ -236,7 +236,7 @@ export default async function riderRoutes(app: FastifyInstance) {
   /** Called after Stripe confirms the SetupIntent on-device (or in mock mode with a test card). */
   app.post('/payment-methods', async (req) => {
     const me = await requireUser(req);
-    const b = parse(z.object({ provider_ref: z.string(), brand: z.string().max(20), last4: z.string().regex(/^\d{4}$/) }), req.body);
+    const b = parse(z.object({ provider_ref: z.string().min(1).max(255), brand: z.string().max(20), last4: z.string().regex(/^\d{4}$/) }), req.body);
     const n = await one<{ n: number }>('SELECT count(*)::int n FROM payment_methods WHERE user_id = $1', [me.id]);
     const pm = await one(`INSERT INTO payment_methods (user_id, provider, provider_ref, brand, last4, is_default) VALUES ($1,'stripe',$2,$3,$4,$5) RETURNING id, brand, last4, is_default`,
       [me.id, b.provider_ref, b.brand, b.last4, n!.n === 0]);

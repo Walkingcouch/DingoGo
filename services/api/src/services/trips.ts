@@ -281,6 +281,12 @@ export function viewFor(t: any, viewer: { id: string; role: string }) {
   return out;
 }
 
+/** Share-trip links stop working SHARE_LINK_HOURS (default 24) after the trip ends: the link holds pickup/drop-off addresses. */
+export function shareLinkExpired(t: { status: string; completed_at?: Date | string | null; cancelled_at?: Date | string | null }, now = Date.now()) {
+  const ended = t.completed_at ?? (t.status.startsWith('cancelled') || t.status === 'no_drivers' ? t.cancelled_at : null);
+  return !!ended && now - new Date(ended).getTime() > config.shareLinkHours * 3600_000;
+}
+
 export function canView(t: any, u: { id: string; role: string }) {
   return u.id === t.rider_id || u.id === t.driver_id || u.role === 'admin' || u.role === 'dispatcher';
 }
@@ -305,6 +311,7 @@ export async function dispatchTrip(tripId: string): Promise<'offered' | 'waiting
     const candidates = await q(
       `SELECT d.user_id, d.lat, d.lng, v.id AS vehicle_id, v.battery_pct, v.range_km, v.pet_friendly, v.wheelchair_accessible, v.seats, v.fuel_type
        FROM drivers d JOIN vehicles v ON v.id = d.vehicle_id AND v.active AND v.status = 'approved'
+       JOIN users du ON du.id = d.user_id AND NOT du.blocked AND du.deleted_at IS NULL   -- blocked/deleted accounts get no offers
        WHERE d.status = 'approved' AND d.online AND d.lat IS NOT NULL
          AND d.last_seen_at > now() - interval '3 minutes'
          AND ($2::boolean = false OR d.accepts_courier)
@@ -496,7 +503,9 @@ export async function acceptOffer(driverId: string, tripId: string) {
 }
 
 export async function declineOffer(driverId: string, tripId: string) {
-  await q(`UPDATE trip_offers SET status = 'declined' WHERE trip_id = $1 AND driver_id = $2 AND status = 'offered'`, [tripId, driverId]);
+  const r = await q(`UPDATE trip_offers SET status = 'declined' WHERE trip_id = $1 AND driver_id = $2 AND status = 'offered' RETURNING 1`, [tripId, driverId]);
+  // Only an offer actually made to this driver: otherwise no event, flag or re-dispatch on someone else's trip.
+  if (!r.length) return { ok: true };
   await flagAssistanceAnimal(tripId, driverId, 'declined offer');
   await event(pool, tripId, 'declined', driverId);
   await dispatchTrip(tripId).catch((e) => console.error('dispatch', e));

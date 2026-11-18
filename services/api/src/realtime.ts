@@ -6,6 +6,20 @@
 import type { WebSocket } from 'ws';
 
 const channels = new Map<string, Set<WebSocket>>();
+/** Signed-in sockets by user, so blocking or deleting an account (or changing its role) can drop them at once. */
+const userSockets = new Map<string, Set<WebSocket>>();
+
+export function trackUser(ws: WebSocket, userId: string) {
+  let s = userSockets.get(userId);
+  if (!s) userSockets.set(userId, (s = new Set()));
+  s.add(ws);
+  ws.once('close', () => { s!.delete(ws); if (!s!.size) userSockets.delete(userId); });
+}
+
+/** Close every live socket of a user (4003). Their app reconnects and is then checked again. */
+export function disconnectUser(userId: string, reason = 'access changed') {
+  for (const ws of userSockets.get(userId) ?? []) { try { ws.close(4003, reason); } catch { /* already closed */ } }
+}
 
 export function subscribe(ws: WebSocket, channel: string) {
   let s = channels.get(channel);

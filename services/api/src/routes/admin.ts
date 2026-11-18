@@ -9,7 +9,7 @@ import { STATES, ageRule, getJurisdiction, listJurisdictions } from '../lib/juri
 import { decodeVin, normaliseVin } from '../lib/vin.js';
 import { lookupPlate, plateLookupConfigured } from '../lib/plateLookup.js';
 import { config } from '../config.js';
-import { stats as wsStats, toOps } from '../realtime.js';
+import { disconnectUser, stats as wsStats, toOps } from '../realtime.js';
 import { notify } from '../services/notify.js';
 import * as pay from '../services/payments.js';
 import * as trips from '../services/trips.js';
@@ -260,7 +260,7 @@ export default async function adminRoutes(app: FastifyInstance) {
   app.get('/admin/users', async (req) => {
     await ops(req);
     const { q: s = '', role } = req.query as Record<string, string>;
-    const vals: unknown[] = [`%${s}%`];
+    const vals: unknown[] = [`%${String(s).slice(0, 100)}%`];
     let where = `deleted_at IS NULL AND (name ILIKE $1 OR phone ILIKE $1 OR coalesce(email,'') ILIKE $1)`;
     if (role) { vals.push(role); where += ` AND role = $2`; }
     return { users: await q(
@@ -287,6 +287,9 @@ export default async function adminRoutes(app: FastifyInstance) {
     }
     if (add_wallet_cents) await q('UPDATE users SET wallet_cents = greatest(wallet_cents + $2, 0) WHERE id = $1', [id, add_wallet_cents]);
     if (b.role === 'driver') await q('INSERT INTO drivers (user_id) VALUES ($1) ON CONFLICT DO NOTHING', [id]);
+    // Blocked or role changed: drop their live connections now (they reconnect and are checked again).
+    if (b.blocked) await q('UPDATE drivers SET online = false WHERE user_id = $1', [id]);
+    if (b.blocked || b.role) disconnectUser(id, b.blocked ? 'blocked' : 'role changed');
     await audit(me.id, 'update', 'user', id, b);
     return { user: await one('SELECT id, name, phone, role, blocked, loyalty_points, wallet_cents, partner_id FROM users WHERE id = $1', [id]) };
   });
@@ -376,8 +379,8 @@ export default async function adminRoutes(app: FastifyInstance) {
       vehicle_id: z.string().uuid().nullable().optional(), commission_pct: z.number().min(0).max(50).optional(),
       licence_expiry: z.string().date().optional(), h_endorsement_expiry: z.string().date().optional(),
       police_check_date: z.string().date().optional(), medical_date: z.string().date().optional(),
-      da_training_date: z.string().date().optional(), gst_registered: z.boolean().optional(), abn: z.string().optional(),
-      accepts_pets: z.boolean().optional(), female_driver: z.boolean().optional(), zone_id: z.string().optional(),
+      da_training_date: z.string().date().optional(), gst_registered: z.boolean().optional(), abn: z.string().regex(/^\d{11}$/, 'ABN is 11 digits').optional(),
+      accepts_pets: z.boolean().optional(), female_driver: z.boolean().optional(), zone_id: z.string().max(40).optional(),
       state: z.enum(STATES).optional(),
     }), req.body);
     const id = (req.params as any).id;
@@ -385,7 +388,7 @@ export default async function adminRoutes(app: FastifyInstance) {
     if (!keys.length) throw bad('empty');
     await q(`UPDATE drivers SET ${keys.map((k, i) => `${k} = $${i + 2}`).join(', ')} WHERE user_id = $1`, [id, ...keys.map((k) => (b as any)[k])]);
     if (b.status === 'suspended' || b.state) await q('UPDATE drivers SET online = false WHERE user_id = $1', [id]);
-    if (b.status === 'approved') void notify(id, 'You’re approved! 🎉', 'Welcome to DingoGo. You can now go online and accept trips.', {}, 'account');
+    if (b.status === 'approved') void notify(id, 'You’re approved', 'Welcome to DingoGo. You can now go online and accept trips.', {}, 'account');
     await audit(me.id, 'update', 'driver', id, b);
     return { ok: true, compliance_issues: await complianceIssues(id) };
   });
@@ -490,7 +493,7 @@ export default async function adminRoutes(app: FastifyInstance) {
       return v;
     });
     if (row.owner_driver_id) {
-      void notify(row.owner_driver_id, b.decision === 'approve' ? 'Your car is approved ✅' : 'Your car was not approved',
+      void notify(row.owner_driver_id, b.decision === 'approve' ? 'Your car is approved' : 'Your car was not approved',
         b.decision === 'approve' ? `${row.rego} is good to go. You can drive it on DingoGo.` : `${row.rego}: ${b.note ?? 'please contact DingoGo'}`, { vehicle_id: id }, 'account');
     }
     toOps('vehicle.reviewed', { id, status: row.status });

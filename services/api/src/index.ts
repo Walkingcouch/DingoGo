@@ -4,10 +4,11 @@ import websocket from '@fastify/websocket';
 import { config } from './config.js';
 import { pool } from './db.js';
 import { ApiError } from './lib/errors.js';
-import { verifyToken } from './auth.js';
-import { subscribe, unsubscribe } from './realtime.js';
+import { activeUser, verifyToken, type AuthUser } from './auth.js';
+import { subscribe, trackUser, unsubscribe } from './realtime.js';
 import { one } from './db.js';
-import { dispatchTick } from './services/trips.js';
+import { signUploadUrls } from './lib/uploads.js';
+import { dispatchTick, shareLinkExpired } from './services/trips.js';
 import authRoutes from './routes/auth.js';
 import riderRoutes from './routes/rider.js';
 import driverRoutes from './routes/driver.js';
@@ -18,7 +19,7 @@ import displayRoutes from './routes/display.js';
 import uploadRoutes from './routes/uploads.js';
 
 export async function buildServer() {
-  const app = Fastify({ logger: process.env.LOG_LEVEL ? { level: process.env.LOG_LEVEL } : false, bodyLimit: 1024 * 1024 });
+  const app = Fastify({ logger: process.env.LOG_LEVEL ? { level: process.env.LOG_LEVEL } : false, bodyLimit: 1024 * 1024, trustProxy: config.trustProxy as any });
   await app.register(cors, { origin: config.corsOrigins.includes('*') ? true : config.corsOrigins, methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE'] });
   await app.register(websocket);
 
@@ -34,6 +35,23 @@ export async function buildServer() {
     return reply.code(500).send({ error: 'server_error', message: 'Something went wrong' });
   });
 
+  // Security headers on every API response. JSON with personal data must not be cached by browsers or proxies.
+  const hsts = config.serverless || process.env.NODE_ENV === 'production';
+  app.addHook('onSend', async (req, reply, payload) => {
+    reply.header('X-Content-Type-Options', 'nosniff');
+    if (!reply.hasHeader('Referrer-Policy')) reply.header('Referrer-Policy', 'no-referrer');
+    reply.header('X-Frame-Options', 'DENY');
+    if (hsts) reply.header('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+    const type = String(reply.getHeader('content-type') ?? '');
+    if (type.startsWith('application/json')) {
+      if (!reply.hasHeader('Content-Security-Policy')) reply.header('Content-Security-Policy', "default-src 'none'; frame-ancestors 'none'");
+      if (!reply.hasHeader('Cache-Control') && (req.headers.authorization || req.url.startsWith('/public/track'))) reply.header('Cache-Control', 'no-store');
+    }
+    return payload;
+  });
+  // Private uploads (driver documents, delivery photos) leave the API only as short-lived signed links.
+  app.addHook('preSerialization', async (_req, _reply, payload) => signUploadUrls(payload));
+
   // Serverless: no background timer, so run the dispatcher (offer expiry, re-offers, scheduled releases)
   // on the requests that apps poll anyway — throttled to once every 3 s per instance.
   if (config.serverless) {
@@ -47,34 +65,59 @@ export async function buildServer() {
   }
 
   // Realtime: /ws?token=JWT  (or ?share=<trip share token> for read-only public tracking)
+  const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  const isOps = (u: AuthUser) => u.role === 'admin' || u.role === 'dispatcher';
   app.get('/ws', { websocket: true }, async (socket, req) => {
     const { token, share } = req.query as { token?: string; share?: string };
     if (share) {
-      const t = await one('SELECT id FROM trips WHERE share_token = $1', [share]);
+      const t = await one('SELECT id, status, completed_at, cancelled_at FROM trips WHERE share_token = $1', [String(share).slice(0, 100)]);
       if (!t) return socket.close(4004, 'not found');
+      if (shareLinkExpired(t)) return socket.close(4010, 'link expired');
       subscribe(socket, `trip:${t.id}`);
       socket.send(JSON.stringify({ type: 'hello', data: { channels: [`trip:${t.id}`] } }));
       return;
     }
-    const p = token ? verifyToken(token) : null;
-    if (!p) return socket.close(4001, 'unauthorised');
-    const channels = [`user:${p.sub}`];
-    if (p.role === 'admin' || p.role === 'dispatcher') channels.push('ops');
-    channels.forEach((c) => subscribe(socket, c));
-    socket.send(JSON.stringify({ type: 'hello', data: { channels } }));
+    // Listen straight away (apps send their subscribes as soon as the socket opens); handle them once the account is checked.
+    let me: AuthUser | undefined;
+    const ready = (async () => {
+      const p = token ? verifyToken(token) : null;
+      // The token alone isn't enough: the account must still exist and not be blocked, and the role comes from the database.
+      me = p ? await activeUser(p.sub).catch(() => undefined) : undefined;
+      return me;
+    })();
     socket.on('message', async (raw: Buffer) => {
       try {
+        const u = await ready;
+        if (!u || raw.length > 2048) return;
         const m = JSON.parse(String(raw));
         if (m.type === 'ping') return socket.send(JSON.stringify({ type: 'pong' }));
         if ((m.type === 'subscribe' || m.type === 'unsubscribe') && typeof m.channel === 'string' && m.channel.startsWith('trip:')) {
           const id = m.channel.slice(5);
+          if (!UUID.test(id)) return;
+          if (m.type === 'unsubscribe') return unsubscribe(socket, m.channel);
           const t = await one('SELECT rider_id, driver_id FROM trips WHERE id = $1', [id]).catch(() => null);
-          const ok = t && (t.rider_id === p.sub || t.driver_id === p.sub || p.role === 'admin' || p.role === 'dispatcher');
-          if (!ok) return;
-          if (m.type === 'subscribe') subscribe(socket, m.channel); else unsubscribe(socket, m.channel);
+          const viewer = me ?? u;
+          if (t && (t.rider_id === viewer.id || t.driver_id === viewer.id || isOps(viewer))) subscribe(socket, m.channel);
         }
       } catch { /* ignore malformed */ }
     });
+    const first = await ready;
+    if (!first) return socket.close(4001, 'unauthorised');
+    trackUser(socket, first.id);
+    const channels = [`user:${first.id}`];
+    const opsAtStart = isOps(first);
+    if (opsAtStart) channels.push('ops');
+    channels.forEach((c) => subscribe(socket, c));
+    socket.send(JSON.stringify({ type: 'hello', data: { channels } }));
+    // Re-check every minute: blocked, deleted or demoted accounts lose the socket (and with it ops events).
+    const recheck = setInterval(async () => {
+      if (socket.readyState > 1) return clearInterval(recheck);
+      const now = await activeUser(first.id).catch(() => me);   // DB hiccup: keep the socket
+      if (!now) return socket.close(4001, 'unauthorised');
+      if (isOps(now) !== opsAtStart) return socket.close(4003, 'access changed');
+      me = now;
+    }, 60_000);
+    socket.on('close', () => clearInterval(recheck));
   });
 
   await app.register(publicRoutes);

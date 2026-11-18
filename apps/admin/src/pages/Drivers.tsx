@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { get, patch, post, money, date, dateTime, assetUrl, useLoad } from '@dingogo/shared';
+import { get, patch, post, money, date, dateTime, FileLink, useLoad } from '@dingogo/shared';
 import { Page } from '../ctx';
 import { Chip, Drawer, ErrorMsg, Table, Tabs, useRun, type Col } from '../ui';
 import { APPLICATION_STATUS, DOC_STATUS, DOC_TYPE, DRIVER_STATUS, DRIVER_STATUS_TONE, FLAG_KIND, FLAG_STATUS, FUEL, LEDGER_KIND, VEHICLE_STATUS, complianceText, docTone, label } from '../labels';
@@ -108,7 +108,7 @@ function DriverDrawer({ id, onClose }: { id: string; onClose: () => void }) {
           {!data.documents.length && <tr><td className="empty">No documents uploaded.</td></tr>}
           {data.documents.map((x: any) => (
             <tr key={x.id}>
-              <td><strong>{label(DOC_TYPE, x.type)}</strong>{x.vehicle_id && <span className="sub">Car {regoOf(x.vehicle_id) ?? ''}</span>}<span className="sub">{[x.number, x.expires_at && `expires ${date(x.expires_at)}`].filter(Boolean).join(', ')}{x.file_url && <> <a href={assetUrl(x.file_url)} target="_blank" rel="noreferrer">View file</a></>}</span>{x.note && <span className="sub">{x.note}</span>}</td>
+              <td><strong>{label(DOC_TYPE, x.type)}</strong>{x.vehicle_id && <span className="sub">Car {regoOf(x.vehicle_id) ?? ''}</span>}<span className="sub">{[x.number, x.expires_at && `expires ${date(x.expires_at)}`].filter(Boolean).join(', ')}{x.file_url && <> <FileLink href={x.file_url}>View file</FileLink></>}</span>{x.note && <span className="sub">{x.note}</span>}</td>
               <td><Chip tone={docTone(x.status)}>{label(DOC_STATUS, x.status)}</Chip></td>
               <td className="num">{x.status === 'pending' && <><button className="dg-btn dg-btn--sm dg-btn--green" onClick={() => review(x.id, 'approved')}>Approve</button> <button className="dg-btn dg-btn--sm dg-btn--ghost" onClick={() => review(x.id, 'rejected')}>Reject</button></>}</td>
             </tr>

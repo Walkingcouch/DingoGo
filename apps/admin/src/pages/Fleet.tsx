@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { ApiError, get, post, money, date, dateTime, assetUrl, useLoad, Icon } from '@dingogo/shared';
+import { ApiError, get, post, money, date, dateTime, FileLink, useLoad, Icon } from '@dingogo/shared';
 import { Page, useOps } from '../ctx';
 import { Chip, CrudSection, Empty, ErrorMsg, Section, Table, Tabs, exportCsv, useRun, useToast, type Field } from '../ui';
 import { DOC_STATUS, DOC_TYPE, FUEL, OWNERSHIP, STATE_NAME, VEHICLE_STATUS, VEHICLE_STATUS_TONE, VERIFIED_SOURCE, docTone, isGreenFuel, label } from '../labels';
@@ -187,7 +187,7 @@ function ReviewCard({ v, j, lookupStatus, onDone }: { v: any; j: Jurisdiction; l
           <li key={x.id}>
             <Icon name="document" size={16} />
             <span className="review__doc">{label(DOC_TYPE, x.type)}<span className="sub">{[x.number, x.expires_at && `expires ${date(x.expires_at)}`].filter(Boolean).join(', ')}</span></span>
-            {x.file_url ? <a href={assetUrl(x.file_url)} target="_blank" rel="noreferrer">View file</a> : <span className="dg-muted">No file</span>}
+            {x.file_url ? <FileLink href={x.file_url}>View file</FileLink> : <span className="dg-muted">No file</span>}
             <Chip tone={docTone(x.status)}>{label(DOC_STATUS, x.status)}</Chip>
           </li>
         ))}
@@ -280,7 +280,7 @@ function CheckPanel({ v, j, docs, c, setC, lookupStatus }: { v: any; j: Jurisdic
         <dt>VIN</dt>
         <dd className="checks__row">{v.vin ? <><code className="checks__vin">{v.vin}</code><button type="button" className="dg-btn dg-btn--sm dg-btn--ghost" onClick={copyVin}>Copy VIN</button></> : <span className="dg-muted">Not given</span>}</dd>
         <dt>Compliance plate</dt>
-        <dd>{plate?.file_url ? <a href={assetUrl(plate.file_url)} target="_blank" rel="noreferrer">View photo</a> : <span className="dg-muted">No photo yet</span>}
+        <dd>{plate?.file_url ? <FileLink href={plate.file_url}>View photo</FileLink> : <span className="dg-muted">No photo yet</span>}
           <span className="sub">Shows the build date. Usually inside the driver’s door frame or in the engine bay.</span></dd>
       </dl>
 

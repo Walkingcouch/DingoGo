@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { ApiError, Icon, get, km, money, post, uploadFile } from '@dingogo/shared';
+import { ApiError, Icon, assetUrl, get, km, money, post, uploadFile } from '@dingogo/shared';
 import { DgMap, type MapMarker } from '@dingogo/shared/map';
 import { useDriver } from '../state';
 import { SignaturePad } from './SignaturePad';
@@ -152,13 +152,14 @@ function ProofOfDelivery({ parcel, busy, onSubmit }: { parcel: any; busy: boolea
   const [sig, setSig] = useState<string | null>(null);
   const [name, setName] = useState('');
   const [photo, setPhoto] = useState<string | null>(null);
+  const [preview, setPreview] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
   async function onPhoto(f?: File) {
     if (!f) return;
     setUploading(true); setErr(null);
-    try { setPhoto((await uploadFile(f, 'pod')).url); } catch (e) { setErr(e instanceof ApiError ? e.message : 'Upload failed'); } finally { setUploading(false); }
+    try { const r = await uploadFile(f, 'pod'); setPhoto(r.url); setPreview(r.view_url ?? null); } catch (e) { setErr(e instanceof ApiError ? e.message : 'Upload failed'); } finally { setUploading(false); }
   }
   const ready = mode === 'pin' ? pin.length === 4 : mode === 'signature' ? !!sig && name.trim().length > 1 : !!photo;
 
@@ -185,6 +186,7 @@ function ProofOfDelivery({ parcel, busy, onSubmit }: { parcel: any; busy: boolea
           <input className="dg-input" type="file" accept="image/*" capture="environment" onChange={(e) => onPhoto(e.target.files?.[0])} />
           {uploading && <span className="dg-muted">Uploading…</span>}
           {photo && <span className="dg-chip dg-chip--green">Photo saved</span>}
+          {preview && <img src={assetUrl(preview)} alt="Delivery photo you took" style={{ maxWidth: 160, borderRadius: 8, marginTop: 8 }} />}
         </div>
       )}
       {err && <p className="dg-error">{err}</p>}

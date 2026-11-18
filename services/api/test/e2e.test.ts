@@ -4,22 +4,26 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { buildServer } from '../src/index.js';
-import { pool, one } from '../src/db.js';
+import { pool, one, q } from '../src/db.js';
+import { signToken } from '../src/auth.js';
+import { checkSignature, signedUploadPath } from '../src/lib/uploads.js';
 import { quoteFare } from '../src/lib/fares.js';
 
 process.env.LOG_SMS = 'false';
 let app: Awaited<ReturnType<typeof buildServer>>;
 const tokens: Record<string, string> = {};
 
-async function call(method: string, url: string, who?: string, body?: unknown) {
-  const res = await app.inject({ method: method as any, url, payload: body as any, headers: who ? { authorization: `Bearer ${tokens[who]}` } : {} });
-  const json = res.body ? JSON.parse(res.body) : null;
-  return { status: res.statusCode, ...json } as any;
+async function call(method: string, url: string, who?: string, body?: unknown, ip = '127.0.0.1') {
+  const res = await app.inject({ method: method as any, url, payload: body as any, remoteAddress: ip, headers: who ? { authorization: `Bearer ${tokens[who]}` } : {} });
+  const json = res.body && res.headers['content-type']?.toString().includes('json') ? JSON.parse(res.body) : null;
+  return { status: res.statusCode, headers: res.headers, ...json } as any;
 }
+let loginIp = 0;
 async function login(who: string, phone: string, appName = 'rider') {
-  const r = await call('POST', '/auth/otp/request', undefined, { phone });
+  const ip = `10.250.${Math.floor(++loginIp / 250)}.${loginIp % 250}`; // each sign-in from its own address: stays clear of the per-IP limits
+  const r = await call('POST', '/auth/otp/request', undefined, { phone }, ip);
   assert.equal(r.status, 200);
-  const v = await call('POST', '/auth/otp/verify', undefined, { phone, code: r.dev_code, app: appName });
+  const v = await call('POST', '/auth/otp/verify', undefined, { phone, code: r.dev_code, app: appName }, ip);
   assert.equal(v.status, 200, JSON.stringify(v));
   tokens[who] = v.token;
   return v;
@@ -699,4 +703,222 @@ test('safety: drivers cannot switch on women-driver matching themselves', async 
   assert.equal(r.status, 403);
   assert.equal((await call('PATCH', '/driver/me', 'd1', { female_driver: false, accepts_courier: true })).status, 200, 'sending the current value is fine');
   await call('POST', '/driver/online', 'd1', { online: false });
+});
+
+// ───────────── Round 2: privacy & security ─────────────
+const PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+const raw = (url: string, who?: string) => app.inject({ method: 'GET', url, headers: who ? { authorization: `Bearer ${tokens[who]}` } : {} });
+
+test('uploads: driver documents are private — signed links only, owner/staff with a token, kinds by role, real file types', async () => {
+  // Who may upload what
+  assert.equal((await call('POST', '/uploads', 'rider', { data_url: PNG, purpose: 'document' })).status, 403);
+  assert.equal((await call('POST', '/uploads', 'rider', { data_url: PNG, purpose: 'ad' })).status, 403);
+  const fake = 'data:image/png;base64,' + Buffer.from('<html><script>alert(1)</script></html>').toString('base64');
+  assert.equal((await call('POST', '/uploads', 'd2', { data_url: fake, purpose: 'document' })).error, 'bad_file');
+
+  const up = await call('POST', '/uploads', 'd2', { data_url: PNG, purpose: 'document' });
+  assert.equal(up.status, 200, JSON.stringify(up));
+  assert.match(up.url, /^\/uploads\/document-[^?]+$/);
+  assert.match(up.view_url, /\?exp=\d+&sig=/);
+  const name = up.url.slice('/uploads/'.length);
+
+  // Plain link: no token → 401; another driver → 404; owner and admin → 200
+  assert.equal((await raw(up.url)).statusCode, 401);
+  assert.equal((await raw(up.url, 'd3')).statusCode, 404);
+  assert.equal((await raw(up.url, 'd2')).statusCode, 200);
+  assert.equal((await raw(up.url, 'admin')).statusCode, 200);
+  // Signed link works without a token; tampered or expired ones don't
+  const ok = await raw(up.view_url);
+  assert.equal(ok.statusCode, 200);
+  assert.equal(ok.headers['content-type'], 'image/png');
+  assert.equal(ok.headers['x-content-type-options'], 'nosniff');
+  assert.match(String(ok.headers['content-security-policy']), /sandbox/);
+  assert.equal((await raw(up.view_url.replace(/sig=./, 'sig=x'))).statusCode, 403);
+  const old = signedUploadPath(name, Date.now() - 3 * 3600_000);
+  const expired = await raw(old);
+  assert.equal(expired.statusCode, 403);
+  assert.equal(JSON.parse(expired.body).error, 'link_expired');
+  assert.equal(checkSignature(name, '123', 'short'), 'bad');
+
+  // Fresh link: owner yes, other driver no
+  assert.match((await call('GET', `/uploads/${name}/link`, 'd2')).url, /sig=/);
+  assert.equal((await call('GET', `/uploads/${name}/link`, 'd3')).status, 404);
+
+  // Document file must be your own upload; stored plain, returned signed
+  assert.equal((await call('POST', '/driver/documents', 'd2', { type: 'medical', file_url: 'https://evil.example/x.png' })).error, 'invalid_file');
+  assert.equal((await call('POST', '/driver/documents', 'd3', { type: 'medical', file_url: up.url })).error, 'invalid_file');
+  const doc = await call('POST', '/driver/documents', 'd2', { type: 'medical', file_url: up.view_url });
+  assert.equal(doc.status, 200, JSON.stringify(doc));
+  assert.match(doc.document.file_url, /^\/uploads\/document-.+\?exp=\d+&sig=/);
+  assert.equal((await one('SELECT file_url FROM driver_documents WHERE id = $1', [doc.document.id])).file_url, up.url, 'database keeps the plain reference');
+  const d2 = (await one('SELECT id FROM users WHERE phone = $1', ['+61400000012'])).id;
+  const adminView = await call('GET', `/admin/drivers/${d2}`, 'admin');
+  const listed = adminView.documents.find((x: any) => x.id === doc.document.id);
+  assert.equal((await raw(listed.file_url)).statusCode, 200, 'admin "View file" link opens');
+  // Ad images stay public
+  const ad = await call('POST', '/uploads', 'admin', { data_url: PNG, purpose: 'ad' });
+  assert.equal(ad.view_url, ad.url);
+  assert.equal((await raw(ad.url)).statusCode, 200);
+});
+
+test('uploads: limit per account per hour', async () => {
+  await login('uploader', '0400 000 882', 'driver');
+  const uid = (await one('SELECT id FROM users WHERE phone = $1', ['+61400000882'])).id;
+  await q(`INSERT INTO rate_events (bucket, key) SELECT 'upload_user', $1 FROM generate_series(1, 30)`, [uid]);
+  const r = await call('POST', '/uploads', 'uploader', { data_url: PNG, purpose: 'pod' });
+  assert.equal(r.status, 429);
+  assert.equal(r.error, 'rate_limited');
+});
+
+test('courier POD photo: must be the driver’s own photo; rider sees it through a signed link', async () => {
+  await onlyD1Online();
+  const parcel = { size: 'S', description: 'Books', sender_name: 'Demo', sender_phone: '0400000100', recipient_name: 'Nan', recipient_phone: '0400000555', leave_unattended: true, prohibited_ack: true };
+  const t = await call('POST', '/trips', 'rider', { kind: 'courier', service: 'courier_s', pickup: TODD_MALL, dropoff: HOSPITAL, payment_method: 'card', parcel });
+  await driveToArrived(t.trip.id);
+  await call('POST', `/driver/trips/${t.trip.id}/start`, 'd1');
+  const someoneElses = await call('POST', '/uploads', 'd2', { data_url: PNG, purpose: 'pod' });
+  assert.equal((await call('POST', `/driver/trips/${t.trip.id}/complete`, 'd1', { pod_photo_url: someoneElses.url })).error, 'invalid_file');
+  assert.equal((await call('POST', `/driver/trips/${t.trip.id}/complete`, 'd1', { pod_photo_url: 'https://evil.example/p.jpg' })).error, 'invalid_file');
+  const mine = await call('POST', '/uploads', 'd1', { data_url: PNG, purpose: 'pod' });
+  const done = await call('POST', `/driver/trips/${t.trip.id}/complete`, 'd1', { pod_photo_url: mine.url });
+  assert.equal(done.trip.status, 'completed', JSON.stringify(done));
+  const seen = await call('GET', `/trips/${t.trip.id}`, 'rider');
+  assert.match(seen.trip.parcel.pod_photo_url, /sig=/);
+  assert.equal((await raw(seen.trip.parcel.pod_photo_url)).statusCode, 200);
+  const name = mine.url.slice('/uploads/'.length);
+  assert.match((await call('GET', `/uploads/${name}/link`, 'rider')).url, /sig=/, 'sender can get a fresh link');
+  assert.equal((await call('GET', `/uploads/${name}/link`, 'd3')).status, 404);
+  await call('POST', '/driver/online', 'd1', { online: false });
+});
+
+test('OTP: per-IP request limit; parallel wrong guesses stop at 5; a code works once; per-IP wrong-code limit', async () => {
+  const ip = '10.77.0.1';
+  for (let i = 0; i < 30; i++) assert.equal((await call('POST', '/auth/otp/request', undefined, { phone: `+614009${String(i).padStart(5, '0')}` }, ip)).status, 200);
+  const over = await call('POST', '/auth/otp/request', undefined, { phone: '+61400999999' }, ip);
+  assert.equal(over.status, 429);
+  assert.equal(over.error, 'rate_limited');
+
+  const ip2 = '10.77.0.2';
+  const phone = '+61400777001';
+  const code = (await call('POST', '/auth/otp/request', undefined, { phone }, ip2)).dev_code as string;
+  const wrong = (n: number) => { let c = String((Number(code) + n) % 1_000_000).padStart(6, '0'); if (c === '000000') c = '999999'; return c; };
+  const guesses = await Promise.all([1, 2, 3, 4, 5, 6, 7, 8].map((n) => call('POST', '/auth/otp/verify', undefined, { phone, code: wrong(n) }, ip2)));
+  assert.equal(guesses.filter((g) => g.error === 'otp_invalid').length, 5, JSON.stringify(guesses.map((g) => g.error)));
+  assert.equal(guesses.filter((g) => g.error === 'otp_locked').length, 3);
+  assert.equal((await call('POST', '/auth/otp/verify', undefined, { phone, code }, ip2)).error, 'otp_locked', 'even the right code is locked out');
+
+  // Single use under concurrency
+  const ip3 = '10.77.0.3';
+  const phone2 = '+61400777002';
+  const code2 = (await call('POST', '/auth/otp/request', undefined, { phone: phone2 }, ip3)).dev_code;
+  const both = await Promise.all([1, 2].map(() => call('POST', '/auth/otp/verify', undefined, { phone: phone2, code: code2 }, ip3)));
+  assert.deepEqual(both.map((b) => b.status).sort(), [200, 400]);
+
+  // 30 wrong codes from one connection (any numbers) → blocked for an hour
+  const ip4 = '10.77.0.4';
+  await q(`INSERT INTO rate_events (bucket, key) SELECT 'otp_verify_fail_ip', $1 FROM generate_series(1, 30)`, [ip4]);
+  const phone3 = '+61400777003';
+  const code3 = (await call('POST', '/auth/otp/request', undefined, { phone: phone3 }, ip4)).dev_code;
+  const blocked = await call('POST', '/auth/otp/verify', undefined, { phone: phone3, code: code3 }, ip4);
+  assert.equal(blocked.status, 429);
+  assert.equal(blocked.error, 'too_many_attempts');
+  assert.equal((await call('POST', '/auth/otp/verify', undefined, { phone: phone3, code: code3 }, '10.77.0.5')).status, 200, 'other connections unaffected');
+});
+
+test('public forms: 10 per hour per connection', async () => {
+  const ip = '10.78.0.1';
+  const body = { kind: 'general', name: 'Test Person', email: 'test@example.com', message: 'Hello from a test' };
+  for (let i = 0; i < 10; i++) assert.equal((await call('POST', '/public/enquiries', undefined, body, ip)).status, 201);
+  const r = await call('POST', '/public/hire-requests', undefined, { kind: 'event', contact_name: 'Test Person', contact_email: 'test@example.com' }, ip);
+  assert.equal(r.status, 429);
+  assert.equal((await call('POST', '/public/enquiries', undefined, body, '10.78.0.2')).status, 201);
+});
+
+test('share links stop working a day after the trip ends', async () => {
+  const t = await one('SELECT share_token, completed_at FROM trips WHERE id = $1', [rideId]);
+  assert.equal((await call('GET', `/public/track/${t.share_token}`)).status, 200);
+  await q(`UPDATE trips SET completed_at = now() - interval '25 hours' WHERE id = $1`, [rideId]);
+  try {
+    const r = await call('GET', `/public/track/${t.share_token}`);
+    assert.equal(r.status, 410);
+    assert.equal(r.error, 'link_expired');
+    const ws = await app.injectWS(`/ws?share=${t.share_token}`);
+    const code = await new Promise<number>((res) => ws.on('close', (c: number) => res(c)));
+    assert.equal(code, 4010);
+  } finally {
+    await q('UPDATE trips SET completed_at = $2 WHERE id = $1', [rideId, t.completed_at]);
+  }
+});
+
+test('realtime: role comes from the database; blocking a user drops their socket and stops reconnects', async () => {
+  await app.ready();
+  const created = await call('POST', '/admin/users', 'admin', { phone: '0400 000 883', name: 'Socket Test', role: 'rider' });
+  assert.equal(created.status, 201, JSON.stringify(created));
+  await login('sock', '0400 000 883');
+  const hello = (ws: any) => new Promise<any>((res) => ws.once('message', (m: Buffer) => res(JSON.parse(String(m)))));
+
+  // A token claiming "admin" for a rider account doesn't get the ops channel
+  const forged = signToken({ id: created.user.id, role: 'admin' });
+  const ws1 = await app.injectWS(`/ws?token=${forged}`);
+  assert.deepEqual((await hello(ws1)).data.channels, [`user:${created.user.id}`]);
+  ws1.terminate();
+
+  const ws = await app.injectWS(`/ws?token=${tokens.sock}`);
+  await hello(ws);
+  const closed = new Promise<number>((res) => ws.on('close', (c: number) => res(c)));
+  assert.equal((await call('PATCH', `/admin/users/${created.user.id}`, 'admin', { blocked: true })).status, 200);
+  assert.equal(await closed, 4003);
+  const again = await app.injectWS(`/ws?token=${tokens.sock}`);
+  assert.equal(await new Promise<number>((res) => again.on('close', (c: number) => res(c))), 4001);
+  assert.equal((await call('GET', '/me', 'sock')).status, 401);
+  await call('PATCH', `/admin/users/${created.user.id}`, 'admin', { blocked: false });
+});
+
+test('partner: two redeems at once settle once; wrong codes are limited', async () => {
+  const l = await call('GET', '/loyalty', 'rider');
+  const coffee = l.rewards.find((r: any) => r.partner_name?.startsWith('Spinifex') && r.title.includes('coffee'));
+  await q('UPDATE users SET loyalty_points = loyalty_points + $2 WHERE phone = $1', ['+61400000100', coffee.points_cost]);
+  const red = await call('POST', `/loyalty/rewards/${coffee.id}/redeem`, 'rider');
+  const both = await Promise.all([1, 2].map(() => call('POST', '/partner/redeem', 'cafe', { code: red.redemption.code })));
+  assert.deepEqual(both.map((b) => b.status).sort(), [200, 400]);
+
+  const cafe = (await one('SELECT id FROM users WHERE phone = $1', ['+61400000300'])).id;
+  await q(`INSERT INTO rate_events (bucket, key) SELECT 'partner_code_fail', $1 FROM generate_series(1, 19)`, [cafe]);
+  assert.equal((await call('POST', '/partner/check', 'cafe', { code: 'DGNOTREAL1' })).status, 404);
+  const r = await call('POST', '/partner/vouchers/sell', 'cafe', { code: 'DGNOTREAL2' });
+  assert.equal(r.status, 429);
+  assert.equal(r.error, 'too_many_attempts');
+  await q(`DELETE FROM rate_events WHERE bucket = 'partner_code_fail' AND key = $1`, [cafe]);
+});
+
+test('authorisation: declining a trip you were never offered does nothing; blocked drivers get no offers', async () => {
+  const before = await one(`SELECT count(*)::int n FROM trip_events WHERE trip_id = $1`, [rideId]);
+  assert.equal((await call('POST', `/driver/offers/${rideId}/decline`, 'd2')).status, 200);
+  assert.equal((await one(`SELECT count(*)::int n FROM trip_events WHERE trip_id = $1`, [rideId])).n, before.n);
+
+  await onlyD1Online();
+  const d1 = (await one('SELECT id FROM users WHERE phone = $1', ['+61400000011'])).id;
+  await call('PATCH', `/admin/users/${d1}`, 'admin', { blocked: true });
+  assert.equal((await one('SELECT online FROM drivers WHERE user_id = $1', [d1])).online, false, 'blocking takes the driver offline');
+  await q('UPDATE users SET blocked = false WHERE id = $1', [d1]);
+  await call('POST', '/driver/online', 'd1', { online: true, lat: TODD_MALL.lat, lng: TODD_MALL.lng, battery_pct: 90 });
+  await q('UPDATE users SET blocked = true WHERE id = $1', [d1]);            // blocked while still marked online
+  const t = await call('POST', '/trips', 'rider', { kind: 'ride', service: 'ride', pickup: TODD_MALL, dropoff: HOSPITAL, payment_method: 'card' });
+  assert.equal(t.status, 201, JSON.stringify(t));
+  await wait(300);
+  assert.equal((await one(`SELECT count(*)::int n FROM trip_offers WHERE trip_id = $1`, [t.trip.id])).n, 0);
+  await q('UPDATE users SET blocked = false WHERE id = $1', [d1]);
+  await call('POST', `/trips/${t.trip.id}/cancel`, 'rider', {});
+  await call('POST', '/driver/online', 'd1', { online: false });
+});
+
+test('security headers and input limits', async () => {
+  const h = await call('GET', '/health');
+  assert.equal(h.headers['x-content-type-options'], 'nosniff');
+  assert.equal(h.headers['x-frame-options'], 'DENY');
+  assert.equal(h.headers['referrer-policy'], 'no-referrer');
+  assert.match(String(h.headers['content-security-policy']), /default-src 'none'/);
+  assert.equal((await call('GET', '/me', 'rider')).headers['cache-control'], 'no-store');
+  assert.equal((await call('POST', '/me/push-token', 'rider', { token: 'x'.repeat(5000), platform: 'web' })).error, 'validation_error');
+  assert.equal((await call('PATCH', '/me', 'rider', { accessibility: { note: 'x'.repeat(3000) } })).error, 'validation_error');
 });
