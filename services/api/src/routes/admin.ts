@@ -10,7 +10,10 @@ import { decodeVin, normaliseVin } from '../lib/vin.js';
 import { lookupPlate, plateLookupConfigured } from '../lib/plateLookup.js';
 import { config } from '../config.js';
 import { disconnectUser, stats as wsStats, toOps } from '../realtime.js';
-import { notify } from '../services/notify.js';
+import { notify, send, sendSmsT } from '../services/notify.js';
+import { replyableSender, smsConfigured } from '../services/sms.js';
+import { pushProviders } from '../services/push.js';
+import { gsmFriendly, render, smsSegments } from '../lib/messages.js';
 import * as pay from '../services/payments.js';
 import * as trips from '../services/trips.js';
 import { complianceIssues } from './driver.js';
@@ -235,7 +238,12 @@ export default async function adminRoutes(app: FastifyInstance) {
     const payments = await q('SELECT * FROM payments WHERE trip_id = $1 ORDER BY created_at', [t.id]);
     // What the driver was paid for this trip (fare, fee, pickup pay, fuel surcharge, tip, cancellation share).
     const driver_ledger = await q('SELECT id, driver_id, kind, amount_cents, note, created_at FROM driver_ledger WHERE trip_id = $1 ORDER BY id', [t.id]);
-    return { trip: trips.viewFor(t, me), events, track, offers, payments, driver_ledger };
+    // Round 9: the trip chat (safety record) and texts/calls sent about the trip (template and last digits only). Empty before migration 015.
+    const opt = <T>(p: Promise<T>, empty: T) => p.catch((e) => { if (e?.code === '42P01' || e?.code === '42703') return empty; throw e; });
+    const messages = await opt(q(`SELECT m.id, m.sender_role, u.name AS sender_name, m.body, m.via, m.read_at, m.created_at FROM trip_messages m
+      LEFT JOIN users u ON u.id = m.sender_id WHERE m.trip_id = $1 ORDER BY m.id`, [t.id]), []);
+    const comms = await opt(q('SELECT id, at, channel, template, to_tail, status, error FROM comms_log WHERE trip_id = $1 ORDER BY id', [t.id]), []);
+    return { trip: trips.viewFor(t, me), events, track, offers, payments, driver_ledger, messages, comms };
   });
 
   app.post('/admin/trips/:id/cancel', async (req) => {
@@ -309,7 +317,7 @@ export default async function adminRoutes(app: FastifyInstance) {
       await c.query('INSERT INTO audit_log (actor_id, action, entity, entity_id, data) VALUES ($1,$2,$3,$4,$5)', [me.id, 'refund', 'trip', t.id, b]);
       return { t, refundable_cents: left - b.cents };
     });
-    void notify(out.t.rider_id, 'Refund issued', `We've refunded $${(b.cents / 100).toFixed(2)} on ${out.t.ref}. ${b.reason}`, { trip_id: out.t.id }, 'account');
+    void send(out.t.rider_id, 'refund_issued', { ref: out.t.ref, cents: b.cents, reason: b.reason }, { data: { trip_id: out.t.id } });
     return { ok: true, refundable_cents: out.refundable_cents };
   });
 
@@ -486,7 +494,7 @@ export default async function adminRoutes(app: FastifyInstance) {
     if (!keys.length) throw bad('empty');
     await q(`UPDATE drivers SET ${keys.map((k, i) => `${k} = $${i + 2}`).join(', ')} WHERE user_id = $1`, [id, ...keys.map((k) => (b as any)[k])]);
     if (b.status === 'suspended' || b.state) { await q('UPDATE drivers SET online = false WHERE user_id = $1', [id]); await trips.withdrawOffers(id); }
-    if (b.status === 'approved') void notify(id, 'You’re approved', 'Welcome to DingoGo. You can now go online and accept trips.', {}, 'account');
+    if (b.status === 'approved') void send(id, 'driver_approved', {}, { data: {} });
     await audit(me.id, 'update', 'driver', id, b);
     return { ok: true, compliance_issues: await complianceIssues(id) };
   });
@@ -496,7 +504,7 @@ export default async function adminRoutes(app: FastifyInstance) {
     const b = parse(z.object({ status: z.enum(['approved', 'rejected']), note: z.string().max(300).optional(), expires_at: z.string().date().optional() }), req.body);
     const doc = await reviewDocument(me.id, (req.params as any).id, b);
     if (!doc) throw notFound('Document');
-    void notify(doc.driver_id, `Document ${b.status}`, `${doc.type.replace(/_/g, ' ')}: ${b.status}${b.note ? ' — ' + b.note : ''}`, {}, 'account');
+    void send(doc.driver_id, 'documents_reviewed', { types: [doc.type.replace(/_/g, ' ')], status: b.status, note: b.note }, { data: {} });
     return { document: doc };
   });
 
@@ -518,8 +526,7 @@ export default async function adminRoutes(app: FastifyInstance) {
     const byDriver = new Map<string, string[]>();
     for (const d of reviewed) byDriver.set(d.driver_id, [...(byDriver.get(d.driver_id) ?? []), d.type.replace(/_/g, ' ')]);
     for (const [driverId, types] of byDriver) {
-      void notify(driverId, types.length === 1 ? `Document ${b.status}` : `${types.length} documents ${b.status}`,
-        `${types.join(', ')}: ${b.status}${b.note ? ' — ' + b.note : ''}`, {}, 'account');
+      void send(driverId, 'documents_reviewed', { types, status: b.status, note: b.note }, { data: {} });
     }
     return { reviewed: reviewed.map((d) => d.id), skipped };
   });
@@ -607,8 +614,7 @@ export default async function adminRoutes(app: FastifyInstance) {
       return v;
     });
     if (row.owner_driver_id) {
-      void notify(row.owner_driver_id, b.decision === 'approve' ? 'Your car is approved' : 'Your car was not approved',
-        b.decision === 'approve' ? `${row.rego} is good to go. You can drive it on DingoGo.` : `${row.rego}: ${b.note ?? 'please contact DingoGo'}`, { vehicle_id: id }, 'account');
+      void send(row.owner_driver_id, 'car_reviewed', { approved: b.decision === 'approve', rego: row.rego, note: b.note }, { data: { vehicle_id: id } });
     }
     toOps('vehicle.reviewed', { id, status: row.status });
     return { vehicle: { ...vehicleOut(row, { keepSecrets: true }), state_rules: stateRules(j) } };
@@ -635,6 +641,9 @@ export default async function adminRoutes(app: FastifyInstance) {
       plate_lookup: on(plateLookupConfigured()),
       payments: on(!!config.stripe.secretKey), payments_webhook: on(!!config.stripe.webhookSecret), card_elements: on(!!config.stripe.publishableKey), sms: on(!!(config.twilio.sid && config.twilio.token)),
       routing: on(!!(config.orsKey || config.osrmUrl)),
+      // Round 9
+      sms_replies: on(!!config.twilio.token && !!replyableSender()), sms_relay: on(!!(config.twilio.relayNumber && config.twilio.sid && config.twilio.token)),
+      push_fcm: on(pushProviders().fcm), push_web: on(pushProviders().web), push_expo: on(config.expoPushEnabled),
     };
   });
 
@@ -819,7 +828,7 @@ export default async function adminRoutes(app: FastifyInstance) {
       await c.query('INSERT INTO audit_log (actor_id, action, entity, entity_id, data) VALUES ($1,$2,$3,$4,$5)', [me.id, 'payout', 'driver', id, { cents: bal!.cents }]);
       return bal!.cents;
     });
-    void notify(id, 'Payout sent', `$${(cents / 100).toFixed(2)} is on its way to your bank account.`, {}, 'account');
+    void send(id, 'payout_sent', { cents }, { data: {} });
     return { paid_cents: cents };
   });
 
@@ -855,7 +864,7 @@ export default async function adminRoutes(app: FastifyInstance) {
     const t = await one(`UPDATE support_tickets SET status = $2, resolution = coalesce($3, resolution), updated_at = now() WHERE id = $1 RETURNING *`, [(req.params as any).id, b.status, b.resolution ?? null]);
     if (!t) throw notFound('Ticket');
     await audit(me.id, 'ticket_' + b.status, 'support_ticket', t.id, b.resolution ? { resolution: b.resolution } : undefined);
-    if (t.user_id && b.resolution) void notify(t.user_id, `Re: ${t.subject}`, b.resolution, { ticket_id: t.id }, 'account');
+    if (t.user_id && b.resolution) void send(t.user_id, 'ticket_reply', { subject: t.subject, resolution: b.resolution }, { data: { ticket_id: t.id } });
     return { item: t };
   });
 
@@ -978,14 +987,34 @@ export default async function adminRoutes(app: FastifyInstance) {
   /** Promotional broadcast — Spam Act: only to riders who opted in; every message identifies DingoGo and how to opt out. */
   app.post('/admin/broadcast', async (req) => {
     const me = await admin(req);
-    const b = parse(z.object({ audience: z.enum(['riders_opted_in', 'drivers']), title: z.string().min(2).max(60), body: z.string().min(2).max(240) }), req.body);
+    const b = parse(z.object({
+      audience: z.enum(['riders_opted_in', 'drivers']), title: z.string().min(2).max(60), body: z.string().min(2).max(240),
+      channel: z.enum(['app', 'sms']).default('app'),
+    }), req.body);
+    if (b.channel === 'sms') {
+      // Offers by text: opted-in riders only, never numbers that replied STOP, from a number that takes replies, "Reply STOP" in every text.
+      if (b.audience !== 'riders_opted_in') throw bad('sms_riders_only', 'Texts can only go to riders who said yes to offers');
+      if (!smsConfigured()) throw conflict('sms_not_configured', 'Texts are not switched on (Twilio)');
+      if (!replyableSender()) throw conflict('sms_marketing_unavailable', 'Offers by text need a sender number that takes STOP replies (TWILIO_MARKETING_FROM, a number in TWILIO_FROM or a Messaging Service)');
+      const text = render('promo', { title: b.title, body: b.body }).sms!;
+      if (smsSegments(gsmFriendly(text)).segments > 2) throw bad('sms_too_long', 'Make the message shorter: it would be sent as more than 2 texts');
+    }
     const users = b.audience === 'drivers'
-      ? await q(`SELECT user_id AS id FROM drivers WHERE status = 'approved'`)
-      : await q(`SELECT id FROM users WHERE role = 'rider' AND marketing_opt_in AND deleted_at IS NULL`);
-    const body = b.audience === 'riders_opted_in' ? `${b.body}\n— DingoGo. Turn off offers in Account › Notifications.` : b.body;
-    for (const u of users) await notify(u.id, b.title, body, {}, b.audience === 'drivers' ? 'account' : 'promo');
-    await audit(me.id, 'broadcast', 'notifications', b.audience, { title: b.title, count: users.length });
-    return { sent: users.length };
+      ? await q<{ id: string; phone: string }>(`SELECT d.user_id AS id, u.phone FROM drivers d JOIN users u ON u.id = d.user_id WHERE d.status = 'approved' AND u.deleted_at IS NULL`)
+      : await q<{ id: string; phone: string }>(`SELECT id, phone FROM users WHERE role = 'rider' AND marketing_opt_in AND deleted_at IS NULL`);
+    let sent = 0; let skipped = 0;
+    // A few at a time: push and SMS are network calls, and one by one could run past the serverless time limit.
+    for (let i = 0; i < users.length; i += 10) {
+      await Promise.all(users.slice(i, i + 10).map(async (u) => {
+        if (b.channel === 'sms') {
+          const r = await sendSmsT(u.phone, 'promo', { title: b.title, body: b.body }, { userId: u.id });
+          if (r.sent || r.status === 'dev_log') sent++; else skipped++;
+        } else if (b.audience === 'drivers') { await notify(u.id, b.title, b.body, {}, 'account'); sent++; }
+        else { const m = render('promo', { title: b.title, body: b.body }); await notify(u.id, m.title!, m.body!, {}, 'promo'); sent++; }
+      }));
+    }
+    await audit(me.id, 'broadcast', 'notifications', b.audience, { title: b.title, channel: b.channel, count: sent, skipped });
+    return { sent, skipped };
   });
 
   // GET /admin/audit (with filters) lives in routes/ops.ts.

@@ -1,6 +1,6 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { NavLink, Navigate, Route, Routes } from 'react-router-dom';
-import { Icon, Login, getToken, initAuth, setToken } from '@dingogo/shared';
+import { Icon, Login, disablePush, get, getToken, initAuth, refreshPush, setToken } from '@dingogo/shared';
 import { DriverProvider, useDriver } from './state';
 import { Drive } from './screens/Drive';
 import { Offer } from './screens/Offer';
@@ -20,7 +20,13 @@ export function App() {
   if (!token) {
     return <Login title="Drive with DingoGo" subtitle="Sign in with the mobile number you applied with." onDone={(r) => setTok(r.token)} askName />;
   }
-  return <DriverProvider><Shell onSignOut={() => { clearOutbox(); setToken(null); setTok(null); }} /></DriverProvider>;
+  return <DriverProvider><PushRefresh /><Shell onSignOut={async () => { await disablePush('driver'); clearOutbox(); setToken(null); setTok(null); }} /></DriverProvider>;
+}
+
+/** If this phone already allowed notifications, register again quietly on start (tokens change). Never prompts. */
+function PushRefresh() {
+  useEffect(() => { get('/public/config').then((c) => refreshPush('driver', c.push?.web_push_key)).catch(() => undefined); }, []);
+  return null;
 }
 
 function Home() {

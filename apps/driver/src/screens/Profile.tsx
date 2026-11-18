@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { usePrefs, type Prefs, type Theme } from '../lib/prefs';
 import { NAV_APPS } from '../lib/nav';
 import { ApiError, Icon, date, patch, post } from '@dingogo/shared';
+import { NotifySettings } from '@dingogo/shared';
 import { Link } from 'react-router-dom';
 import { useDriver } from '../state';
 import { CarStatus, FuelChip, carName } from '../vehicle';
@@ -95,6 +96,11 @@ export function Profile({ onSignOut }: { onSignOut: () => void }) {
       </section>
 
       <ExpiryList />
+
+      <section className="panel" aria-label="Notifications">
+        <h2 style={{ marginTop: 0 }}>Notifications</h2>
+        <NotifySettings app="driver" showMarketing={false} />
+      </section>
 
       <section className="panel">
         <h2 style={{ marginTop: 0 }}>Documents</h2>

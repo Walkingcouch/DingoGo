@@ -414,3 +414,98 @@ Ideas for next rounds:
 - Emailed tax invoices (PDF) on completion and on refund, plus a monthly statement for riders with an NDIS number.
 - Payments reconciliation report: Stripe balance transactions vs DingoGo `payments` per day (fees, refunds, disputes), CSV for the accountant.
 - Run the Stripe fake in CI and add a `stripe listen`-based manual test script for the coordinator with test keys.
+
+### Round 9 — notifications and communications
+Scan: read `services/notify.ts`, every `notify`/`sendSms` call site, push token registration, the broadcast, `PATCH /me` marketing flag, the rider/driver
+trip screens and the Capacitor configs. Found: push never worked (apps never registered a token; the server only knew Expo's service while Capacitor
+gives FCM tokens and the PWA would need Web Push); Twilio calls had no timeout, no error handling, no log and no way to use a sender ID or Messaging
+Service; wording was spread over 30 call sites; no notification settings (only one marketing tick box, no consent record, no STOP handling, promo
+broadcast only in-app); rider and driver phone numbers are masked (good) but there was **no way at all** for them to reach each other (the driver app
+even says "Deaf rider: send a message" with nothing to send it with); phone-booked riders (often no smartphone) got no updates; the broadcast awaited
+every rider one by one.
+
+Suggested:
+1. [add] One place for wording: `src/lib/messages.ts` holds every SMS, push and inbox message (title, body, SMS text, category, SMS kind essential /
+   transactional / marketing); every call site uses it; GSM-7/UCS-2 segment count; test: no emoji, SMS ≤ 2 segments (sign-in code 1), sender named.
+2. [fix] SMS production-ready: Twilio client with timeout, Messaging Service SID or sender (number or alphanumeric "DingoGo"), `TWILIO_API_BASE` for
+   tests, Twilio errors handled (21610 unsubscribed → opt-out recorded), delivery log `comms_log` (template key and last 3 digits only — never the text,
+   so no sign-in codes or PINs), opted-out numbers get no non-essential texts.
+3. [add] Push production-ready: FCM HTTP v1 (service account → OAuth, RS256, cached) for Android, Web Push (VAPID ES256 + RFC 8291 aes128gcm) for the PWA,
+   Expo only for Expo tokens; dead tokens removed; `DELETE /me/push-token` on sign-out; `/public/config` gives the VAPID key. Apps: shared `enablePush()`
+   (native only when the APK has Firebase, `VITE_FCM_ENABLED`; PWA via a push-only service worker).
+4. [add] Notification preferences: `GET/PUT /me/notification-prefs` (push per category: trip, chat, account, documents, offers; texts for trip updates;
+   safety always on); `notify()` honours them; phone-booked trips get texts for "driver on the way", "driver here" and "no drivers".
+5. [add] Marketing consent (Spam Act): kept apart from service messages; consent records (given/withdrawn, the wording shown, source, IP, time) from
+   `PATCH /me`, prefs, STOP; SMS broadcast only to opted-in, not-opted-out riders, identifying DingoGo with "Reply STOP to opt out", from a number that
+   takes replies; signed Twilio inbound webhook handles STOP / START / HELP (STOP also covers non-users such as parcel recipients).
+6. [add] In-app chat during a trip: `GET/POST /trips/:id/messages` (poll with `after`, `peek`, idempotent `client_id`, quick replies per role, while
+   live and 30 min after drop-off, 20 per 5 min, ops read and can write as DingoGo); realtime `message.new`; push to the other side, collapsed per trip.
+7. [add] Masked calls/texts through a Twilio relay number (`TWILIO_RELAY_NUMBER`): `GET /trips/:id/contact`; signed voice webhook bridges the caller to
+   the other party with the relay as caller ID; texts to the relay land in the trip chat and are passed on; chat to a phone-booked rider is texted from
+   the relay. Not configured → chat only.
+8. [add] Apps: chat sheet on the rider and driver live trip with quick replies and an unread badge (polling-friendly), Call button when the relay is on,
+   notification settings (rider Account → Notifications, driver Profile) with "Turn on notifications"; push token removed at sign-out.
+9. [add] Admin: trip drawer shows the trip chat and texts sent; broadcast by app or SMS with the Spam Act rules; integrations list SMS replies, relay, FCM,
+   web push. `GET /me/export` adds messages, consents and preferences (APP 12). Docs.
+10. [fix] Broadcast sends in bounded parallel batches (one-by-one awaits with push network calls could pass the 30 s serverless limit).
+
+Done (all 10). Migration: `services/api/migrations/015_comms.sql` (column `users.notification_prefs`; tables `marketing_consents`, `sms_opt_outs`,
+`trip_messages`, `comms_log`; additive, IF NOT EXISTS). Before it is applied: settings use the defaults (saving push/text choices says
+`migration_pending`, the offers opt-in itself still saves), chat answers 503 `migration_pending` and the apps hide the Message button, texts and
+notifications still go (no log, no opt-out list; STOP is still answered). Tests: 73 → 83 (new `test/messages.test.ts`, no DB/network: every
+template renders without emoji, texts GSM-7 and ≤ 2 parts, sign-in code 1 part, segment maths, typographic swaps, STOP/START/HELP keywords,
+Twilio signature, TwiML escaping, RFC 8291 Web Push round trip with a browser-side decrypt, VAPID ES256 verified, prefs merge/safety/consent rules;
+e2e with a fake Twilio/FCM/Web Push server on localhost: chat quick replies, replay-safe sends, read receipts, `after` cursor, strangers 404, ops
+read/write, rate limit, 30-min close, export; Twilio sender ID, log without the code, 21610 → opt-out → transactional skipped but essential sent,
+webhook 403/503, STOP/START/HELP with consent records and non-users; relay: phone booking gets PIN and "on the way" texts, masked call both ways,
+no-trip call, rider text → chat via SMS, driver reply → text from the relay, ops comms list; push: FCM with a verified service-account JWT, Web
+Push decrypted, dead tokens removed, settings honoured, safety always, offers need consent, trip texts by choice, SMS broadcast needs a reply
+number and skips STOP numbers, sign-out removes the token, public config/integrations; everything still works with the Round 9 tables renamed away).
+Browser smoke (Playwright, phone size): rider opens Message, quick reply and typed message, driver sees the unread badge and toast, replies with a quick
+reply, rider sees it and "Read"; notification settings save; axe 0 violations on the rider chat dialog, driver chat sheet, rider settings and driver
+Profile; no page errors.
+- API: new `src/lib/messages.ts` (all wording, categories, SMS kinds, `smsSegments`, `gsmFriendly`, consent wording), `src/services/sms.ts` (Twilio
+  client, opt-outs, `comms_log`, keywords, signatures, TwiML), `src/services/push.ts` (FCM v1, Web Push, Expo, dead tokens, VAPID keys),
+  `src/services/prefs.ts` (settings, `pushAllowed`, consent records, `setMarketing`), `src/services/chat.ts` (thread, quick replies, read receipts,
+  relay forwarding, `tripForPhone`, `contactFor`), `src/routes/comms.ts` (chat, contact, settings, `DELETE /me/push-token`, Twilio SMS/voice
+  webhooks with a scoped form parser); `services/notify.ts` rewritten (`send` by template with settings and trip texts, `sendSmsT`, `notify` options
+  `inbox`/`tag`); every call site in `trips.ts`, `admin.ts`, `rider.ts`, `auth.ts`, `docExpiry.ts`, `earningsFloor.ts` moved to templates; `routes/auth.ts`
+  (consent on `PATCH /me` and deletion, export additions); `routes/admin.ts` (broadcast by app/SMS in batches, trip drawer `messages`/`comms`,
+  integrations); `routes/public.ts` (`push`, `comms`); `config.ts` (`twilio.*`, `push.*`); `scripts/vapid-keys.ts` (`npm run vapid`); `.env.example`.
+- Shared: new `Chat.tsx` (`useTripChat` polling hook with client ids and optimistic sends, `ChatThread`), `push.ts` (`enablePush`/`refreshPush`/
+  `disablePush`/`pushState`; native only with `VITE_FCM_ENABLED`), `NotifySettings.tsx`; chat and badge styles in `brand.css`.
+- Rider app: live trip "Message <driver>" with unread badge and spoken "New message", Call button when the relay is on, chat dialog; Account →
+  Notifications → settings (offers consent moved there from Profile); push re-registered quietly on start, removed at sign-out; push-only `sw.js`.
+  Driver app: Message/Call row on the live trip (Call hidden for Deaf riders), chat sheet with "pull over before you type", toast + buzz on a new
+  message; Profile → Notifications; push refresh/sign-out; `sw.js`. Admin: trip drawer Messages, "Texts and calls" and "Message rider and driver"
+  as DingoGo; Broadcast "Send as" app or text with the exact text shown; Reports shows text/push status; labels.
+- Behaviour changes to note: the parcel recipient text lost its em dash (was sent as 3 UCS-2 parts, now 1–2 GSM parts); referral bonus and tip notices
+  are category `account` (referral was `promo`, so riders without offers consent never saw it); offers (`promo`) are no longer put in the inbox of
+  riders who haven't opted in (they weren't sent before either, except the referral); riders who booked by phone now get trip texts; `POST
+  /admin/broadcast` returns `{ sent, skipped }`; the rider Profile no longer has the offers tick box (it's in Notification settings); Expo push only for
+  Expo tokens.
+- Deploy: apply migration 015. **Env vars (all optional, features stay off without them):** Twilio — `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`,
+  `TWILIO_FROM` (or `TWILIO_MESSAGING_SERVICE_SID`), `TWILIO_MARKETING_FROM` (a +61 number for offers by text, if `TWILIO_FROM` is a sender ID),
+  `TWILIO_RELAY_NUMBER` + `TWILIO_WEBHOOK_BASE_URL=https://dingogo-steel.vercel.app/api` (needed for webhook signatures; set the relay number's Voice
+  webhook to `…/api/comms/twilio/voice` and every DingoGo number's Messaging webhook to `…/api/comms/twilio/sms`, both POST). Push —
+  `FCM_SERVICE_ACCOUNT` (Firebase service-account JSON or base64) and, for the Android builds, `google-services.json` in `apps/*/android/app` plus
+  `VITE_FCM_ENABLED=true` in the Android workflow (without both the apps never call native push, so the current APKs can't crash);
+  `WEB_PUSH_VAPID_PUBLIC_KEY`/`WEB_PUSH_VAPID_PRIVATE_KEY` from `npm run vapid -w services/api` (`WEB_PUSH_SUBJECT` optional). No data fix.
+
+Deferred:
+- iOS push: Capacitor on iOS hands out APNs tokens, which FCM can't use; needs Firebase Messaging in the iOS app (or a direct APNs client) and an Apple
+  key. Tokens tagged `ios` are tried on FCM and dropped if refused.
+- Twilio Proxy: chose a single relay number (simpler, no extra Twilio product, one number for all trips because the caller's own number picks the
+  trip). Limit: a rider calling from a number that isn't on their account isn't recognised (the app says so). A pool of numbers per trip would lift it.
+- Delivery receipts (Twilio status callbacks into `comms_log`) and an ops "resend PIN" button: the log records "sent to Twilio", not "delivered".
+- Chat translation and voice input; moderation/word filter (messages are kept and visible to ops; the 20/5 min limit stops floods).
+- Retention job for `trip_messages`/`comms_log` (12 months suggested) — belongs with the Round 2 retention idea; needs the privacy policy updated.
+- Quiet hours for non-urgent pushes (documents/account): reminders already run 8 am–8 pm only.
+
+Ideas for next rounds:
+- Ops comms console: SMS from the SOS incident drawer (welfare check, logged on the timeline), "resend parcel PIN", delivery status via Twilio callbacks.
+- SMS booking for riders without smartphones ("RIDE <pickup> to <drop-off>" to a DingoGo number → quote → YES), building on the inbound webhook and
+  phone-booking texts; an Elder can be booked and tracked by a carer.
+- Driver "arriving in 2 minutes" automatic message from GPS distance, and a "can't find you" flow that sends the rider's pin photo/landmark.
+- Privacy retention job (messages, comms log, GPS tracks, OTP and rate events) with admin-visible schedule and policy text.
+- Notification analytics for ops: push reach (devices per user, last success), texts per day and cost, STOP rate per campaign.

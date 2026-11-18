@@ -1,3 +1,4 @@
+import { pushProviders } from '../services/push.js';
 import type { FastifyInstance } from 'fastify';
 import { one, q } from '../db.js';
 import { ApiError, notFound } from '../lib/errors.js';
@@ -40,6 +41,9 @@ export default async function publicRoutes(app: FastifyInstance) {
     vehicle_rules: { ...(await vehicleAgeRule('NT')), min_doors: 4, seats: { min: 4, max: 7 }, fuel_types: FUEL_TYPES },
     jurisdictions: await listJurisdictions(),
     document_types: DOCUMENT_TYPES,
+    // Round 9: which push services the apps can register with, and whether masked calls (relay number) are on.
+    push: { web_push_key: config.push.vapidPublicKey || null, fcm: pushProviders().fcm },
+    comms: { relay: !!(config.twilio.relayNumber && config.twilio.sid && config.twilio.token), chat: true },
   }));
 
   app.get('/public/places', async (req) => ({ places: searchPlaces(String((req.query as any).q ?? '').slice(0, 100)) }));

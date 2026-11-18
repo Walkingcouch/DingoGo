@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link, Route, Routes, useNavigate, useSearchParams } from 'react-router-dom';
-import { ApiError, Icon, ago, date, del, get, money, patch, post, useLoad, Ranges } from '@dingogo/shared';
+import { ApiError, Icon, NotifySettings, ago, date, del, get, money, patch, post, useLoad, Ranges } from '@dingogo/shared';
 import { Dialog, Page, Spinner } from '../components/ui';
 import { useMe } from '../ctx';
 
@@ -11,6 +11,7 @@ export function AccountScreen() {
       <Route path="profile" element={<Profile />} />
       <Route path="payment" element={<Payment />} />
       <Route path="notifications" element={<Inbox />} />
+      <Route path="notifications/settings" element={<Page title="Notification settings" back="/account/notifications"><NotifySettings app="rider" /></Page>} />
       <Route path="help" element={<Help />} />
       <Route path="safety" element={<Safety />} />
       <Route path="privacy" element={<Privacy />} />
@@ -25,7 +26,7 @@ function Menu() {
   const items = [
     { to: 'profile', icon: 'user', title: 'Profile and preferences', sub: 'Name, emergency contact, accessibility, language' },
     { to: 'payment', icon: 'wallet', title: 'Payment and credit', sub: `${money(me?.user.wallet_cents ?? 0)} DingoGo credit` },
-    { to: 'notifications', icon: 'bell', title: 'Notifications', sub: n ? `${n} unread` : 'All caught up' },
+    { to: 'notifications', icon: 'bell', title: 'Notifications', sub: `${n ? `${n} unread` : 'All caught up'}. Settings and offers` },
     { to: 'help', icon: 'help', title: 'Help', sub: 'Lost property, fares, report a problem' },
     { to: 'safety', icon: 'shield', title: 'Safety', sub: 'Trip PIN, sharing, SOS, our drivers' },
     { to: 'privacy', icon: 'lock', title: 'Privacy and your data', sub: 'Download or delete your data' },
@@ -67,7 +68,7 @@ function Profile() {
     e.preventDefault(); setErr(null); setSaved(false);
     try {
       await patch('/me', {
-        name: f.name || undefined, email: f.email, language: f.language, marketing_opt_in: f.marketing,
+        name: f.name || undefined, email: f.email, language: f.language,
         emergency_contact: f.ec_name && f.ec_phone ? { name: f.ec_name, phone: f.ec_phone } : null,
         accessibility: { wheelchair: f.wheelchair, assistance_animal: f.assistance_animal, hearing: f.hearing, vision: f.vision, notes: f.notes },
       });
@@ -103,8 +104,8 @@ function Profile() {
             <option value="arr" disabled>Arrernte (coming, being made with community)</option>
             <option value="wbp" disabled>Warlpiri (coming)</option>
           </select></label>
-        <h2 className="section__title" style={{ marginTop: 24 }}>Offers</h2>
-        {chk('marketing', <>Send me DingoGo offers and café deals<br /><small className="dg-muted">Optional. Trip updates and receipts always come through. You can turn offers off here any time.</small></>)}
+        <h2 className="section__title" style={{ marginTop: 24 }}>Offers and notifications</h2>
+        <p><Link to="/account/notifications/settings">Choose what we send you, and whether you'd like offers</Link></p>
         {err && <p className="dg-error" role="alert">{err}</p>}
         {saved && <p className="callout callout--green" role="status">Saved.</p>}
         <button className="dg-btn dg-btn--dark dg-btn--block" style={{ marginTop: 12 }}>Save changes</button>
@@ -279,6 +280,7 @@ function Inbox() {
   useEffect(() => { void post('/me/notifications/read'); }, []);
   return (
     <Page title="Notifications" back="/account">
+      <p><Link to="/account/notifications/settings" className="dg-btn dg-btn--ghost dg-btn--sm"><Icon name="settings" size={18} />Notification settings</Link></p>
       {loading && <Spinner />}
       {!loading && !data?.notifications.length && <p className="empty">Nothing here yet. Trip updates and offers will show up here.</p>}
       <ul className="inbox">

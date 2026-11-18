@@ -14,6 +14,11 @@ import { config } from '../src/config.js';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { encodeForm, signWebhook, verifyWebhook } from '../src/services/payments.js';
+import crypto from 'node:crypto';
+import { sendSmsNow, twilioSignature } from '../src/services/sms.js';
+import { generateVapidKeys } from '../src/services/push.js';
+import { notify, send } from '../src/services/notify.js';
+import { decryptWebPush } from './helpers/webpush.js';
 
 process.env.LOG_SMS = 'false';
 let app: Awaited<ReturnType<typeof buildServer>>;
@@ -2005,4 +2010,340 @@ test('mock cards: only test accounts in production mode (others: coming soon); t
   assert.deepEqual(rc.lines, [{ label: 'Cancellation fee', cents: fee.cancel_fee_cents }]);
   assert.deepEqual([rc.fare_cents, rc.gst_cents, rc.cancellation_fee, rc.customer.ndis_number, rc.co2_saved_kg], [fee.cancel_fee_cents, Math.round(fee.cancel_fee_cents / 11), true, '430000001', null]);
   assert.match(rc.gst_note, /^Total includes GST of \$/);
+});
+
+// ───────────── Round 9: notifications and communications (fake Twilio / FCM / Web Push on localhost, no network) ─────────────
+const comms = {
+  url: '', sms: [] as { params: Record<string, string>; auth: string }[], fcm: [] as any[], fcmAuth: [] as any[], web: [] as { id: string; headers: http.IncomingHttpHeaders; body: Buffer }[],
+  twilioError: null as null | { status: number; body: any }, fcmDead: new Set<string>(), webDead: new Set<string>(), n: 0,
+};
+const fcmKeys = crypto.generateKeyPairSync('rsa', { modulusLength: 2048, privateKeyEncoding: { type: 'pkcs8', format: 'pem' }, publicKeyEncoding: { type: 'spki', format: 'pem' } });
+const commsServer = http.createServer((req, res) => {
+  const chunks: Buffer[] = [];
+  req.on('data', (d) => chunks.push(d));
+  req.on('end', () => {
+    const raw = Buffer.concat(chunks); const u = new URL(req.url ?? '/', 'http://x');
+    const send = (status: number, body: any) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(body)); };
+    if (u.pathname === '/2010-04-01/Accounts/AC_test/Messages.json') {
+      if (req.headers.authorization !== 'Basic ' + Buffer.from('AC_test:twtok').toString('base64')) return send(401, { code: 20003, message: 'auth' });
+      if (comms.twilioError) return send(comms.twilioError.status, comms.twilioError.body);
+      comms.sms.push({ params: Object.fromEntries(new URLSearchParams(raw.toString())), auth: req.headers.authorization! });
+      return send(201, { sid: `SM${++comms.n}`, status: 'queued' });
+    }
+    if (u.pathname === '/oauth/token') {
+      const p = new URLSearchParams(raw.toString());
+      const [h, c, s] = String(p.get('assertion')).split('.');
+      const ok = crypto.verify('RSA-SHA256', Buffer.from(`${h}.${c}`), fcmKeys.publicKey, Buffer.from(s, 'base64url'));
+      comms.fcmAuth.push({ ok, grant: p.get('grant_type'), claims: JSON.parse(Buffer.from(c, 'base64url').toString()) });
+      return ok ? send(200, { access_token: 'ya29.fake', expires_in: 3600 }) : send(400, { error: 'invalid_grant' });
+    }
+    if (u.pathname === '/v1/projects/dingogo-test/messages:send') {
+      if (req.headers.authorization !== 'Bearer ya29.fake') return send(401, { error: { status: 'UNAUTHENTICATED' } });
+      const m = JSON.parse(raw.toString()).message;
+      if (comms.fcmDead.has(m.token)) return send(404, { error: { status: 'NOT_FOUND', message: 'Requested entity was not found.', details: [{ errorCode: 'UNREGISTERED' }] } });
+      comms.fcm.push(m);
+      return send(200, { name: 'projects/dingogo-test/messages/1' });
+    }
+    const push = u.pathname.match(/^\/push\/(.+)$/);
+    if (push) {
+      if (comms.webDead.has(push[1])) { res.writeHead(410); return res.end(); }
+      comms.web.push({ id: push[1], headers: req.headers, body: raw });
+      res.writeHead(201); return res.end();
+    }
+    send(404, { message: 'fake comms: no route ' + u.pathname });
+  });
+});
+after(() => { commsServer.close(); });
+const RELAY = '+61480000999';
+async function withComms<T>(fn: () => Promise<T>): Promise<T> {
+  if (!comms.url) { await new Promise<void>((r) => commsServer.listen(0, '127.0.0.1', r)); comms.url = `http://127.0.0.1:${(commsServer.address() as AddressInfo).port}`; }
+  const prevT = { ...config.twilio }; const prevP = { ...config.push };
+  Object.assign(config.twilio, { sid: 'AC_test', token: 'twtok', from: 'DingoGo', messagingServiceSid: '', marketingFrom: '', relayNumber: RELAY,
+    webhookBaseUrl: 'https://api.test', apiBase: comms.url, timeoutMs: 3000 });
+  Object.assign(config.push, { fcmServiceAccount: JSON.stringify({ project_id: 'dingogo-test', client_email: 'push@dingogo-test.iam.gserviceaccount.com',
+    private_key: fcmKeys.privateKey, token_uri: `${comms.url}/oauth/token` }), fcmApiBase: comms.url, ...vapid, timeoutMs: 3000 });
+  process.env.WEB_PUSH_ALLOW_HTTP = '1';
+  try { return await fn(); } finally { Object.assign(config.twilio, prevT); Object.assign(config.push, prevP); delete process.env.WEB_PUSH_ALLOW_HTTP; }
+}
+const vapid = (() => { const k = generateVapidKeys(); return { vapidPublicKey: k.publicKey, vapidPrivateKey: k.privateKey, vapidSubject: 'mailto:test@dingogo.test' }; })();
+async function twilioHook(path: string, params: Record<string, string>, sig?: string) {
+  const res = await app.inject({ method: 'POST', url: path, payload: new URLSearchParams(params).toString(),
+    headers: { 'content-type': 'application/x-www-form-urlencoded', 'x-twilio-signature': sig ?? twilioSignature('twtok', 'https://api.test' + path, params) } });
+  return { status: res.statusCode, body: res.body, type: String(res.headers['content-type'] ?? '') };
+}
+
+test('trip chat: quick replies, replay-safe sends, read receipts, polling cursor, strangers kept out, ops can read and write, closes 30 min after drop-off', async () => {
+  await clearOpenTrips();
+  await onlyOnline(['d1']);
+  const trip = await book();
+  await waitForOffer('d1');
+  assert.equal((await call('POST', `/driver/offers/${trip.id}/accept`, 'd1')).status, 200);
+  const url = `/trips/${trip.id}/messages`;
+  const first = await call('GET', url, 'rider');
+  assert.deepEqual([first.status, first.messages.length, first.can_send, first.role], [200, 0, true, 'rider']);
+  assert.ok(first.quick_replies.some((r: any) => r.key === 'coming_out'));
+  const dq = (await call('GET', url, 'd1')).quick_replies.map((r: any) => r.key);
+  assert.ok(dq.includes('outside') && !dq.includes('at_door'), 'ride quick replies for the driver');
+
+  const m1 = await call('POST', url, 'rider', { quick: 'coming_out', client_id: 'chat-msg-0001' });
+  assert.deepEqual([m1.status, m1.message.body, m1.message.mine, m1.message.from], [201, "I'm coming out now", true, 'rider']);
+  const again = await call('POST', url, 'rider', { quick: 'coming_out', client_id: 'chat-msg-0001' });
+  assert.deepEqual([again.status, again.replayed, again.message.id], [200, true, m1.message.id], 'a retried send is stored once');
+  assert.equal((await call('POST', url, 'rider', { quick: 'no_such' })).error, 'bad_quick_reply');
+  assert.equal((await call('POST', url, 'rider', { body: '  \u0007  ' })).error, 'empty_message');
+  const long = await call('POST', url, 'rider', { body: 'Gate\u0000 code\n\n\n\nis 1234 ' + 'x'.repeat(600) });
+  assert.equal(long.status, 201);
+  assert.ok(long.message.body.startsWith('Gate code\n\nis 1234') && long.message.body.length === 500, 'cleaned and capped');
+  assert.equal((await call('GET', url, 'd2')).status, 404, 'another driver can\'t read it');
+  assert.equal((await call('POST', url, 'd2', { body: 'hi' })).status, 404);
+
+  const peek = await call('GET', `${url}?peek=1`, 'd1');
+  assert.equal(peek.unread, 2);
+  assert.ok(peek.messages.every((m: any) => !m.read_at), 'peeking leaves them unread');
+  await call('GET', url, 'd1');
+  assert.ok((await call('GET', url, 'rider')).messages.every((m: any) => m.read_at), 'rider sees "Read"');
+  const reply = await call('POST', url, 'd1', { body: 'Be there in 2' });
+  const since = await call('GET', `${url}?after=${long.message.id}`, 'rider');
+  assert.deepEqual(since.messages.map((m: any) => [m.id, m.from, m.mine]), [[reply.message.id, 'driver', false]], 'only what is new');
+  assert.equal((await one(`SELECT count(*)::int n FROM notifications WHERE category = 'chat'`)).n, 0, 'chat stays out of the inbox');
+
+  const ops = await call('POST', url, 'admin', { body: 'DingoGo here. All OK?' });
+  assert.deepEqual([ops.status, ops.message.from], [201, 'dingogo']);
+  assert.equal((await call('GET', url, 'admin')).role, 'dingogo');
+  assert.equal((await call('GET', `${url}?peek=1`, 'rider')).unread, 1, 'the DingoGo message is unread for the rider');
+  assert.equal((await one(`SELECT read_at FROM trip_messages WHERE id = $1`, [ops.message.id])).read_at, null, 'staff reading the thread marks nothing read');
+  const drawer = await call('GET', `/admin/trips/${trip.id}`, 'admin');
+  assert.deepEqual(drawer.messages.map((m: any) => m.sender_role), ['rider', 'rider', 'driver', 'dingogo']);
+  const contact = await call('GET', `/trips/${trip.id}/contact`, 'rider');
+  assert.deepEqual([contact.chat, contact.call, contact.reason], [true, null, 'relay_off'], 'no relay number: chat only');
+
+  // 20 messages per 5 minutes per person per trip.
+  for (let i = 0; i < 18; i++) assert.equal((await call('POST', url, 'rider', { body: `m${i}` })).status, 201);
+  assert.equal((await call('POST', url, 'rider', { body: 'one too many' })).status, 429);
+
+  await q(`UPDATE trips SET status = 'completed', completed_at = now() - interval '10 minutes' WHERE id = $1`, [trip.id]);
+  const after10 = await call('GET', url, 'd1');
+  assert.ok(after10.can_send && after10.closes_at, 'still open just after drop-off (left something in the car)');
+  await q(`UPDATE trips SET completed_at = now() - interval '31 minutes' WHERE id = $1`, [trip.id]);
+  assert.equal((await call('GET', url, 'd1')).can_send, false);
+  assert.equal((await call('POST', url, 'd1', { body: 'late' })).error, 'chat_closed');
+  assert.equal((await call('POST', url, 'admin', { body: 'Follow-up from DingoGo' })).status, 201, 'staff can still write');
+  const exp = await call('GET', '/me/export', 'rider');
+  assert.ok(exp.messages.some((m: any) => m.body === "I'm coming out now"), 'messages are in the data export');
+});
+
+test('SMS: Twilio behind config (sender ID, log without the text), unsubscribed numbers remembered, signed webhook with STOP / START / HELP and consent records', async () => {
+  await withComms(async () => {
+    comms.sms = [];
+    const r = await call('POST', '/auth/otp/request', undefined, { phone: '0400 000 861' }, '10.9.9.1');
+    assert.equal(r.status, 200, JSON.stringify(r));
+    await flushBackground();
+    const otp = comms.sms.at(-1)!;
+    assert.deepEqual([otp.params.To, otp.params.From], ['+61400000861', 'DingoGo']);
+    assert.ok(otp.params.Body.includes(r.dev_code));
+    const log = await one(`SELECT * FROM comms_log WHERE template = 'otp' ORDER BY id DESC LIMIT 1`);
+    assert.deepEqual([log.to_tail, log.status, log.channel], ['861', 'sent', 'sms']);
+    assert.ok(log.provider_ref.startsWith('SM'));
+    assert.ok(!Object.values(log).some((v) => String(v).includes(r.dev_code)), 'the code is never stored');
+
+    comms.twilioError = { status: 400, body: { code: 21610, message: 'Attempt to send to unsubscribed recipient' } };
+    assert.equal((await sendSmsNow('+61400000870', 'DingoGo: test')).status, 'unsubscribed');
+    comms.twilioError = null;
+    assert.equal((await one(`SELECT source FROM sms_opt_outs WHERE phone = '+61400000870'`)).source, 'carrier');
+    const before = comms.sms.length;
+    assert.equal((await sendSmsNow('+61400000870', 'DingoGo: test 2')).status, 'skipped_opt_out');
+    assert.equal(comms.sms.length, before, 'nothing sent to an unsubscribed number');
+    assert.equal((await sendSmsNow('+61400000870', 'DingoGo code', { kind: 'essential' })).sent, true, 'a sign-in code they asked for still goes');
+    comms.twilioError = { status: 500, body: { message: 'oops' } };
+    assert.equal((await sendSmsNow('+61400000869', 'DingoGo: x')).status, 'failed');
+    comms.twilioError = null;
+
+    // Webhook: signed requests only.
+    const stopP = { From: '+61400000100', To: '+61480000111', Body: 'Stop' };
+    assert.equal((await twilioHook('/comms/twilio/sms', stopP, 'bad')).status, 403);
+    config.twilio.token = '';
+    assert.equal((await twilioHook('/comms/twilio/sms', stopP)).status, 503);
+    config.twilio.token = 'twtok';
+
+    await call('PUT', '/me/notification-prefs', 'rider', { marketing: false });
+    const yes = await call('PUT', '/me/notification-prefs', 'rider', { marketing: true });
+    assert.equal(yes.marketing.opted_in, true);
+    const stop = await twilioHook('/comms/twilio/sms', stopP);
+    assert.equal(stop.status, 200);
+    assert.ok(stop.type.startsWith('text/xml') && /<Message>.*START.*<\/Message>/.test(stop.body));
+    const after = await call('GET', '/me/notification-prefs', 'rider');
+    assert.deepEqual([after.marketing.opted_in, after.sms_opted_out, after.marketing.last_change.source], [false, true, 'sms_stop']);
+    const consents = await q(`SELECT granted, source, wording, ip FROM marketing_consents WHERE user_id = (SELECT id FROM users WHERE phone = '+61400000100') ORDER BY id DESC LIMIT 2`);
+    assert.deepEqual(consents.map((c) => [c.granted, c.source]), [[false, 'sms_stop'], [true, 'app']]);
+    assert.match(consents[1].wording, /offers/);
+    assert.ok(consents[1].ip, 'where consent was given from');
+    const start = await twilioHook('/comms/twilio/sms', { ...stopP, Body: 'START' });
+    assert.match(start.body, /back on/);
+    const again = await call('GET', '/me/notification-prefs', 'rider');
+    assert.deepEqual([again.sms_opted_out, again.marketing.opted_in], [false, false], 'START turns texts back on but not offers');
+    assert.match((await twilioHook('/comms/twilio/sms', { ...stopP, Body: 'help' })).body, /STOP/);
+    // Someone without an account (a parcel recipient) can stop texts too.
+    await twilioHook('/comms/twilio/sms', { From: '+61400000868', To: '+61480000111', Body: 'UNSUBSCRIBE' });
+    assert.ok(await one(`SELECT 1 FROM sms_opt_outs WHERE phone = '+61400000868'`));
+    assert.ok(await one(`SELECT 1 FROM marketing_consents WHERE phone = '+61400000868' AND user_id IS NULL AND granted = false`));
+    // A text that isn't a keyword to a number that isn't the relay: no reply.
+    assert.match((await twilioHook('/comms/twilio/sms', { From: '+61400000867', To: '+61480000111', Body: 'hello?' })).body, /<Response\/>/);
+    // PATCH /me (older app) records consent too.
+    await call('PATCH', '/me', 'rider', { marketing_opt_in: true });
+    await call('PATCH', '/me', 'rider', { marketing_opt_in: false });
+    const appRows = await q(`SELECT granted FROM marketing_consents WHERE user_id = (SELECT id FROM users WHERE phone = '+61400000100') AND source = 'app' ORDER BY id DESC LIMIT 2`);
+    assert.deepEqual(appRows.map((r) => r.granted), [false, true]);
+  });
+});
+
+test('relay number: masked calls and texts between rider and driver; phone bookings get trip texts; chat to a phone rider goes by text', async () => {
+  await withComms(async () => {
+    await clearOpenTrips();
+    await onlyOnline(['d1']);
+    comms.sms = [];
+    const pb = await call('POST', '/admin/bookings', 'admin', { phone: '0400 123 456', name: 'Nan Phone', trip: { kind: 'courier', service: 'courier_s', pickup: TODD_MALL, dropoff: HOSPITAL,
+      parcel: { size: 'S', description: 'Medicine', sender_name: 'Nan Phone', sender_phone: '0400123456', recipient_name: 'Aunty', recipient_phone: '0400123455', prohibited_ack: true } } });
+    assert.equal(pb.status, 201, JSON.stringify(pb));
+    const id = pb.trip.id;
+    await waitForOffer('d1');
+    assert.equal((await call('POST', `/driver/offers/${id}/accept`, 'd1')).status, 200);
+    await flushBackground();
+    const pin = (await one('SELECT delivery_pin FROM parcels WHERE trip_id = $1', [id])).delivery_pin;
+    assert.ok(comms.sms.some((s) => s.params.To === '+61400123455' && s.params.Body.includes(pin)), 'recipient got the PIN');
+    assert.ok(comms.sms.some((s) => s.params.To === '+61400123456' && /on the way/.test(s.params.Body)), 'phone-booked rider got "on the way" by text');
+    assert.ok(comms.sms.every((s) => !/[—’]/.test(s.params.Body)), 'texts are plain GSM characters');
+
+    const contact = await call('GET', `/trips/${id}/contact`, 'd1');
+    assert.equal(contact.call.number, RELAY);
+    const fromDriver = await twilioHook('/comms/twilio/voice', { From: '+61400000011', To: RELAY, CallSid: 'CA100' });
+    assert.match(fromDriver.body, new RegExp(`<Dial callerId="\\${RELAY}"[^>]*><Number>\\+61400123456</Number>`));
+    assert.match(fromDriver.body, /your DingoGo rider/);
+    const fromRider = await twilioHook('/comms/twilio/voice', { From: '+61400123456', To: RELAY, CallSid: 'CA101' });
+    assert.match(fromRider.body, /<Number>\+61400000011<\/Number>/);
+    const stranger = await twilioHook('/comms/twilio/voice', { From: '+61400999999', To: RELAY });
+    assert.ok(!/<Dial/.test(stranger.body) && /couldn't find a live DingoGo trip/.test(stranger.body));
+    assert.equal((await q(`SELECT 1 FROM trip_events WHERE trip_id = $1 AND type = 'relay_call'`, [id])).length, 2);
+
+    // The rider texts the relay: it lands in the trip chat for the driver.
+    const t = await twilioHook('/comms/twilio/sms', { From: '+61400123456', To: RELAY, Body: "I'm at the front gate" });
+    assert.match(t.body, /<Response\/>/);
+    const thread = await call('GET', `/trips/${id}/messages`, 'd1');
+    assert.deepEqual([thread.messages.at(-1).body, thread.messages.at(-1).via, thread.messages.at(-1).from], ["I'm at the front gate", 'sms', 'rider']);
+    // The driver answers in the app: passed on by text from the relay, so Nan can reply.
+    comms.sms = [];
+    await call('POST', `/trips/${id}/messages`, 'd1', { body: 'Coming to the gate now' });
+    await flushBackground();
+    const fwd = comms.sms.find((s) => s.params.To === '+61400123456')!;
+    assert.equal(fwd.params.From, RELAY);
+    assert.match(fwd.params.Body, /^DingoGo driver \w+: Coming to the gate now/);
+    // Nobody's trip: polite reply.
+    assert.match((await twilioHook('/comms/twilio/sms', { From: '+61400999999', To: RELAY, Body: 'hello' })).body, /couldn't find a live trip/);
+    const drawer = await call('GET', `/admin/trips/${id}`, 'admin');
+    const kinds = drawer.comms.map((c: any) => c.template);
+    assert.ok(kinds.includes('driver_on_way') && kinds.includes('chat_relay_sms') && kinds.includes('relay_call'));
+    assert.ok(drawer.comms.every((c: any) => c.body === undefined), 'no text kept in the log');
+    await call('POST', `/admin/trips/${id}/cancel`, 'admin', {});
+  });
+});
+
+test('push: FCM and Web Push behind config; settings respected, safety always, offers need consent; dead tokens removed; broadcast by text follows the Spam Act', async () => {
+  await withComms(async () => {
+    const rider = (await one(`SELECT id FROM users WHERE phone = '+61400000100'`)).id;
+    await q('DELETE FROM push_tokens WHERE user_id = $1', [rider]);
+    await call('PUT', '/me/notification-prefs', 'rider', { marketing: false });
+    const ua = crypto.createECDH('prime256v1'); ua.generateKeys(); const auth = crypto.randomBytes(16);
+    const sub = (p: string) => JSON.stringify({ endpoint: `${comms.url}/push/${p}`, keys: { p256dh: ua.getPublicKey().toString('base64url'), auth: auth.toString('base64url') } });
+    for (const [token, platform] of [['fcm-token-good-123', 'android'], ['fcm-token-dead-456', 'android'], [sub('good'), 'web'], [sub('gone'), 'web']]) {
+      assert.equal((await call('POST', '/me/push-token', 'rider', { token, platform })).status, 200);
+    }
+    comms.fcmDead.add('fcm-token-dead-456'); comms.webDead.add('gone');
+    comms.fcm = []; comms.web = [];
+    await notify(rider, 'Test title', 'Test body', { trip_id: 'abc', n: 1 }, 'trip');
+    await flushBackground();
+    assert.equal(comms.fcm.length, 1);
+    assert.deepEqual([comms.fcm[0].token, comms.fcm[0].notification.title, comms.fcm[0].data.trip_id, comms.fcm[0].data.n], ['fcm-token-good-123', 'Test title', 'abc', '1']);
+    assert.ok(comms.fcmAuth.at(-1).ok && comms.fcmAuth.at(-1).claims.scope.includes('firebase.messaging'), 'service-account JWT signed with the key');
+    assert.equal(comms.web.length, 1);
+    assert.equal(JSON.parse(decryptWebPush(comms.web[0].body, ua, auth)).title, 'Test title');
+    assert.match(String(comms.web[0].headers.authorization), /^vapid t=.+, k=/);
+    assert.equal(comms.web[0].headers['content-encoding'], 'aes128gcm');
+    const left = (await q('SELECT token FROM push_tokens WHERE user_id = $1', [rider])).map((r) => r.token);
+    assert.equal(left.length, 2, 'dead tokens removed');
+
+    const prefs = await call('GET', '/me/notification-prefs', 'rider');
+    assert.deepEqual(prefs.prefs, { push: { trip: true, chat: true, account: true, documents: true, promo: true }, sms: { trip: false } });
+    assert.ok(!prefs.categories.some((c: any) => c.key === 'documents'), 'riders have no papers');
+    assert.ok(prefs.categories.find((c: any) => c.key === 'safety').locked);
+    assert.deepEqual(prefs.channels.push, { fcm: true, web: true, expo: false });
+    assert.ok((await call('GET', '/me/notification-prefs', 'd1')).categories.some((c: any) => c.key === 'documents'));
+    assert.equal((await call('PUT', '/me/notification-prefs', 'rider', { push: { nope: true } })).status, 400);
+    assert.equal((await call('PUT', '/me/notification-prefs', 'rider', { push: { trip: false } })).prefs.push.trip, false);
+    comms.fcm = []; comms.web = [];
+    await notify(rider, 'Quiet trip update', 'x', {}, 'trip');
+    await notify(rider, 'Safety check', 'x', {}, 'safety');
+    await notify(rider, 'Big sale', 'x', {}, 'promo');
+    await flushBackground();
+    assert.deepEqual(comms.fcm.map((m) => m.notification.title), ['Safety check'], 'trip push off; safety always; offers need consent');
+    assert.ok(await one(`SELECT 1 FROM notifications WHERE user_id = $1 AND title = 'Quiet trip update'`, [rider]), 'inbox still has it');
+    assert.equal(await one(`SELECT 1 FROM notifications WHERE user_id = $1 AND title = 'Big sale'`, [rider]), null, 'no offer without consent');
+
+    // Texts for trip updates when the rider asks for them.
+    assert.equal((await call('PUT', '/me/notification-prefs', 'rider', { sms: { trip: true }, push: { trip: true } })).prefs.sms.trip, true);
+    comms.sms = [];
+    await send(rider, 'driver_here', { ride: true, rego: 'CD12AB', pin: '1234', ref: 'DG-TEST' }, { trip: { id: (await one('SELECT id FROM trips LIMIT 1')).id, channel: 'app' } });
+    await flushBackground();
+    assert.ok(comms.sms.some((s) => s.params.To === '+61400000100' && /your driver is here/.test(s.params.Body)));
+    await call('PUT', '/me/notification-prefs', 'rider', { sms: { trip: false } });
+
+    // Offers by text: opted-in riders, a sender that takes STOP replies, never a number that opted out.
+    await call('PUT', '/me/notification-prefs', 'rider', { marketing: true });
+    const noReply = await call('POST', '/admin/broadcast', 'admin', { audience: 'riders_opted_in', title: 'Deal', body: 'Half price coffee at the Todd Mall.', channel: 'sms' });
+    assert.deepEqual([noReply.status, noReply.error], [409, 'sms_marketing_unavailable'], 'an alphanumeric sender ID can\'t take STOP');
+    config.twilio.marketingFrom = '+61480000001';
+    assert.equal((await call('POST', '/admin/broadcast', 'admin', { audience: 'drivers', title: 'Deal', body: 'x y z', channel: 'sms' })).error, 'sms_riders_only');
+    await q(`INSERT INTO users (phone, name, referral_code, marketing_opt_in) VALUES ('+61400000866', 'Opted Out', 'OPTOUT866', true) ON CONFLICT DO NOTHING`);
+    await twilioHook('/comms/twilio/sms', { From: '+61400000866', To: '+61480000001', Body: 'STOP' });
+    await q(`UPDATE users SET marketing_opt_in = true WHERE phone = '+61400000866'`);   // e.g. said yes in the app again: texts still stay off
+    comms.sms = [];
+    const b = await call('POST', '/admin/broadcast', 'admin', { audience: 'riders_opted_in', title: 'Deal', body: 'Half price coffee at the Todd Mall.', channel: 'sms' });
+    assert.equal(b.status, 200, JSON.stringify(b));
+    assert.ok(b.skipped >= 1);
+    const txt = comms.sms.find((s) => s.params.To === '+61400000100')!;
+    assert.deepEqual([txt.params.From, txt.params.Body], ['+61480000001', 'DingoGo: Half price coffee at the Todd Mall. Reply STOP to opt out.']);
+    assert.ok(!comms.sms.some((s) => s.params.To === '+61400000866'));
+    const app1 = await call('POST', '/admin/broadcast', 'admin', { audience: 'riders_opted_in', title: 'Deal', body: 'In the app' });
+    assert.ok(app1.sent >= 1);
+    assert.match((await one(`SELECT body FROM notifications WHERE user_id = $1 AND title = 'Deal' ORDER BY id DESC LIMIT 1`, [rider])).body, /Turn off offers/);
+    await call('PUT', '/me/notification-prefs', 'rider', { marketing: false });
+
+    assert.equal((await call('DELETE', '/me/push-token', 'rider', { token: 'fcm-token-good-123' })).removed, 1, 'sign-out stops pushes to this phone');
+    const cfg = await call('GET', '/public/config');
+    assert.deepEqual([cfg.push.web_push_key, cfg.push.fcm, cfg.comms.relay], [vapid.vapidPublicKey, true, true]);
+    const integ = await call('GET', '/admin/integrations', 'admin');
+    assert.deepEqual([integ.sms_relay, integ.push_fcm, integ.push_web, integ.sms_replies], ['configured', 'configured', 'configured', 'configured']);
+  });
+});
+
+test('before migration 015: chat says migration_pending, settings fall back to defaults, texts and notifications still go', async () => {
+  const renames = [['trip_messages', 'trip_messages_off'], ['comms_log', 'comms_log_off'], ['sms_opt_outs', 'sms_opt_outs_off'], ['marketing_consents', 'marketing_consents_off']];
+  for (const [a, b] of renames) await q(`ALTER TABLE ${a} RENAME TO ${b}`);
+  await q('ALTER TABLE users RENAME COLUMN notification_prefs TO notification_prefs_off');
+  try {
+    const t = await one(`SELECT id FROM trips WHERE rider_id = (SELECT id FROM users WHERE phone = '+61400000100') ORDER BY requested_at DESC LIMIT 1`);
+    const m = await call('GET', `/trips/${t.id}/messages`, 'rider');
+    assert.deepEqual([m.status, m.error], [503, 'migration_pending']);
+    const p = await call('GET', '/me/notification-prefs', 'rider');
+    assert.deepEqual([p.status, p.prefs.push.trip, p.marketing.last_change, p.sms_opted_out], [200, true, null, false]);
+    assert.equal((await call('PUT', '/me/notification-prefs', 'rider', { push: { trip: false } })).error, 'migration_pending');
+    assert.equal((await call('PUT', '/me/notification-prefs', 'rider', { marketing: false })).status, 200, 'the opt-in flag itself still saves');
+    assert.equal((await call('POST', '/auth/otp/request', undefined, { phone: '0400 000 862' }, '10.9.9.2')).status, 200);
+    const rider = (await one(`SELECT id FROM users WHERE phone = '+61400000100'`)).id;
+    const row = await notify(rider, 'Still works', 'x', {}, 'account');
+    assert.equal(row?.title, 'Still works');
+    assert.equal((await call('GET', `/admin/trips/${t.id}`, 'admin')).messages.length, 0);
+    assert.equal((await call('GET', '/me/export', 'rider')).status, 200);
+  } finally {
+    await q('ALTER TABLE users RENAME COLUMN notification_prefs_off TO notification_prefs');
+    for (const [a, b] of renames) await q(`ALTER TABLE ${b} RENAME TO ${a}`);
+  }
 });

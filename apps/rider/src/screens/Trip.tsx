@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import {
   Icon,
-  ApiError, REALTIME, COURIER_STATUS_LABEL, STATUS_LABEL, ago, connectRealtime, date, dateTime, get, km, money, onNetworkChange, post, statusTone, time, useInterval, Ranges,
+  ApiError, ChatThread, REALTIME, COURIER_STATUS_LABEL, useTripChat, STATUS_LABEL, ago, connectRealtime, date, dateTime, get, km, money, onNetworkChange, post, statusTone, time, useInterval, Ranges,
 } from '@dingogo/shared';
 import { DgMap, type MapMarker } from '@dingogo/shared/map';
 import { ACTIVE, shareUrl, useMe } from '../ctx';
@@ -145,8 +145,22 @@ function LiveTrip({ trip, carPos, reload, onClose, net }: { trip: any; carPos: a
   const labels = trip.kind === 'courier' ? COURIER_STATUS_LABEL : STATUS_LABEL;
   const [sosOpen, setSosOpen] = useState(false);
   const [cancelOpen, setCancelOpen] = useState(false);
+  const [chatOpen, setChatOpen] = useState(false);
   const { copy, copied } = useCopy();
   const step = RIDE_STEPS.indexOf(trip.status);
+  const hasDriver = !!trip.driver && ['accepted', 'arrived', 'in_progress'].includes(trip.status);
+  const chat = useTripChat(hasDriver ? trip.id : null, chatOpen);
+  const contact = useContact(hasDriver ? trip.id : null);
+  useEffect(() => {
+    if (!hasDriver) return;
+    const rt = connectRealtime((m) => { if (m.type === 'message.new' && m.data?.trip_id === trip.id) chat.refresh(); });
+    return () => rt.close();
+  }, [hasDriver, trip.id]); // eslint-disable-line
+  const prevUnread = useRef(0);
+  useEffect(() => {
+    if (chat.unread > prevUnread.current && !chatOpen) announce('New message from your driver');
+    prevUnread.current = chat.unread;
+  }, [chat.unread, chatOpen]);
 
   const markers: MapMarker[] = [
     { id: 'p', kind: 'pickup', lat: trip.pickup_lat, lng: trip.pickup_lng, label: trip.pickup_address },
@@ -225,6 +239,15 @@ function LiveTrip({ trip, carPos, reload, onClose, net }: { trip: any; carPos: a
           </div>
         )}
 
+        {hasDriver && chat.available && (
+          <div className="live__actions">
+            <button className="dg-btn dg-btn--dark" onClick={() => setChatOpen(true)} aria-haspopup="dialog">
+              <Icon name="chat" size={20} />Message {trip.kind === 'courier' ? 'driver' : d?.name?.split(' ')[0] ?? 'driver'}
+              {chat.unread > 0 && <span className="dg-badge" aria-label={`${chat.unread} unread`}>{chat.unread}</span>}
+            </button>
+            {contact?.call && <a className="dg-btn dg-btn--ghost" href={`tel:${contact.call.number}`}><Icon name="phone" size={20} />Call</a>}
+          </div>
+        )}
         <div className="live__actions">
           <button className="dg-btn dg-btn--ghost" onClick={() => shareOrCopy({ title: 'My DingoGo trip', text: `Follow my DingoGo trip ${trip.ref}:`, url: shareUrl(trip.share_token) }, copy)}>
             {copied ? 'Link copied' : 'Share my trip'}
@@ -239,8 +262,23 @@ function LiveTrip({ trip, carPos, reload, onClose, net }: { trip: any; carPos: a
       </div>
       <SosDialog open={sosOpen} onClose={() => setSosOpen(false)} trip={trip} />
       <CancelDialog open={cancelOpen} onClose={() => setCancelOpen(false)} trip={trip} onDone={reload} />
+      <Dialog open={chatOpen} onClose={() => setChatOpen(false)} title={`Messages with ${d?.name?.split(' ')[0] ?? 'your driver'}`}>
+        <ChatThread chat={chat} otherLabel="Driver"
+          hint={contact?.call ? `To talk, tap Call. It goes through DingoGo, so neither of you sees the other's number. Call from the phone number on your account.` : undefined} />
+        <button className="dg-btn dg-btn--ghost dg-btn--block" style={{ marginTop: 10 }} onClick={() => setChatOpen(false)}>Close</button>
+      </Dialog>
     </div>
   );
+}
+
+/** How to reach the driver: masked call through DingoGo's relay number when it's switched on, otherwise messages only. */
+function useContact(tripId: string | null) {
+  const [c, setC] = useState<{ chat: boolean; call: { number: string } | null } | null>(null);
+  useEffect(() => {
+    if (!tripId) { setC(null); return; }
+    get(`/trips/${tripId}/contact`).then(setC).catch(() => setC(null));
+  }, [tripId]);
+  return c;
 }
 
 const LANGS: Record<string, string> = { en: 'English', arr: 'Arrernte', wbp: 'Warlpiri', pjt: 'Pitjantjatjara', luritja: 'Luritja' };

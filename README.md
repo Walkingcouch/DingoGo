@@ -36,7 +36,7 @@ npm install
 npm run db:setup                                   # migrations + demo data
 npm run dev:api                                    # http://localhost:4000
 npm run dev:web    # and/or dev:rider, dev:driver, dev:admin, dev:partner, dev:roof
-npm test                                           # 73 API tests (needs a throwaway DB: they reset it)
+npm test                                           # 83 API tests (needs a throwaway DB: they reset it)
 node scripts/a11y-check.mjs                        # WCAG 2.2 AA check (axe-core + Playwright) of the website and rider app; needs api, web and rider running
 ```
 
@@ -58,7 +58,7 @@ All partner businesses, advertisers and people in the demo data are fictional.
 
 ## What the platform does
 
-**Riders:** book rides, pet-friendly rides, parcels (S/M/L), fixed-price tours and event hire; upfront itemised prices with GST and the NT passenger levy; schedule ahead; assistance-animal, women-preferred driver and NDIS options; accessibility profile shared with the driver (Deaf/hard of hearing, low vision, mobility aid), assistance-animal refusal reports; live tracking with spoken status updates and a "no signal" mode that keeps the last trip on screen; trip PIN; share-trip link; SOS (000 + alert to DingoGo and emergency contact); tips, ratings, tax invoices; Dingo Points, café rewards with QR codes, referrals, DingoGo Pass subscription; DingoGo credit and prepaid vouchers; data export and account deletion.
+**Riders:** book rides, pet-friendly rides, parcels (S/M/L), fixed-price tours and event hire; upfront itemised prices with GST and the NT passenger levy; schedule ahead; assistance-animal, women-preferred driver and NDIS options; accessibility profile shared with the driver (Deaf/hard of hearing, low vision, mobility aid), assistance-animal refusal reports; live tracking with spoken status updates, in-trip messages with the driver (quick replies; masked calls through a DingoGo number when set up), notification settings with separate offers consent and STOP by text; a "no signal" mode that keeps the last trip on screen; trip PIN; share-trip link; SOS (000 + alert to DingoGo and emergency contact); tips, ratings, tax invoices; Dingo Points, café rewards with QR codes, referrals, DingoGo Pass subscription; DingoGo credit and prepaid vouchers; data export and account deletion.
 
 **Drivers:** onboarding against NT accreditation requirements with document upload; can't go online until licence, H endorsement, ABN, GST, vehicle CVL, rego and insurance are current; offers with countdown, their pay and total km (incl. the drive to the pickup); PIN-verified pickups; courier proof of delivery (recipient PIN, signature or photo); SOS; earnings with fee, pickup pay, tips, lease, charging, hours on trips and earnings-floor progress; GST-on-fares figure for the BAS; charging and battery logs.
 
@@ -99,7 +99,7 @@ They also install from the browser as web apps (PWA) — useful for testing befo
 
 ## Before going live
 
-1. **Accounts & keys** (`services/api/.env.example`): Stripe (card payments; mock until set), Twilio (SMS codes, parcel PINs, SOS texts), a commercial map tile provider (`VITE_TILE_URL` — OpenStreetMap's servers aren't for production), a self-hosted OSRM routing server (`OSRM_URL`; otherwise distance is estimated), Expo/FCM push.
+1. **Accounts & keys** (`services/api/.env.example`): Stripe (card payments; mock until set), Twilio (SMS codes, parcel PINs, SOS texts, a relay number for masked rider/driver calls and texts, STOP handling — see `docs/API.md` → Notifications), a commercial map tile provider (`VITE_TILE_URL` — OpenStreetMap's servers aren't for production), a self-hosted OSRM routing server (`OSRM_URL`; otherwise distance is estimated), push: `FCM_SERVICE_ACCOUNT` for the Android apps (build them with `google-services.json` and `VITE_FCM_ENABLED=true`) and a VAPID pair for the web apps (`npm run vapid -w services/api`).
 2. Set `OTP_DEV_MODE=false` and a long random `JWT_SECRET`.
 3. Move uploads (`UPLOAD_DIR`) to Supabase Storage or S3.
 4. Stripe: set `STRIPE_SECRET_KEY`, `STRIPE_PUBLISHABLE_KEY` and `STRIPE_WEBHOOK_SECRET`, apply migration 014, and add the webhook endpoint

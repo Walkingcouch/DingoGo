@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { ApiError, Icon, assetUrl, get, km, money, post, uploadFile } from '@dingogo/shared';
+import { ApiError, ChatThread, Icon, REALTIME, assetUrl, connectRealtime, get, km, money, post, uploadFile, useTripChat } from '@dingogo/shared';
 import { DgMap, type MapMarker } from '@dingogo/shared/map';
 import { needFlags, useDriver } from '../state';
 import { SignaturePad } from './SignaturePad';
@@ -30,7 +30,23 @@ export function ActiveTrip() {
   const [cancelOpen, setCancelOpen] = useState(false);
   const [sosOpen, setSosOpen] = useState(false);
   const [support, setSupport] = useState<string | null>(null);
+  const [chatOpen, setChatOpen] = useState(false);
+  const [relay, setRelay] = useState<string | null>(null);
   const t = trip;
+  const chatLive = !t.released && ['accepted', 'arrived', 'in_progress'].includes(t.status) && !t.pending_sync;
+  const chat = useTripChat(chatLive ? t.id : null, chatOpen);
+  useEffect(() => {
+    if (!chatLive) return;
+    get(`/trips/${t.id}/contact`).then((c) => setRelay(c.call?.number ?? null)).catch(() => setRelay(null));
+    if (!REALTIME) return;
+    const rt = connectRealtime((m) => { if (m.type === 'message.new' && m.data?.trip_id === t.id) chat.refresh(); });
+    return () => rt.close();
+  }, [chatLive, t.id]); // eslint-disable-line
+  const seen = useRef(0);
+  useEffect(() => {
+    if (chat.unread > seen.current && !chatOpen) { showToast(t.kind === 'courier' ? 'New message from the customer' : 'New message from your passenger'); navigator.vibrate?.(200); }
+    seen.current = chat.unread;
+  }, [chat.unread, chatOpen]); // eslint-disable-line
   const isCourier = t.kind === 'courier';
   const parcel = t.parcel;
 
@@ -96,6 +112,15 @@ export function ActiveTrip() {
 
         <TripFlags t={t} />
 
+        {chatLive && chat.available && (
+          <div className="contact-row">
+            <button className="dg-btn dg-btn--ghost" onClick={() => setChatOpen(true)} aria-haspopup="dialog">
+              <Icon name="chat" size={22} />Message{chat.unread > 0 && <span className="dg-badge" aria-label={`${chat.unread} unread`}>{chat.unread}</span>}
+            </button>
+            {relay && !t.rider?.needs?.hearing && <a className="dg-btn dg-btn--ghost" href={`tel:${relay}`}><Icon name="phone" size={22} />Call</a>}
+          </div>
+        )}
+
         {t.status === 'accepted' && (
           <button className="dg-btn dg-btn--block btn-xl" onClick={() => step('arrive')} disabled={busy}>{busy ? 'Updating…' : 'I’ve arrived'}</button>
         )}
@@ -137,6 +162,14 @@ export function ActiveTrip() {
         if (r) { setCancelOpen(false); showToast(r.trip?.released ? 'Trip passed to another driver' : 'Trip cancelled'); }
       }} busy={busy} isCourier={isCourier} />}
       {sosOpen && <SosSheet onClose={() => setSosOpen(false)} />}
+      {chatOpen && (
+        <Sheet onClose={() => setChatOpen(false)} labelledBy="chat-h">
+          <h2 id="chat-h" style={{ marginTop: 0 }}>Messages with {isCourier ? 'the customer' : firstName}</h2>
+          <ChatThread chat={chat} otherLabel={isCourier ? 'Customer' : 'Passenger'}
+            hint={t.rider?.needs?.hearing ? 'This passenger is Deaf or hard of hearing: message, don’t call.' : 'Pull over before you type. Quick replies are one tap.'} />
+          <button className="dg-btn dg-btn--ghost dg-btn--block" style={{ marginTop: 10 }} onClick={() => setChatOpen(false)}>Close</button>
+        </Sheet>
+      )}
     </div>
   );
 }

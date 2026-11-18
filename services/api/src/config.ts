@@ -54,11 +54,35 @@ export const config = {
   /** Without Stripe, who may "pay" by card with the mock provider: all (development), test (seeded demo numbers and admin-made test
    *  accounts; everyone else sees "card payments coming soon") or off. Default: all in dev mode, test otherwise. */
   mockCards: ((env.MOCK_CARDS ?? '') || ((env.OTP_DEV_MODE ?? (env.NODE_ENV === 'production' ? 'false' : 'true')) === 'true' ? 'all' : 'test')) as 'all' | 'test' | 'off',
+  /** SMS, masked calls and texts (Twilio). Without a SID and token, texts are written to the log instead (development). */
   twilio: {
     sid: env.TWILIO_ACCOUNT_SID ?? '',
     token: env.TWILIO_AUTH_TOKEN ?? '',
+    /** Sender: an Australian number (+61…, takes replies) or an alphanumeric sender ID such as "DingoGo" (one-way only). */
     from: env.TWILIO_FROM ?? '',
+    /** Optional Messaging Service (MG…) used instead of TWILIO_FROM: number pool, opt-out handling, sender ID by country. */
+    messagingServiceSid: env.TWILIO_MESSAGING_SERVICE_SID ?? '',
+    /** Number that takes replies, for marketing texts (Spam Act: "Reply STOP" must work). Default: TWILIO_FROM when it is a number. */
+    marketingFrom: env.TWILIO_MARKETING_FROM ?? '',
+    /** Masked calls and texts between rider and driver go through this Twilio number (its Voice and SMS webhooks point at the API). Empty = in-app chat only. */
+    relayNumber: env.TWILIO_RELAY_NUMBER ?? '',
+    /** Public base URL of the API as Twilio calls it, for webhook signatures, e.g. https://dingogo.com.au/api. Default: from the request. */
+    webhookBaseUrl: (env.TWILIO_WEBHOOK_BASE_URL ?? '').replace(/\/$/, ''),
+    apiBase: env.TWILIO_API_BASE ?? 'https://api.twilio.com',
+    timeoutMs: Number(env.TWILIO_TIMEOUT_MS ?? 8000),
   },
+  /** Push notifications. Each provider is off until configured; in-app inbox and realtime always work. */
+  push: {
+    /** Firebase service account JSON (or base64 of it) for FCM HTTP v1: Android apps (Capacitor push). */
+    fcmServiceAccount: env.FCM_SERVICE_ACCOUNT ?? '',
+    fcmApiBase: env.FCM_API_BASE ?? 'https://fcm.googleapis.com',
+    /** Web Push (installed web app / PWA). Generate with `npm run vapid -w services/api`. */
+    vapidPublicKey: env.WEB_PUSH_VAPID_PUBLIC_KEY ?? '',
+    vapidPrivateKey: env.WEB_PUSH_VAPID_PRIVATE_KEY ?? '',
+    vapidSubject: env.WEB_PUSH_SUBJECT ?? 'mailto:support@dingogo.com.au',
+    timeoutMs: Number(env.PUSH_TIMEOUT_MS ?? 8000),
+  },
+  /** Legacy: Expo push service, used only for Expo tokens (ExponentPushToken[…]). */
   expoPushEnabled: env.EXPO_PUSH_ENABLED === 'true',
   orsKey: env.ORS_API_KEY ?? '',                             // openrouteservice.org free key (2,000 routes/day)
   osrmUrl: env.OSRM_URL ?? '',

@@ -12,7 +12,7 @@ import { one, pool, q, tx, type Q } from '../db.js';
 import { ApiError, bad, conflict } from '../lib/errors.js';
 import { loadDriverPay, TRIP_PAY_KINDS, weekStartOf } from '../lib/driverPay.js';
 import { RIDER_SIDE_CANCEL_REASONS } from './trips.js';
-import { notify } from './notify.js';
+import { send } from './notify.js';
 
 export interface FloorRow {
   driver_id: string; name: string | null; trips: number; engaged_s: number; earnings_cents: number;
@@ -136,7 +136,7 @@ export async function runEarningsFloor(weekParam: string | null | undefined, act
       return { recorded, out };
     });
     for (const p of paid.out) {
-      void notify(p.driver_id, 'Earnings floor top-up', `$${(p.topup_cents / 100).toFixed(2)} added for the week of ${week}, so you earned at least $${(rate / 100).toFixed(2)} per engaged hour.`);
+      void send(p.driver_id, 'earnings_floor_topup', { cents: p.topup_cents, week, rate_cents: rate }, { data: {} });
     }
     return { week_start: week, recorded: paid.recorded, drivers_topped_up: paid.out.length, topup_cents: paid.out.reduce((n, x) => n + x.topup_cents, 0) };
   } catch (e: any) {

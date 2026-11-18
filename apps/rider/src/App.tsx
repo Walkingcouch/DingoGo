@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { NavLink, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
-import { Icon, Login, get, getToken, initAuth, setToken, connectRealtime, useOnline } from '@dingogo/shared';
+import { Icon, Login, get, getToken, initAuth, setToken, connectRealtime, useOnline, disablePush, refreshPush } from '@dingogo/shared';
 import { MeCtx, type Me, ACTIVE } from './ctx';
 import { RideScreen } from './screens/Ride';
 import { TripScreen, clearCachedTrip, readCachedTrip } from './screens/Trip';
@@ -28,11 +28,16 @@ export function App() {
   const reload = useCallback(async () => {
     try { setMe(await get<Me>('/me')); } catch { if (!getToken()) setAuthed(false); }
   }, []);
-  const signOut = useCallback(() => { setToken(null); clearCachedTrip(); setMe(null); setAuthed(false); nav('/'); }, [nav]);
+  const signOut = useCallback(async () => {
+    await disablePush('rider');   // stop pushes to this phone before the session ends
+    setToken(null); clearCachedTrip(); setMe(null); setAuthed(false); nav('/');
+  }, [nav]);
 
   useEffect(() => {
     if (!authed) return;
     void reload();
+    // Push: if this phone already allowed notifications, register again quietly (tokens change). Never prompts here.
+    get('/public/config').then((c) => refreshPush('rider', c.push?.web_push_key)).catch(() => undefined);
     // Resume a live trip if the app was closed mid-ride.
     get<{ trips: any[] }>('/trips?status=active').then(({ trips }) => {
       const live = trips.find((t) => ACTIVE.includes(t.status));

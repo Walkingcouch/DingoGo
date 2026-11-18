@@ -61,17 +61,24 @@ function SettingsForm() {
 }
 
 function Broadcast() {
-  const [f, setF] = useState({ audience: 'riders_opted_in', title: '', body: '' });
+  const [f, setF] = useState({ audience: 'riders_opted_in', title: '', body: '', channel: 'app' });
   const run = useRun();
+  const sms = f.channel === 'sms';
+  const smsText = `DingoGo: ${f.body} Reply STOP to opt out.`;
   return (
     <form className="panel" style={{ maxWidth: 640 }} onSubmit={async (e) => {
       e.preventDefault();
-      if (!confirm(`Send "${f.title}" to ${f.audience === 'drivers' ? 'all approved drivers' : 'riders who opted in to offers'}?`)) return;
+      if (!confirm(`Send "${f.title}" ${sms ? 'by text ' : ''}to ${f.audience === 'drivers' ? 'all approved drivers' : 'riders who opted in to offers'}?`)) return;
       const r = await run(() => post('/admin/broadcast', f));
-      if (r) { alert(`Sent to ${r.sent} people.`); setF({ ...f, title: '', body: '' }); }
+      if (r) { alert(`Sent to ${r.sent} people.${r.skipped ? ` ${r.skipped} not sent (replied STOP or the text failed).` : ''}`); setF({ ...f, title: '', body: '' }); }
     }}>
       <p className="dg-muted" style={{ marginTop: 0 }}>Offers only go to riders who opted in, and every message says it is from DingoGo and how to turn offers off (Spam Act 2003).</p>
-      <label className="dg-field"><span>Send to</span><select className="dg-select" value={f.audience} onChange={(e) => setF({ ...f, audience: e.target.value })}><option value="riders_opted_in">Riders who opted in to offers</option><option value="drivers">All approved drivers</option></select></label>
+      <label className="dg-field"><span>Send to</span><select className="dg-select" value={f.audience} onChange={(e) => setF({ ...f, audience: e.target.value, channel: e.target.value === 'drivers' ? 'app' : f.channel })}><option value="riders_opted_in">Riders who opted in to offers</option><option value="drivers">All approved drivers</option></select></label>
+      {f.audience === 'riders_opted_in' && (
+        <label className="dg-field"><span>Send as</span><select className="dg-select" value={f.channel} onChange={(e) => setF({ ...f, channel: e.target.value })}>
+          <option value="app">App notification and inbox</option><option value="sms">Text message (costs per text)</option></select>
+          {sms && <small className="dg-muted">Texts go from a number that takes replies, skip anyone who replied STOP, and read: “{smsText}”</small>}</label>
+      )}
       <label className="dg-field"><span>Title</span><input className="dg-input" maxLength={60} required value={f.title} onChange={(e) => setF({ ...f, title: e.target.value })} /></label>
       <label className="dg-field"><span>Message</span><textarea className="dg-textarea" maxLength={240} required value={f.body} onChange={(e) => setF({ ...f, body: e.target.value })} /><small className="dg-muted">{240 - f.body.length} characters left</small></label>
       <button className="dg-btn">Send message</button>

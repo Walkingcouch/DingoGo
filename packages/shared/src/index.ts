@@ -6,3 +6,8 @@ export { Login } from './Login';
 export { Icon, ICONS, SERVICE_ICON_NAME } from './Icon';
 export type { IconName } from './Icon';
 export { FileLink } from './FileLink';
+export { useTripChat, ChatThread } from './Chat';
+export type { ChatMessage } from './Chat';
+export { enablePush, refreshPush, disablePush, pushState, pushKind } from './push';
+export type { PushState } from './push';
+export { NotifySettings } from './NotifySettings';

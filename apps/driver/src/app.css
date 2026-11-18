@@ -262,3 +262,8 @@ body { overscroll-behavior: none; }
 .expiry-banner.expiry-expired .dg-btn, .expiry-banner.expiry-urgent .dg-btn { background: #fff; color: var(--night); }
 .screen:focus-visible { outline: 3px solid var(--ochre-deep); outline-offset: -3px; }
 .nav-go .dg-btn--dark { box-shadow: inset 0 0 0 2px var(--muted); }
+/* Round 9: message / call the passenger */
+.contact-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px; }
+.contact-row .dg-btn { min-height: 56px; font-size: 1.05rem; }
+.notify-settings .section__title { font-size: 1.05rem; margin: 16px 0 4px; }
+.notify-settings section:first-child .section__title { margin-top: 0; }

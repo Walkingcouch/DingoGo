@@ -60,7 +60,7 @@ export const FUEL: Map = { electric: 'Electric', plug_in_hybrid: 'Plug-in hybrid
 export const isGreenFuel = (f?: string | null) => f === 'electric' || f === 'plug_in_hybrid' || f === 'hybrid';
 export const VEHICLE_STATUS: Map = { pending: 'Waiting for check', approved: 'Approved', rejected: 'Not approved' };
 export const VEHICLE_STATUS_TONE: Map = { pending: 'ochre', approved: 'green', rejected: 'red' };
-export const EVENT_TYPE: Map = { requested: 'Requested', offered: 'Offered to driver', accepted: 'Driver accepted', arrived: 'Driver arrived', started: 'Trip started', in_progress: 'Trip started', completed: 'Completed', cancelled: 'Cancelled', no_drivers: 'No driver available', picked_up: 'Parcel collected', delivered: 'Parcel delivered', refund: 'Refund issued', rated: 'Rated', pin_verified: 'PIN checked', scheduled: 'Scheduled', released: 'Released to drivers', redispatched: 'Searching again', pod_pin_failed: 'Wrong delivery PIN',
+export const EVENT_TYPE: Map = { relay_call: 'Call through DingoGo number', requested: 'Requested', offered: 'Offered to driver', accepted: 'Driver accepted', arrived: 'Driver arrived', started: 'Trip started', in_progress: 'Trip started', completed: 'Completed', cancelled: 'Cancelled', no_drivers: 'No driver available', picked_up: 'Parcel collected', delivered: 'Parcel delivered', refund: 'Refund issued', rated: 'Rated', pin_verified: 'PIN checked', scheduled: 'Scheduled', released: 'Released to drivers', redispatched: 'Searching again', pod_pin_failed: 'Wrong delivery PIN',
   payment_failed: 'Payment failed', payment_retried: 'Payment taken (retry)', payment_retry_failed: 'Retry payment failed', hold_lapsed: 'Card hold lapsed',
   dispute_opened: 'Dispute opened', dispute_updated: 'Dispute updated', dispute_closed: 'Dispute closed',
   driver_released: 'Back to the search (driver pulled out)', driver_silent: 'No signal from driver', offer_withdrawn: 'Offer withdrawn (driver went offline)',
@@ -84,3 +84,15 @@ export function complianceText(issue: string): string {
   if (no) return `Car ${no[1]} not approved${no[2] ? `: ${no[2]}` : ''}`;
   return issue.replace(/\s*\(ATO:[^)]*\)/, '').replace(/^Your car\b/, 'Car');
 }
+
+/** Round 9: texts, calls and push logged for a trip (comms_log). */
+export const COMMS_TEMPLATE: Map = {
+  otp: 'Sign-in code', sos_contact: 'SOS text to emergency contact', parcel_recipient: 'Parcel PIN to recipient', parcel_delivered_sender: 'Delivered text to sender',
+  driver_on_way: 'Driver on the way', driver_here: 'Driver is here', no_drivers: 'No drivers', booking_card_declined: 'Booking cancelled: card',
+  finding_another_driver: 'Finding another driver', driver_cancelled: 'Driver cancelled', chat_relay_sms: 'Message passed on by text', relay_call: 'Call through DingoGo number',
+  promo: 'Offer',
+};
+export const COMMS_STATUS: Map = {
+  sent: 'Sent', failed: 'Failed', skipped_opt_out: 'Not sent: replied STOP', unsubscribed: 'Not sent: unsubscribed', bad_number: 'Not sent: bad number',
+  dev_log: 'Not sent: texts off', no_reply_number: 'Not sent: no reply number', bridged: 'Connected', no_trip: 'No live trip',
+};

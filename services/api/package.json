@@ -11,6 +11,7 @@
     "db:migrate": "tsx scripts/migrate.ts",
     "db:reset": "tsx scripts/migrate.ts --reset && tsx scripts/seed.ts --force",
     "db:seed": "tsx scripts/seed.ts",
+    "vapid": "tsx scripts/vapid-keys.ts",
     "test": "node --import tsx --test test/*.test.ts"
   },
   "keywords": [],

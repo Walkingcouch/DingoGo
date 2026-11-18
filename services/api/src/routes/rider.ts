@@ -8,7 +8,7 @@ import { voucherCode } from '../lib/ids.js';
 import { searchPlaces } from '../lib/places.js';
 import { latLng, parse, z } from '../lib/validate.js';
 import { toOps } from '../realtime.js';
-import { notify } from '../services/notify.js';
+import { send, sendSmsT } from '../services/notify.js';
 import * as pay from '../services/payments.js';
 import * as trips from '../services/trips.js';
 
@@ -190,9 +190,7 @@ export default async function riderRoutes(app: FastifyInstance) {
     toOps('sos.new', { ...alert, trip_ref: t.ref, user_name: me.name });
     const u = await one('SELECT emergency_contact FROM users WHERE id = $1', [me.id]);
     if (u?.emergency_contact?.phone) {
-      const { sendSms } = await import('../services/notify.js');
-      void sendSms(u.emergency_contact.phone,
-        `DingoGo SAFETY ALERT: ${me.name} triggered an emergency alert on trip ${t.ref}. Live location: ${config.publicWebUrl}/track/${t.share_token}`);
+      void sendSmsT(u.emergency_contact.phone, 'sos_contact', { name: me.name, ref: t.ref, url: `${config.publicWebUrl}/track/${t.share_token}` }, { userId: me.id, tripId: t.id });
     }
     return { alert, share_url: `${config.publicWebUrl}/track/${t.share_token}`, emergency_number: '000' };
   });
@@ -407,7 +405,7 @@ export default async function riderRoutes(app: FastifyInstance) {
       const flagged = await trips.flagRiderReportedRefusal(trip, b.message);
       if (flagged) t.flagged = true;
     }
-    void notify(me.id, 'We got your message', `Ticket #${t.id.slice(0, 8)} — our team will reply soon.`, { ticket_id: t.id }, 'account');
+    void send(me.id, 'ticket_received', { id: t.id }, { data: { ticket_id: t.id } });
     reply.code(201);
     return { ticket: t };
   });

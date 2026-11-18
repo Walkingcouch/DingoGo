@@ -25,6 +25,8 @@ export default function Reports() {
       <p className="dg-muted" style={{ marginTop: 0, maxWidth: 780 }}>Card payments that didn't go through (the rider is asked to pay in the app; open the trip to retry) and disputes (chargebacks) still open in Stripe. Reply to disputes in the Stripe dashboard before the due date.</p>
       {integ.data && <p className="dg-muted" role="status">Card payments: {on('payments') ? 'Stripe connected' : 'test payments only (Stripe not set up)'}
         {on('payments') && `, webhook ${on('payments_webhook') ? 'set up' : 'not set up (hold lapses, dashboard refunds and disputes are not seen)'}, card form in the app ${on('card_elements') ? 'on' : 'off (needs the publishable key)'}`}.</p>}
+      {integ.data && <p className="dg-muted">Texts: {on('sms') ? 'Twilio connected' : 'off (sign-in codes only in demo mode)'}{on('sms') && `, replies and STOP ${on('sms_replies') ? 'handled' : 'not handled (no reply number)'}, masked calls ${on('sms_relay') ? 'on' : 'off (in-app messages only)'}`}.
+        {' '}Push: {[on('push_fcm') && 'Android', on('push_web') && 'web app', on('push_expo') && 'Expo'].filter(Boolean).join(', ') || 'off (in-app inbox only)'}.</p>}
       <ErrorMsg error={issues.error} />
       {issues.data && (<>
         <h3>Failed payments</h3>

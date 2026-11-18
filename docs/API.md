@@ -29,6 +29,8 @@ Base URL: `http://localhost:4000` in development. Auth: `Authorization: Bearer <
 | DELETE | `/me` |
 | GET | `/me/export` |
 | POST | `/me/push-token` |
+| DELETE | `/me/push-token` (Round 9) |
+| GET / PUT | `/me/notification-prefs` (Round 9) |
 | GET | `/me/notifications` |
 | POST | `/me/notifications/read` |
 
@@ -48,6 +50,8 @@ Base URL: `http://localhost:4000` in development. Auth: `Authorization: Bearer <
 | GET | `/trips/:id/receipt` |
 | POST | `/trips/:id/pay` |
 | POST | `/trips/:id/sos` |
+| GET / POST | `/trips/:id/messages` (Round 9; also driver and ops) |
+| GET | `/trips/:id/contact` (Round 9) |
 | GET | `/loyalty` |
 | POST | `/loyalty/rewards/:id/redeem` |
 | GET | `/plans` |
@@ -297,7 +301,7 @@ ppsr_checked_at, ppsr_clear, lookup, lookup_at` and computed `compliance_year` (
 
 `GET /ws?token=<JWT>` — auto-subscribes `user:<id>` (and `ops` for admin/dispatcher). Send `{"type":"subscribe","channel":"trip:<id>"}` to watch a trip you're part of. `GET /ws?share=<share_token>` gives read-only trip tracking for share links.
 
-Events: `offer.new`, `offer.expired`, `trip.updated`, `driver.location`, `notification`, and on `ops`: `trip.created`, `trip.updated`, `driver.status`, `driver.location`, `sos.new`, `sos.updated`, `support.new`, `compliance.flag`, `safety.deviation`, `dispatch.driver_silent`, `application.new`, `hire.new`. A driver whose trip is taken off them gets `trip.updated` with `released: true`.
+Events: `offer.new`, `offer.expired`, `trip.updated`, `driver.location`, `notification`, `message.new` (trip chat), and on `ops`: `trip.created`, `trip.updated`, `driver.status`, `driver.location`, `sos.new`, `sos.updated`, `support.new`, `compliance.flag`, `safety.deviation`, `dispatch.driver_silent`, `application.new`, `hire.new`. A driver whose trip is taken off them gets `trip.updated` with `released: true`.
 
 ## Money and safety rules (Round 1, Nov 2026)
 
@@ -536,3 +540,46 @@ client); the API only sees Stripe ids. Every Stripe write carries an idempotency
   refunded. Cancellation-fee invoices list one "Cancellation fee" line (they listed the trip's fare lines) and no CO₂ figure.
 - Payments rows: card captures are recorded with `provider` `stripe` or `mock` (were `card`); failed holds are recorded (`kind: 'authorise'`,
   `status: 'failed'`).
+
+## Notifications and communications (Round 9)
+Wording for every inbox message, push and text lives in `services/api/src/lib/messages.ts` (texts in plain GSM-7, at most 2 parts, naming DingoGo).
+Migration `015_comms.sql` adds `users.notification_prefs`, `marketing_consents`, `sms_opt_outs`, `trip_messages`, `comms_log`. Before it is applied:
+settings fall back to the defaults, chat answers 503 `migration_pending`, nothing is logged, STOP is still answered.
+
+- **Trip chat.** `GET /trips/:id/messages?after=<id>&peek=1` (rider, current driver, ops) → `{ messages: [{ id, from: rider|driver|dingogo, mine, body,
+  quick, via: app|sms, created_at, read_at }], unread (with peek), can_send, closes_at, quick_replies: [{ key, text }], role }`. Without `peek` the other
+  side's messages are marked read (staff reading marks nothing). `POST /trips/:id/messages { body? (≤500 after cleaning) | quick? (key), client_id? }` →
+  201 `{ message }`, or 200 `{ message, replayed: true }` for a `client_id` already stored. Open while the trip has a driver (accepted, arrived, in
+  progress) and 30 minutes after drop-off (409 `chat_closed`); staff can always write (`from: 'dingogo'`). 20 messages per 5 minutes per person per trip
+  (429). 400 `bad_quick_reply` / `empty_message`; 404 for anyone else (another driver, a driver the trip was taken from). Realtime `message.new` on
+  `trip:<id>` and `user:<id>`; push (category `chat`, collapsed per trip, not in the inbox). Messages from a phone-booked rider's driver/DingoGo are
+  also texted to the rider from the relay number. `GET /admin/trips/:id` adds `messages` and `comms` (texts/calls: template, last 3 digits, status).
+- **Contact.** `GET /trips/:id/contact` (rider or driver) → `{ chat, call: { number, note } | null, text: { number } | null, reason: null|not_live|relay_off }`.
+- **Relay number (masked calls/texts).** `TWILIO_RELAY_NUMBER`. `POST /comms/twilio/voice` (Twilio Voice webhook): the caller's number finds their live
+  trip (rider or driver) and gets `<Dial callerId="relay">other party</Dial>` (15 min limit); otherwise a spoken "no live trip" message. Trip event
+  `relay_call`. `POST /comms/twilio/sms` (Messaging webhook, every DingoGo number): `STOP`/`STOPALL`/`UNSUBSCRIBE`/`CANCEL`/`END`/`QUIT`/`OPT OUT` →
+  number added to `sms_opt_outs`, marketing withdrawn for that account (consent record `sms_stop`), reply; `START`/`UNSTOP` → texts back on (offers stay
+  off); `HELP`/`INFO` → reply with support number. Anything else sent to the relay number goes into the sender's live trip chat (or one that ended < 30
+  min ago) as `via: 'sms'`. Both webhooks need `X-Twilio-Signature` (HMAC-SHA1 with `TWILIO_AUTH_TOKEN` over `TWILIO_WEBHOOK_BASE_URL` + path + sorted
+  params) → 403 `bad_signature`; 503 `sms_not_configured` without the token. Replies are TwiML (`text/xml`).
+- **Texts.** Twilio with `TWILIO_FROM` (number or sender ID) or `TWILIO_MESSAGING_SERVICE_SID`, 8 s timeout, typographic quotes/dashes swapped for
+  GSM ones. Kinds: essential (sign-in code, SOS to emergency contact: sent even after STOP), transactional (skipped for numbers in `sms_opt_outs`),
+  marketing (needs consent and a sender that takes replies). Twilio error 21610 adds the number to `sms_opt_outs`. Each text is logged in `comms_log`
+  (template, last 3 digits, status, Twilio SID, error) — never the text. Trip updates (`driver_on_way`, `driver_here`, `no_drivers`,
+  `finding_another_driver`, `driver_cancelled`, `booking_card_declined`) are texted for phone/SMS bookings and to riders who turned on trip texts.
+- **Push.** `FCM_SERVICE_ACCOUNT` → FCM HTTP v1 (service-account JWT → OAuth token, cached) for `android`/`ios` tokens; `WEB_PUSH_VAPID_*` → Web Push
+  (VAPID ES256, aes128gcm) for `web` tokens (the JSON `PushSubscription`); Expo only for `ExponentPushToken[…]` with `EXPO_PUSH_ENABLED`. Tokens
+  reported dead (FCM `UNREGISTERED`/404, Web Push 404/410, Expo `DeviceNotRegistered`) are deleted. `DELETE /me/push-token { token }` → `{ ok, removed }`
+  (sign-out). `GET /public/config` adds `push { web_push_key, fcm }`, `comms { relay, chat }`. `GET /admin/integrations` adds `sms_replies`, `sms_relay`,
+  `push_fcm`, `push_web`, `push_expo`.
+- **Settings.** `GET /me/notification-prefs` → `{ prefs: { push: { trip, chat, account, documents, promo }, sms: { trip } }, marketing: { opted_in,
+  wording, last_change: { granted, source, at } | null }, sms_opted_out, categories: [{ key, label, help, locked? }], channels: { push: { fcm, web,
+  expo }, web_push_key, sms } }`. `PUT` the same shape partially (`{ push?: {...}, sms?: { trip }, marketing?: boolean }`, strict; 503
+  `migration_pending` for push/sms before 015). The inbox always gets service messages; `safety` is always pushed; offers (`promo`) go nowhere —
+  not even the inbox — without `marketing_opt_in`. Defaults: all push on, trip texts off.
+- **Marketing consent (Spam Act).** Every change of `marketing_opt_in` (`PUT /me/notification-prefs`, `PATCH /me`, STOP, account deletion) adds a
+  `marketing_consents` row with the wording shown (`MARKETING_CONSENT_WORDING`), source and IP. `POST /admin/broadcast` adds `channel: 'app'|'sms'`
+  (default app) → `{ sent, skipped }`; SMS only to `riders_opted_in` (400 `sms_riders_only`), needs Twilio (409 `sms_not_configured`) and a reply-capable
+  sender (409 `sms_marketing_unavailable`), at most 2 text parts (400 `sms_too_long`), text `DingoGo: <message> Reply STOP to opt out.`, skips opted-out
+  numbers. Sent 10 at a time. `GET /me/export` adds `messages`, `marketing_consents`, `notification_prefs`.
+- **Category changes.** `referral_bonus` is now `account` (was `promo`, so it was hidden from riders who hadn't opted in to offers); tips are `account`.

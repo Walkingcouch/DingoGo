@@ -8,7 +8,7 @@ import { haversine, route, withinZone, type LatLng } from '../lib/geo.js';
 import { pin4, shareToken, tripRef } from '../lib/ids.js';
 import { isEv, isGreen } from '../lib/vehicles.js';
 import { toOps, toTrip, toUser } from '../realtime.js';
-import { notify, sendSms } from './notify.js';
+import { send, sendSmsT } from './notify.js';
 import { sendDocExpiryReminders } from './docExpiry.js';
 import * as pay from './payments.js';
 import { autoEarningsFloor } from './earningsFloor.js';
@@ -281,8 +281,8 @@ export async function createTrip(userId: string, input: CreateTripInput) {
     if (trip.status === 'requested') await dispatchTrip(trip.id).catch((e) => console.error('dispatch', e));
     if (input.kind === 'courier') {
       const p = await one('SELECT * FROM parcels WHERE trip_id = $1', [trip.id]);
-      void sendSms(p.recipient_phone,
-        `DingoGo: ${p.sender_name} is sending you a parcel (${trip.ref}). Track it: ${config.publicWebUrl}/track/${trip.share_token} — give the driver PIN ${p.delivery_pin} on delivery.`);
+      void sendSmsT(p.recipient_phone, 'parcel_recipient',
+        { sender: p.sender_name, ref: trip.ref, url: `${config.publicWebUrl}/track/${trip.share_token}`, pin: p.delivery_pin }, { tripId: trip.id });
     }
     return getTrip(trip.id);
   });
@@ -324,7 +324,7 @@ async function collectCard(c: Q, t: any, amount: number, purpose: 'fare' | 'fee'
     await event(c, t.id, 'payment_failed', null, { stage: purpose, cents: amount, reason: r.code ?? null });
     setImmediate(() => {
       toOps('payment.failed', { trip_id: t.id, ref: t.ref, cents: amount, reason: r.code ?? null });
-      void notify(t.rider_id, 'Payment didn\'t go through', `We couldn't take $${(amount / 100).toFixed(2)} for ${t.ref}. ${r.error ?? ''} Open the trip to pay.`.trim(), { trip_id: t.id }, 'account');
+      void send(t.rider_id, 'payment_failed', { ref: t.ref, cents: amount, reason: r.error }, { data: { trip_id: t.id } });
     });
   }
   return r;
@@ -510,9 +510,7 @@ async function failNoDrivers(c: pg.PoolClient, t: any, why: 'search' | 'missed' 
     toTrip(t.id, 'trip.updated', { id: t.id, status: 'no_drivers' });
     toUser(t.rider_id, 'trip.updated', { id: t.id, ref: t.ref, status: 'no_drivers' });
     toOps('trip.updated', { id: t.id, ref: t.ref, status: 'no_drivers' });
-    void notify(t.rider_id, 'No drivers available', why === 'missed'
-      ? `Sorry, we couldn't get a driver to you in time for your booking ${t.ref}. You have not been charged. Call us and we'll help.`
-      : `Sorry, no DingoGo cars are free right now for ${t.ref}. You have not been charged.`, { trip_id: t.id });
+    void send(t.rider_id, 'no_drivers', { ref: t.ref, missed: why === 'missed' }, { trip: t });
   });
 }
 
@@ -615,13 +613,11 @@ async function releaseBooking(tripId: string) {
     toTrip(t.id, 'trip.updated', { id: t.id, status: 'cancelled_admin' });
     toUser(t.rider_id, 'trip.updated', { id: t.id, ref: t.ref, status: 'cancelled_admin' });
     toOps('payment.failed', { trip_id: t.id, ref: t.ref, stage: 'release', reason: failed.code ?? null });
-    void notify(t.rider_id, 'Booking cancelled: card declined',
-      `We couldn't hold the fare for your booking ${t.ref}. ${failed.error ?? ''} You have not been charged. Book again with another card or DingoGo credit, or call us.`.replace(/\s+/g, ' '),
-      { trip_id: t.id });
+    void send(t.rider_id, 'booking_card_declined', { ref: t.ref, reason: failed.error }, { trip: t });
     return;
   }
   toOps('trip.updated', { id: t.id, ref: t.ref, status: 'requested' });
-  void notify(t.rider_id, 'Finding your driver', `We're now matching a driver for your booked trip ${t.ref}.`, { trip_id: t.id });
+  void send(t.rider_id, 'booking_released', { ref: t.ref }, { trip: t });
 }
 
 /** Drivers who have gone quiet. A live trip whose driver has sent nothing for a while is flagged to ops once per silence
@@ -666,7 +662,7 @@ async function watchDrivers() {
     for (const d of stale) {
       await withdrawOffers(d.user_id);
       toOps('driver.status', { driver_id: d.user_id, online: false, reason: 'no_signal' });
-      void notify(d.user_id, 'You are offline', `We hadn't heard from your phone for ${staleMin} minutes, so we set you offline. Go online again when you're ready.`, {}, 'account');
+      void send(d.user_id, 'set_offline', { minutes: staleMin }, { data: {} });
     }
   }
 }
@@ -747,9 +743,8 @@ export async function acceptOffer(driverId: string, tripId: string) {
   });
   const trip = await getTrip(tripId);
   broadcast(trip);
-  void notify(trip.rider_id, trip.driver_releases > 0 ? 'New driver on the way' : 'Driver on the way',
-    `${trip.driver.name} is coming in a ${trip.vehicle.colour} ${trip.vehicle.make} ${trip.vehicle.model} (${trip.vehicle.rego}). ETA ${Math.ceil(out.eta / 60)} min.`,
-    { trip_id: tripId });
+  void send(trip.rider_id, 'driver_on_way', { again: trip.driver_releases > 0, driver: trip.driver.name, colour: trip.vehicle.colour, make: trip.vehicle.make,
+    model: trip.vehicle.model, rego: trip.vehicle.rego, eta_min: Math.ceil(out.eta / 60) }, { trip });
   return trip;
 }
 
@@ -822,13 +817,8 @@ async function afterRelease(t: any, driverId: string, r: ReleaseBy) {
   toUser(t.rider_id, 'trip.updated', slim);
   toUser(driverId, 'trip.updated', { ...slim, released: true });
   toOps('trip.updated', slim);
-  void notify(t.rider_id, 'Finding you another driver',
-    `Your driver couldn't make it to ${t.ref}, so we're finding you another one. Your booking and price stay the same, with no extra charge.`,
-    { trip_id: t.id });
-  if (r.by !== 'driver') {
-    void notify(driverId, 'Trip given to another driver',
-      `${t.ref} has gone to another driver because we couldn't reach you. Call DingoGo if you were still on your way.`, { trip_id: t.id });
-  }
+  void send(t.rider_id, 'finding_another_driver', { ref: t.ref }, { trip: t });
+  if (r.by !== 'driver') void send(driverId, 'trip_given_away', { ref: t.ref }, { data: { trip_id: t.id } });
   await dispatchTrip(t.id).catch((e) => console.error('dispatch', e));
 }
 
@@ -907,9 +897,7 @@ export async function markArrived(driverId: string, tripId: string, r: Replay = 
   const trip = await getTrip(tripId);
   if (!changed) return trip;
   broadcast(trip);
-  void notify(trip.rider_id, 'Your driver is here',
-    trip.kind === 'ride' ? `Look for ${trip.vehicle.rego}. Your trip PIN is ${trip.verify_pin}.` : `Driver has arrived to collect parcel ${trip.ref}.`,
-    { trip_id: tripId });
+  void send(trip.rider_id, 'driver_here', { ride: trip.kind === 'ride', rego: trip.vehicle.rego, pin: trip.verify_pin, ref: trip.ref }, { trip });
   return trip;
 }
 
@@ -995,10 +983,9 @@ export async function completeTrip(driverId: string, tripId: string, input: Comp
   const trip = await getTrip(tripId);
   if (!result) return trip; // a replay of a completion already recorded: nothing more to send
   broadcast(trip);
-  void notify(trip.rider_id, trip.kind === 'courier' ? 'Parcel delivered' : 'Thanks for riding DingoGo',
-    `${trip.ref}: $${(trip.final_cents / 100).toFixed(2)} incl. GST. Your tax invoice is in the app.`, { trip_id: tripId });
+  void send(trip.rider_id, 'trip_done', { ref: trip.ref, courier: trip.kind === 'courier', cents: trip.final_cents }, { trip });
   if (trip.kind === 'courier' && trip.parcel) {
-    void sendSms(trip.parcel.sender_phone, `DingoGo: parcel ${trip.ref} delivered to ${trip.parcel.pod_received_by || trip.parcel.recipient_name}.`);
+    void sendSmsT(trip.parcel.sender_phone, 'parcel_delivered_sender', { ref: trip.ref, to: trip.parcel.pod_received_by || trip.parcel.recipient_name }, { tripId: trip.id });
   }
   void result;
   return trip;
@@ -1074,7 +1061,7 @@ async function settle(c: pg.PoolClient, t: any) {
     await c.query('UPDATE users SET loyalty_points = loyalty_points + $2 WHERE id = ANY($1)', [[ref.referrer_id, ref.referee_id], bonus]);
     await c.query(`INSERT INTO loyalty_ledger (user_id, points, reason) VALUES ($1,$3,'referral_bonus'), ($2,$3,'referral_bonus')`,
       [ref.referrer_id, ref.referee_id, bonus]);
-    setImmediate(() => void notify(ref.referrer_id, 'Referral bonus', `Your friend took their first DingoGo trip — ${bonus} Dingo Points added.`, {}, 'promo'));
+    setImmediate(() => void send(ref.referrer_id, 'referral_bonus', { points: bonus }, { data: {} }));
   }
 }
 
@@ -1103,7 +1090,7 @@ export async function addTip(riderId: string, tripId: string, cents: number) {
     await c.query(`INSERT INTO payments (trip_id, user_id, provider, provider_ref, kind, amount_cents, status) VALUES ($1,$2,$3,$4,'tip',$5,'succeeded')`, [tripId, riderId, provider, ref, cents]);
     // 100% of tips go to the driver.
     await c.query(`INSERT INTO driver_ledger (driver_id, trip_id, kind, amount_cents, note) VALUES ($1,$2,'tip',$3,'Tip — 100% to driver')`, [t.driver_id, tripId, cents]);
-    setImmediate(() => void notify(t.driver_id, 'You got a tip', `$${(cents / 100).toFixed(2)} on ${t.ref}`));
+    setImmediate(() => void send(t.driver_id, 'tip_received', { ref: t.ref, cents }, { data: { trip_id: tripId } }));
     return { ok: true };
   });
 }
@@ -1175,9 +1162,9 @@ export async function cancelTrip(actor: { id: string; role: string }, tripId: st
   const trip = await getTrip(tripId);
   broadcast(trip);
   if (out.isDriver) {
-    void notify(trip.rider_id, 'Driver cancelled', `Your driver had to cancel ${trip.ref}. You have not been charged. Book again and we'll find you another car.`, { trip_id: tripId });
+    void send(trip.rider_id, 'driver_cancelled', { ref: trip.ref }, { trip });
   } else if (trip.driver_id) {
-    void notify(trip.driver_id, 'Trip cancelled', `${trip.ref} was cancelled.`, { trip_id: tripId });
+    void send(trip.driver_id, 'trip_cancelled', { ref: trip.ref }, { data: { trip_id: tripId } });
   }
   return { ...trip, cancel_fee_cents: out.fee };
 }
@@ -1270,7 +1257,7 @@ export async function onDriverLocation(driverId: string, p: LatLng & { heading?:
       await q(`INSERT INTO compliance_flags (kind, driver_id, trip_id, detail) VALUES ('route_deviation', $1, $2, $3)`,
         [driverId, t.id, `Vehicle ${Math.round(off)} m off the expected route`]);
       toOps('safety.deviation', { trip_id: t.id, ref: t.ref, off_m: Math.round(off) });
-      void notify(t.rider_id, 'Is everything OK?', `Your trip ${t.ref} has gone off the usual route. Tap to share your trip or get help.`, { trip_id: t.id, action: 'safety_check' }, 'safety');
+      void send(t.rider_id, 'route_check', { ref: t.ref }, { data: { trip_id: t.id, action: 'safety_check' } });
     }
   }
   return t;

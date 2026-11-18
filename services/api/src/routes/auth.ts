@@ -8,8 +8,9 @@ import { referralCode, sha256 } from '../lib/ids.js';
 import { parse, phone, z } from '../lib/validate.js';
 import { limit, record, tooMany } from '../lib/rateLimit.js';
 import { disconnectUser } from '../realtime.js';
-import { sendSms } from '../services/notify.js';
+import { sendSmsT } from '../services/notify.js';
 import { withdrawOffers } from '../services/trips.js';
+import { loadRecipient, setMarketing } from '../services/prefs.js';
 
 /** Compare two hex hashes in constant time. */
 function sameHash(a: string, b: string) {
@@ -52,7 +53,7 @@ export default async function authRoutes(app: FastifyInstance) {
        ON CONFLICT (phone) DO UPDATE SET code_hash = $2, expires_at = now() + interval '10 minutes', attempts = 0`,
       [body.phone, sha256(code)]);
     const demo = await isDemoPhone(body.phone);
-    const sent = await sendSms(body.phone, `Your DingoGo code is ${code}. It expires in 10 minutes. Never share this code.`);
+    const sent = await sendSmsT(body.phone, 'otp', { code });
     if (!sent.sent && !config.otpDevMode && !demo) {
       throw new ApiError(503, 'sms_unavailable', 'Sign-in by text message isn’t switched on yet. Please try again later.');
     }
@@ -136,9 +137,15 @@ export default async function authRoutes(app: FastifyInstance) {
       emergency_contact: z.object({ name: z.string().max(80), phone: z.string().max(20) }).nullable().optional(),
       marketing_opt_in: z.boolean().optional(),
     }), req.body);
+    const { marketing_opt_in, ...rest } = b;
+    // Marketing consent is recorded (Spam Act) with the wording shown, only when it changes.
+    if (marketing_opt_in !== undefined) await setMarketing(me.id, marketing_opt_in, 'app', req.ip);
     const sets: string[] = []; const vals: unknown[] = [me.id];
-    for (const [k, v] of Object.entries(b)) { vals.push(v === '' ? null : v); sets.push(`${k} = $${vals.length}`); }
-    if (!sets.length) return { ok: true };
+    for (const [k, v] of Object.entries(rest)) { vals.push(v === '' ? null : v); sets.push(`${k} = $${vals.length}`); }
+    if (!sets.length) {
+      if (marketing_opt_in === undefined) return { ok: true };
+      return { user: publicUser(await one('SELECT * FROM users WHERE id = $1', [me.id])) };
+    }
     const u = await one(`UPDATE users SET ${sets.join(', ')} WHERE id = $1 RETURNING *`, vals);
     return { user: publicUser(u) };
   });
@@ -148,6 +155,7 @@ export default async function authRoutes(app: FastifyInstance) {
     const me = await requireUser(req);
     const live = await one(`SELECT 1 FROM trips WHERE (rider_id = $1 OR driver_id = $1) AND status IN ('requested','accepted','arrived','in_progress')`, [me.id]);
     if (live) throw bad('trip_in_progress', 'Finish or cancel your current trip first');
+    await setMarketing(me.id, false, 'app', req.ip);   // the withdrawal is recorded before the number is removed
     await q(`UPDATE users SET name = 'Deleted user', email = NULL, phone = 'deleted:' || id::text, emergency_contact = NULL,
              accessibility = '{}'::jsonb, marketing_opt_in = false, deleted_at = now() WHERE id = $1`, [me.id]);
     await q('DELETE FROM push_tokens WHERE user_id = $1', [me.id]);
@@ -164,7 +172,13 @@ export default async function authRoutes(app: FastifyInstance) {
     const [user] = await q('SELECT * FROM users WHERE id = $1', [me.id]);
     const trips = await q('SELECT ref, kind, service, status, pickup_address, dropoff_address, requested_at, completed_at, final_cents FROM trips WHERE rider_id = $1 ORDER BY requested_at DESC', [me.id]);
     const loyalty = await q('SELECT points, reason, created_at FROM loyalty_ledger WHERE user_id = $1 ORDER BY created_at DESC', [me.id]);
-    return { exported_at: new Date().toISOString(), user: publicUser(user), trips, loyalty };
+    // Round 9: messages I sent in trip chats, marketing consent history and notification settings. Missing before migration 015.
+    const opt = <T>(p: Promise<T>, empty: T) => p.catch((e) => { if (e?.code === '42P01' || e?.code === '42703') return empty; throw e; });
+    const messages = await opt(q(`SELECT t.ref AS trip_ref, m.body, m.via, m.created_at FROM trip_messages m JOIN trips t ON t.id = m.trip_id
+      WHERE m.sender_id = $1 ORDER BY m.id DESC LIMIT 5000`, [me.id]), []);
+    const marketing_consents = await opt(q('SELECT granted, channel, source, wording, created_at FROM marketing_consents WHERE user_id = $1 ORDER BY id', [me.id]), []);
+    const notification_prefs = (await loadRecipient(me.id))?.prefs ?? null;
+    return { exported_at: new Date().toISOString(), user: publicUser(user), trips, loyalty, messages, marketing_consents, notification_prefs };
   });
 
   app.post('/me/push-token', async (req) => {

@@ -4,7 +4,7 @@ import { get, post, money, dateTime, time, km, mins, STATUS_LABEL, COURIER_STATU
 import { DgMap, type MapMarker } from '@dingogo/shared/map';
 import { Page } from '../ctx';
 import { Chip, Drawer, ErrorMsg, Modal, Table, downloadCsv, useAsk, useRun, useToast, type Col } from '../ui';
-import { CHANNEL, EVENT_TYPE, LEDGER_KIND, OFFER_STATUS, PARCEL_SIZE, PAYMENT_KIND, PAYMENT_METHOD, PAYMENT_PROVIDER, PAYMENT_ROW_STATUS, PAYMENT_STATUS, SERVICE_NAME, label } from '../labels';
+import { CHANNEL, COMMS_STATUS, COMMS_TEMPLATE, EVENT_TYPE, LEDGER_KIND, OFFER_STATUS, PARCEL_SIZE, PAYMENT_KIND, PAYMENT_METHOD, PAYMENT_PROVIDER, PAYMENT_ROW_STATUS, PAYMENT_STATUS, SERVICE_NAME, label } from '../labels';
 
 const SERVICES: [string, string][] = [['ride', 'Ride'], ['pet', 'Pet-friendly'], ['courier_s', 'Courier small'], ['courier_m', 'Courier medium'], ['courier_l', 'Courier large'], ['hourly', 'Hourly hire']];
 
@@ -160,6 +160,20 @@ function TripDrawer({ id, onClose }: { id: string; onClose: () => void }) {
         <ul className="timeline">
           {data.events.map((e: any) => <li key={e.id}><strong>{label(EVENT_TYPE, e.type)}</strong> <span className="dg-muted">{time(e.at)}</span>{e.data?.reason && <span className="sub">{e.data.reason}</span>}</li>)}
         </ul>
+        {data.messages?.length > 0 && (<>
+          <h3 style={{ marginTop: 18 }}>Messages</h3>
+          <p className="dg-muted" style={{ margin: '0 0 6px', fontSize: 'var(--fs-sm)' }}>Kept with the trip as a safety record.</p>
+          <ul className="timeline">
+            {data.messages.map((m: any) => <li key={m.id}><strong>{m.sender_role === 'dingogo' ? `DingoGo (${m.sender_name ?? 'staff'})` : m.sender_role === 'driver' ? 'Driver' : 'Rider'}</strong>{' '}
+              <span className="dg-muted">{time(m.created_at)}{m.via === 'sms' ? ', by text' : ''}{m.read_at ? ', read' : ''}</span><span className="sub">{m.body}</span></li>)}
+          </ul>
+        </>)}
+        {(live || data.messages?.length > 0) && data.trip.driver_id && <StaffMessage tripId={id} onSent={() => void reload()} />}
+        {data.comms?.length > 0 && (<>
+          <h3 style={{ marginTop: 18 }}>Texts and calls</h3>
+          <table className="tbl"><tbody>{data.comms.map((c: any) => <tr key={c.id}><td>{label(COMMS_TEMPLATE, c.template ?? c.channel)}{c.to_tail && <span className="sub">to …{c.to_tail}</span>}</td>
+            <td>{label(COMMS_STATUS, c.status)}{c.error && <span className="sub">{c.error}</span>}</td><td className="num">{time(c.at)}</td></tr>)}</tbody></table>
+        </>)}
         {data.offers.length > 0 && (<>
           <h3 style={{ marginTop: 18 }}>Driver offers</h3>
           <table className="tbl"><tbody>{data.offers.map((o: any) => <tr key={o.driver_id}><td>{o.name}</td><td>{label(OFFER_STATUS, o.status)}</td><td className="num">{time(o.offered_at)}</td></tr>)}</tbody></table>
@@ -276,5 +290,22 @@ function PhoneBooking({ onClose }: { onClose: (id?: string) => void }) {
         <div className="actions"><button className="dg-btn">Book and dispatch</button><button type="button" className="dg-btn dg-btn--ghost" onClick={() => onClose()}>Cancel</button></div>
       </form>
     </Modal>
+  );
+}
+
+/** DingoGo can write into the trip chat (rider and driver both see it), e.g. after a route-deviation alert. */
+function StaffMessage({ tripId, onSent }: { tripId: string; onSent: () => void }) {
+  const [text, setText] = useState('');
+  const run = useRun();
+  return (
+    <form className="toolbar" style={{ marginTop: 8 }} onSubmit={async (e) => {
+      e.preventDefault();
+      if (!text.trim()) return;
+      const r = await run(() => post(`/trips/${tripId}/messages`, { body: text.trim() }), 'Message sent to rider and driver');
+      if (r) { setText(''); onSent(); }
+    }}>
+      <input className="dg-input" maxLength={500} value={text} onChange={(e) => setText(e.target.value)} aria-label="Message to rider and driver" placeholder="Message rider and driver as DingoGo" style={{ flex: 1, minWidth: 200 }} />
+      <button className="dg-btn dg-btn--sm dg-btn--dark">Send</button>
+    </form>
   );
 }

@@ -104,3 +104,22 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .leaflet-container .leaflet-control-attribution a { color: #005A80; }
 .leaflet-container { font-family: var(--font-body); background: #EDE6DA; }
 .dg-pin { border-radius: 50%; border: 3px solid #fff; box-shadow: 0 2px 6px rgba(0,0,0,.35); }
+
+/* ── Trip chat (Round 9) ── */
+.dg-chat { display: grid; gap: .75rem; }
+.dg-chat-list { max-height: min(45vh, 360px); overflow-y: auto; padding: .25rem; }
+.dg-chat-list > ol { list-style: none; margin: 0; padding: 0; display: grid; gap: .5rem; align-content: start; }
+.dg-chat-empty, .dg-chat-note { color: var(--muted); font-size: var(--fs-sm); margin: 0; }
+.dg-chat-msg { display: grid; gap: .15rem; max-width: 85%; padding: .55rem .8rem; border-radius: var(--r-md); background: var(--bg); border: 1px solid var(--line); justify-self: start; }
+.dg-chat-msg.is-mine { justify-self: end; background: var(--ochre-soft); border-color: transparent; }
+.dg-chat-msg.is-dingogo { background: var(--saltbush-soft); border-color: transparent; }
+.dg-chat-who { font-size: var(--fs-xs); font-weight: 700; }
+.dg-chat-body { white-space: pre-wrap; overflow-wrap: anywhere; }
+.dg-chat-meta { font-size: var(--fs-xs); color: var(--muted); }
+.dg-chat-retry { background: none; border: 0; padding: 0; color: var(--earth-ink); font: inherit; font-weight: 700; text-decoration: underline; cursor: pointer; min-height: 24px; }
+.dg-chat-quick { display: flex; flex-wrap: wrap; gap: .4rem; }
+.dg-chat-chip { min-height: 44px; padding: .4rem .9rem; border-radius: var(--r-pill); border: 2px solid var(--line); background: var(--surface); color: var(--text); font: inherit; font-size: var(--fs-sm); font-weight: 700; cursor: pointer; }
+.dg-chat-chip:hover { border-color: var(--ochre-deep); }
+.dg-chat-form { display: flex; gap: .5rem; align-items: flex-end; }
+.dg-chat-form .dg-textarea { min-height: 48px; resize: vertical; }
+.dg-badge { display: inline-grid; place-items: center; min-width: 1.4em; height: 1.4em; padding: 0 .35em; border-radius: var(--r-pill); background: var(--earth); color: #fff; font-size: var(--fs-xs); font-weight: 800; }

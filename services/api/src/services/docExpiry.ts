@@ -2,7 +2,8 @@
  *  No new tables: reminders are de-duplicated against the driver's own notifications (data.reminder). */
 import { q } from '../db.js';
 import { docLabel, getJurisdiction } from '../lib/jurisdictions.js';
-import { notify } from './notify.js';
+import { send } from './notify.js';
+import { render } from '../lib/messages.js';
 
 /** Reminder points, in days before the expiry date (Darwin time). */
 export const EXPIRY_REMINDER_DAYS = [30, 14, 3] as const;
@@ -80,8 +81,7 @@ export function reminderPoint(daysLeft: number): number | null {
   return point;
 }
 
-export const expiryText = (e: Pick<Expiring, 'days_left' | 'label'>) =>
-  e.days_left < 0 ? `${e.label} has expired` : e.days_left === 0 ? `${e.label} expires today` : `${e.label} expires in ${e.days_left} day${e.days_left === 1 ? '' : 's'}`;
+export const expiryText = (e: Pick<Expiring, 'days_left' | 'label'>) => render('document_expiring', e).title!;
 
 let lastRun = 0;
 /** Send each approved driver one reminder per credential per reminder point (30, 14, 3 days). Skipped when a newer copy is
@@ -107,7 +107,7 @@ export async function sendDocExpiryReminders(opts: { force?: boolean; now?: Date
       const reminder = `${e.key}:${e.expires_on}:${point}`;
       const [seen] = await q(`SELECT 1 FROM notifications WHERE user_id = $1 AND category = 'documents' AND data->>'reminder' = $2 LIMIT 1`, [user_id, reminder]);
       if (seen) continue;
-      await notify(user_id, expiryText(e), 'Upload the new one in the app (Profile) so you can keep driving.', { reminder, key: e.key, expires_on: e.expires_on, days_left: e.days_left }, 'documents');
+      await send(user_id, 'document_expiring', { label: e.label, days_left: e.days_left }, { data: { reminder, key: e.key, expires_on: e.expires_on, days_left: e.days_left } });
       sent++;
     }
   }
