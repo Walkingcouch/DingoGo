@@ -1,17 +1,27 @@
 import { useState } from 'react';
 import { get, money, dayName, useLoad, Ranges, Icon } from '@dingogo/shared';
+import { FEE_BASIS } from '../state';
 
 const KIND: Record<string, string> = {
-  fare: 'Fares', commission: 'DingoGo fee', tip: 'Tips', cash_collected: 'Cash you collected', lease: 'Vehicle lease',
-  charging_credit: 'Charging reimbursed', bonus: 'Bonuses', payout: 'Paid to your bank', adjustment: 'Adjustments', cancel_fee: 'Cancellation fees',
+  fare: 'Fares', commission: 'DingoGo fee', pickup_pay: 'Pickup pay', fuel_surcharge: 'Fuel surcharge', cancel_fee: 'Cancellation fees',
+  tip: 'Tips', earnings_floor: 'Earnings floor top-ups', bonus: 'Bonuses', charging_credit: 'Charging reimbursed', adjustment: 'Adjustments',
+  lease: 'Vehicle lease', cash_collected: 'Cash you collected', payout: 'Paid to your bank',
 };
+/** Breakdown groups: what trips paid, what came on top, what came off. */
+const GROUPS: { title: string; kinds: string[]; total?: string }[] = [
+  { title: 'Trip pay', kinds: ['fare', 'commission', 'pickup_pay', 'fuel_surcharge', 'cancel_fee'], total: 'trip_pay_cents' },
+  { title: 'On top', kinds: ['tip', 'earnings_floor', 'bonus', 'charging_credit', 'adjustment'], total: 'extras_cents' },
+  { title: 'Costs', kinds: ['lease', 'cash_collected'], total: 'costs_cents' },
+];
+const hours = (s: number) => (s / 3600).toFixed(1);
 
 export function Earnings() {
   const [days, setDays] = useState(7);
   const [sel, setSel] = useState<number | null>(null);
   const { data, error, loading } = useLoad(() => get(`/driver/earnings?days=${days}`), [days]);
   const byKind: Record<string, number> = data?.by_kind ?? {};
-  const takeHome = Object.entries(byKind).filter(([k]) => k !== 'payout').reduce((s, [, v]) => s + v, 0);
+  const sum = data?.summary;
+  const takeHome = sum?.take_home_cents ?? Object.entries(byKind).filter(([k]) => k !== 'payout').reduce((s, [, v]) => s + v, 0);
   const daily: { day: string; cents: number }[] = data?.daily ?? [];
   // Fill gaps so the chart shows every day in range
   const series = Array.from({ length: days }, (_, i) => {
@@ -22,7 +32,10 @@ export function Earnings() {
   const selIdx = sel != null && sel < series.length ? sel : series.length - 1;
   const picked = series[selIdx];
   const pickedLabel = selIdx === series.length - 1 ? 'Today' : new Date(picked.day + 'T12:00:00').toLocaleDateString('en-AU', { weekday: 'long', day: 'numeric', month: 'short' });
-  const rows = Object.keys(KIND).filter((k) => byKind[k] != null && Number(byKind[k]) !== 0);
+  const act = data?.activity;
+  const floor = data?.floor;
+  const rules = data?.pay_rules;
+  const has = (k: string) => byKind[k] != null && Number(byKind[k]) !== 0;
 
   return (
     <div className="screen">
@@ -35,8 +48,16 @@ export function Earnings() {
       {loading && !data ? <p className="dg-muted">Loading…</p> : data && (
         <>
           <section className="panel">
-            <p className="panel-label">{Number(byKind.lease ?? 0) !== 0 ? 'Take-home after fees, lease and cash' : 'Take-home after fees and cash'}</p>
+            <p className="panel-label">Take-home after the DingoGo fee{has('lease') ? ', lease' : ''}{has('cash_collected') ? ' and cash you kept' : ''}</p>
             <div className="big-num">{money(takeHome)}</div>
+            {act && (
+              <p className="earn-stats">
+                <span><strong>{act.trips}</strong> trips</span>
+                <span><strong>{hours(act.engaged_s)} h</strong> on trips</span>
+                {act.per_engaged_hour_cents != null && <span><strong>{money(act.per_engaged_hour_cents)}</strong> per hour on trips</span>}
+                <span><strong>{act.total_km} km</strong> driven{act.pickup_km > 0 ? `, ${act.pickup_km} km to pickups` : ''}</span>
+              </p>
+            )}
             <p className="chart-readout" aria-live="polite"><span>{pickedLabel}</span><strong className="dg-money">{money(picked.cents)}</strong></p>
             <div className={'bars' + (days > 7 ? ' bars--dense' : '')} role="group" aria-label="Earnings per day. Choose a day to see its total.">
               {series.map((s, i) => (
@@ -49,20 +70,52 @@ export function Earnings() {
             </div>
           </section>
 
+          {floor?.enabled && (
+            <section className="panel">
+              <h2 className="panel-title">Earnings floor this week</h2>
+              <p className="dg-muted" style={{ marginTop: 0 }}>You earn at least {money(floor.cents_per_engaged_hour)} for every hour on trips (from accepting to drop-off). Tips don't count towards it, so they are always extra.</p>
+              <div className="info-row"><span>Hours on trips</span><strong>{hours(floor.engaged_s)} h</strong></div>
+              <div className="info-row"><span>Trip pay so far</span><strong className="dg-money">{money(floor.earnings_cents)}</strong></div>
+              <div className="info-row"><span>Floor for those hours</span><strong className="dg-money">{money(floor.floor_cents)}</strong></div>
+              <div className="info-row"><span>Top-up if the week ended now</span><strong className="dg-money">{money(floor.projected_topup_cents)}</strong></div>
+              <p className="fine-print"><Icon name="info" size={16} />Worked out after Sunday midnight and added to your balance.</p>
+            </section>
+          )}
+
           <section className="panel">
             <h2 className="panel-title">Breakdown</h2>
-            <ul className="list">
-              {rows.map((k) => (
-                <li key={k}><span>{KIND[k]}</span><span className="dg-money" style={{ color: byKind[k] < 0 ? 'var(--earth)' : undefined }}>{money(byKind[k])}</span></li>
-              ))}
-              {!rows.length && <li className="dg-muted">No earnings in this period yet.</li>}
-            </ul>
+            {GROUPS.map((g) => {
+              const ks = g.kinds.filter(has);
+              if (!ks.length) return null;
+              return (
+                <div key={g.title} className="earn-group">
+                  <h3>{g.title}</h3>
+                  <ul className="list">
+                    {ks.map((k) => <li key={k}><span>{KIND[k]}</span><span className="dg-money" style={{ color: byKind[k] < 0 ? 'var(--earth)' : undefined }}>{money(byKind[k])}</span></li>)}
+                    {sum && g.total && ks.length > 1 && <li className="earn-total"><span>{g.title} total</span><strong className="dg-money">{money(sum[g.total])}</strong></li>}
+                  </ul>
+                </div>
+              );
+            })}
+            {!Object.keys(byKind).some((k) => k !== 'payout' && has(k)) && <p className="dg-muted">No earnings in this period yet.</p>}
+            {has('payout') && <div className="info-row"><span>{KIND.payout}</span><strong className="dg-money">{money(-byKind.payout)}</strong></div>}
           </section>
+
+          {rules && (
+            <section className="panel">
+              <h2 className="panel-title">How you are paid</h2>
+              <div className="info-row"><span>DingoGo fee for your car</span><strong>{rules.fee_pct}%{rules.fee_basis !== 'driver' ? ` (${FEE_BASIS[rules.fee_basis]})` : ''}</strong></div>
+              <div className="info-row"><span>Tips</span><strong>100% yours</strong></div>
+              {rules.pickup && <div className="info-row"><span>Pickup pay</span><strong>{money(rules.pickup.cents_per_km)}/km after the first {rules.pickup.free_km} km</strong></div>}
+              {rules.fuel_surcharge_cents != null && <div className="info-row"><span>Fuel surcharge</span><strong>{money(rules.fuel_surcharge_cents)} a trip, 100% yours</strong></div>}
+              <p className="fine-print"><Icon name="info" size={16} />Each offer shows your pay before you accept, and that is the rate you get for the trip.</p>
+            </section>
+          )}
 
           <section className="panel">
             <div className="info-row"><span>Balance to be paid</span><strong className="dg-money">{money(data.balance_cents)}</strong></div>
-            {Number(data.gst_on_fares_cents) > 0 && <div className="info-row"><span>GST in your fares</span><strong className="dg-money">{money(data.gst_on_fares_cents)}</strong></div>}
-            <p className="fine-print"><Icon name="info" size={16} />Set the GST (1/11 of fares) aside for your BAS. Cash you collect comes off what DingoGo pays you.</p>
+            {Number(data.gst_on_fares_cents) > 0 && <div className="info-row"><span>GST in your trip pay</span><strong className="dg-money">{money(data.gst_on_fares_cents)}</strong></div>}
+            <p className="fine-print"><Icon name="info" size={16} />Set the GST (1/11 of fares, pickup pay and fuel surcharge) aside for your BAS. Cash you collect comes off what DingoGo pays you.</p>
           </section>
 
           {(data.ledger ?? []).length > 0 && <h2>Recent activity</h2>}

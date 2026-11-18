@@ -362,7 +362,7 @@ function Payouts() {
   const { data, error, reload } = useLoad(() => get('/admin/payouts'));
   const run = useRun();
   return (<>
-    <p className="dg-muted" style={{ maxWidth: 760 }}>Balances include fares less the DingoGo service fee, tips (100% to drivers), charging credits, cash already held by drivers, and weekly lease deductions. Pay positive balances by bank transfer, then record the payout here.</p>
+    <p className="dg-muted" style={{ maxWidth: 760 }}>Balances include fares less the DingoGo service fee, pickup pay, fuel surcharges, earnings-floor top-ups, tips (100% to drivers), charging credits, cash already held by drivers, and weekly lease deductions. Pay positive balances by bank transfer, then record the payout here.</p>
     <div className="actions" style={{ marginBottom: 12 }}>
       <button className="dg-btn dg-btn--sm dg-btn--dark" onClick={async () => {
         if (!confirm('Charge this week\'s lease to every driver on a leased vehicle? Drivers already charged in the last 6 days are skipped.')) return;

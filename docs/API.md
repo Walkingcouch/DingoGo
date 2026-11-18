@@ -366,3 +366,46 @@ grace); refuses with 409 `driver_offline` / `on_trip`. Going offline, being bloc
 A booking not released until more than `SCHEDULED_MISSED_MIN` (30) after its time is ended as `no_drivers` (holds released, rider told) instead of dispatched.
 
 **Serverless.** Notifications, push and SMS started by a request are awaited (≤ 3 s) before the response is sent on Vercel, so a frozen function can't drop them.
+
+## Driver pay (Round 4)
+
+Rules live in setting `driver_pay` (defaults in code; nothing changes until an admin switches something on):
+`{ service_fee: { own_car_pct: 25, green_pct: 25 }, pickup: { enabled: false, free_km: 2, driver_cents_per_km: 60, rider_cents_per_km: 60, max_km: 10 },
+fuel_surcharge: { enabled: false, cents: 50 }, earnings_floor: { enabled: false, cents_per_engaged_hour: 3200, auto_weekly: false } }`.
+
+- **Service fee by car.** Electric/plug-in hybrid/hybrid → `green_pct`; driver-owned petrol/diesel → `own_car_pct`; DingoGo fleet petrol → the driver's own
+  `commission_pct`. The driver's own rate is a ceiling (the lower applies). Used for fares and the driver's share of late-cancellation fees.
+- **Pickup pay / long pickup.** Quotes (`POST /quotes`, `/public/estimate`, `POST /trips`, phone bookings) for on-demand non-tour trips add a line
+  `Long pickup (nearest car X km away)` = `round5(min(max(km − free_km, 0), max_km) × rider_cents_per_km)`, km = straight line × 1.3 from the nearest free car
+  (none free → no charge). Discountable like the booking fee. The driver gets `pickup_pay` = paid km × `driver_cents_per_km` from their own distance to the
+  pickup when offered (no service fee).
+- **Fuel surcharge.** Line `Fuel surcharge (all to your driver)` on rides and parcels (not tours), added after discounts (5c multiple), all to the driver.
+- Quote/`fare_breakdown` adds `long_pickup_cents`, `long_pickup_km`, `fuel_surcharge_cents`. `trip_cents` (what the fee applies to) excludes both.
+- **Fixed at accept.** The `offered` event records `pickup_m`; the `accepted` event records `pickup_m` and `pay` (DriverPay). Completion pays what was accepted
+  (fare re-metered on a route change). Ledger kinds added: `pickup_pay`, `fuel_surcharge`, `earnings_floor`. Commission note names the rate basis.
+
+**DriverPay JSON** `{ fare_cents, fee_pct, fee_basis ('green'|'own_car'|'driver'), fee_cents, pickup_m, pickup_km, pickup_paid_km, pickup_pay_cents, fuel_surcharge_cents, total_cents }`.
+
+**Driver**
+- Offers (`offer.new` and `GET /driver/offers`) add `pickup_m`, `total_m` (pickup + trip) and `driver_pay`. The driver app keeps `trip_cents` and `driver_pay` from polled offers (it used to drop `trip_cents`).
+- `GET /driver/trips` rows add `distance_m`, `driver_pay_cents` (fare − fee + pickup pay + fuel surcharge + cancellation share; no tips).
+- `GET /driver/earnings` adds `summary { fares_cents, service_fee_cents, pickup_pay_cents, fuel_surcharge_cents, cancel_fees_cents, trip_pay_cents, tips_cents,
+  bonus_cents, earnings_floor_cents, charging_cents, adjustments_cents, extras_cents, lease_cents, cash_collected_cents, costs_cents, take_home_cents, paid_out_cents }`,
+  `activity { trips, engaged_s, trip_km, pickup_km, total_km, per_engaged_hour_cents }`, `floor { enabled, cents_per_engaged_hour, week_start, week_end, engaged_s, trips,
+  earnings_cents, floor_cents, projected_topup_cents, per_engaged_hour_cents }`, `pay_rules { fee_pct, fee_basis, own_pct, fuel_type, pickup|null, fuel_surcharge_cents|null,
+  earnings_floor_cents_per_hour|null }`. `daily` no longer subtracts payouts. `gst_on_fares_cents` = (fare + pickup pay + fuel surcharge) / 11. `net_cents` unchanged.
+
+**Earnings floor.** Weeks run Monday–Sunday, Darwin time. Engaged time per trip = accept → completed/cancelled (rider, DingoGo, or driver for a rider-side reason),
+capped at 2 × estimated duration + 45 min. Counted earnings = ledger `fare, commission, pickup_pay, fuel_surcharge, cancel_fee` in the week (tips never).
+Top-up = max(0, rate × engaged hours − counted earnings). Table `driver_pay_weeks` (migration 012), one row per driver per week.
+
+**Admin**
+- `GET /admin/driver-pay` (ops) → `{ settings, defaults }`; `PUT /admin/driver-pay` (admin) partial body (strict; bounds: fees 0–50 %, per-km 0–300c, free km 0–20,
+  max km 0–50, surcharge 0–500c, floor 0–10000c/h) → `{ settings }`; audited (`driver_pay`, before/after). `PUT /admin/settings/driver_pay` goes through the same validation.
+- `GET /admin/driver-pay/floor?week=YYYY-MM-DD` (ops; Monday, default last full week; 400 `week` otherwise) → `{ week_start, week_end, enabled, auto_weekly,
+  cents_per_engaged_hour, week_over, settled, migration_pending, rows: [{ driver_id, name, trips, engaged_s, earnings_cents, floor_cents, topup_cents,
+  per_engaged_hour_cents, paid_cents?, paid_at? }], totals }`.
+- `POST /admin/driver-pay/floor/run` (admin) `{ week? }` → `{ week_start, recorded, drivers_topped_up, topup_cents }`. 409 `floor_off`, 409 `week_not_over`,
+  503 `migration_pending` (table missing). Safe to run twice / at once (advisory lock + primary key). Drivers are notified. With `auto_weekly`, the dispatch tick
+  settles last week (checked hourly per instance).
+- `GET /admin/trips/:id` adds `driver_ledger` (what the driver was paid for the trip).

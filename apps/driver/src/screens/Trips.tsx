@@ -16,7 +16,9 @@ export function Trips() {
               <div className="sub">{dayName(t.completed_at ?? t.requested_at)}, {time(t.completed_at ?? t.requested_at)}{t.rider_rating ? `, rated ${t.rider_rating} of 5` : ''}{t.payment_method === 'cash' ? ', cash' : ''}</div>
             </div>
             <div style={{ textAlign: 'right', flex: 'none' }}>
-              {t.final_cents != null && <div className="dg-money">{money(t.final_cents)}</div>}
+              {t.driver_pay_cents != null
+                ? <><div className="dg-money" aria-label={`You earned ${money(t.driver_pay_cents)}`}>{money(t.driver_pay_cents)}</div>{t.final_cents != null && <div className="sub">Rider paid {money(t.final_cents)}</div>}</>
+                : t.final_cents != null && <div className="dg-money">{money(t.final_cents)}</div>}
               {t.tip_cents > 0 && <div className="sub">+{money(t.tip_cents)} tip</div>}
               {t.status !== 'completed' && <span className={`dg-chip dg-chip--${statusTone(t.status)}`}>{STATUS_LABEL[t.status]}</span>}
             </div>

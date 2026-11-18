@@ -212,3 +212,10 @@ body { overscroll-behavior: none; }
 .state-pick__fixed svg { color: var(--ochre); }
 .dg-input.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .04em; }
 .field-hint.good { color: var(--saltbush); font-weight: 700; display: inline-flex; align-items: center; gap: 4px; }
+.offer-pay { list-style: none; margin: 8px 0 4px; padding: 8px 0 0; border-top: 1px solid rgba(255,255,255,.15); color: #C9CFDD; font-size: var(--fs-sm); }
+.offer-pay li { display: flex; justify-content: space-between; gap: 12px; padding: 2px 0; font-variant-numeric: tabular-nums; }
+.earn-stats { display: flex; flex-wrap: wrap; gap: 4px 16px; margin: -8px 0 12px; color: var(--muted); font-size: var(--fs-sm); }
+.earn-stats strong { color: var(--text); }
+.earn-group h3 { margin: 12px 0 0; font-size: var(--fs-sm); color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+.earn-group .list li { min-height: 40px; padding: 8px 0; }
+.earn-group .earn-total { border-top: 1px solid var(--line); }

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { ApiError, Icon, SERVICE_ICON_NAME, km, mins, money, post } from '@dingogo/shared';
-import { estimateEarnings, useDriver } from '../state';
+import { FEE_BASIS, estimateEarnings, useDriver } from '../state';
 
 const LABEL: Record<string, string> = { ride: 'Ride', pet: 'Pet-friendly ride', courier_s: 'Small parcel', courier_m: 'Medium parcel', courier_l: 'Large parcel', tour: 'Private tour', hourly: 'Hourly hire' };
 
@@ -38,6 +38,7 @@ export function Offer() {
   }
 
   const earn = estimateEarnings(offer, Number(me?.driver?.commission_pct ?? 25));
+  const pay = offer.driver_pay;
   const frac = Math.min(1, left / total);
   const C = 2 * Math.PI * 30;
   const isCourier = offer.kind === 'courier';
@@ -59,7 +60,19 @@ export function Offer() {
 
       <div className="offer-body">
         <div className="offer-earn">{money(earn)}</div>
-        <div className="offer-sub">Your estimated earnings for {km(offer.est_distance_m)}, about {mins(offer.est_duration_s)}</div>
+        <div className="offer-sub">
+          {pay ? 'Your pay for this trip' : 'Your estimated earnings'}{offer.pickup_m != null
+            ? <>: {km(offer.total_m ?? offer.pickup_m + offer.est_distance_m)} in all ({km(offer.pickup_m)} to the pickup + {km(offer.est_distance_m)} trip), about {mins(offer.est_duration_s)} with them</>
+            : <> for {km(offer.est_distance_m)}, about {mins(offer.est_duration_s)}</>}
+        </div>
+        {pay && (
+          <ul className="offer-pay" aria-label="How your pay adds up">
+            <li><span>Fare</span><span>{money(pay.fare_cents)}</span></li>
+            <li><span>DingoGo fee {pay.fee_pct}%{pay.fee_basis !== 'driver' ? ` (${FEE_BASIS[pay.fee_basis]})` : ''}</span><span>{money(-pay.fee_cents)}</span></li>
+            {pay.pickup_pay_cents > 0 && <li><span>Pickup pay ({pay.pickup_paid_km} km)</span><span>{money(pay.pickup_pay_cents)}</span></li>}
+            {pay.fuel_surcharge_cents > 0 && <li><span>Fuel surcharge</span><span>{money(pay.fuel_surcharge_cents)}</span></li>}
+          </ul>
+        )}
 
         <div className="leg">
           <span className="dot" style={{ background: 'var(--saltbush)' }} />

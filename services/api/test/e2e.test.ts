@@ -1148,3 +1148,186 @@ test('background work (notifications, SMS) is tracked and can be awaited before 
   await flushBackground(100);
   assert.ok(Date.now() - t0 < 1000, 'bounded wait');
 });
+
+// ───────────────────────── Round 4: driver pay ─────────────────────────
+import { DRIVER_PAY_DEFAULTS, mergeDriverPay, pickupPayCents, longPickupCents, serviceFeeFor, weekStartOf } from '../src/lib/driverPay.js';
+
+test('driver pay rules: fee by car never above the driver’s own rate; pickup pay beyond the free km; week starts Monday (Darwin)', () => {
+  const s = mergeDriverPay({ service_fee: { own_car_pct: 20, green_pct: 15 }, pickup: { enabled: true } });
+  assert.deepEqual(serviceFeeFor(25, { fuel_type: 'electric', ownership: 'fleet' }, s), { pct: 15, basis: 'green' });
+  assert.deepEqual(serviceFeeFor(25, { fuel_type: 'hybrid', ownership: 'driver_owned' }, s), { pct: 15, basis: 'green' });
+  assert.deepEqual(serviceFeeFor(25, { fuel_type: 'petrol', ownership: 'driver_owned' }, s), { pct: 20, basis: 'own_car' });
+  assert.deepEqual(serviceFeeFor(25, { fuel_type: 'petrol', ownership: 'fleet' }, s), { pct: 25, basis: 'driver' });
+  assert.deepEqual(serviceFeeFor(10, { fuel_type: 'electric', ownership: 'fleet' }, s), { pct: 10, basis: 'driver' }, 'a lower personal rate is kept');
+  assert.deepEqual(serviceFeeFor(25, { fuel_type: 'electric' }, DRIVER_PAY_DEFAULTS), { pct: 25, basis: 'driver' }, 'defaults change nothing');
+  assert.equal(pickupPayCents(1500, s), 0, 'first 2 km unpaid');
+  assert.equal(pickupPayCents(4500, s), 150, '2.5 km × 60c');
+  assert.equal(pickupPayCents(40000, s), 600, 'capped at 10 km');
+  assert.equal(pickupPayCents(9000, DRIVER_PAY_DEFAULTS), 0, 'off by default');
+  assert.equal(longPickupCents(4520, s), 150, 'rider charge rounded to 5c');
+  assert.equal(weekStartOf(new Date('2026-11-22T14:00:00Z')), '2026-11-16', 'Sunday 11:30pm Darwin is still that week');
+  assert.equal(weekStartOf(new Date('2026-11-22T15:00:00Z')), '2026-11-23', 'Monday 12:30am Darwin starts the next week');
+});
+
+test('fare engine: long-pickup charge is discountable; fuel surcharge sits outside discounts; neither on tours', () => {
+  const rule = { service: 'ride', label: 'Ride', base_cents: 300, per_km_cents: 160, per_min_cents: 25, booking_fee_cents: 100, min_fare_cents: 1000, night_pct: 0, holiday_pct: 0, levy_cents: 100 };
+  const ctx = { distance_m: 5000, duration_s: 600, at: new Date('2026-11-02T02:00:00Z') };
+  const base = quoteFare(rule, ctx);
+  const q2 = quoteFare(rule, { ...ctx, longPickup: { km: 4.5, cents: 150 }, fuelSurchargeCents: 50 });
+  assert.equal(q2.total_cents, base.total_cents + 200);
+  assert.equal(q2.trip_cents, base.trip_cents, 'no service fee on either');
+  assert.equal(q2.long_pickup_cents, 150);
+  assert.equal(q2.fuel_surcharge_cents, 50);
+  assert.ok(q2.lines.some((l) => l.label.startsWith('Long pickup')));
+  const promo = quoteFare(rule, { ...ctx, longPickup: { km: 4.5, cents: 150 }, fuelSurchargeCents: 50, promo: { code: 'ALL', kind: 'percent', value: 100, max_discount_cents: null } });
+  assert.equal(promo.total_cents, 50 + 100, '100% promo leaves only the fuel surcharge and levy');
+  const tour = quoteFare(rule, { ...ctx, fixedPriceCents: 9900, longPickup: { km: 9, cents: 400 }, fuelSurchargeCents: 50 });
+  assert.equal(tour.total_cents, 9900 + 100 + 100);
+});
+
+async function rideToEnd(tripId: string, who: string) {
+  assert.equal((await call('POST', `/driver/offers/${tripId}/accept`, who)).trip.status, 'accepted');
+  await call('POST', `/driver/trips/${tripId}/arrive`, who);
+  const pin = (await one('SELECT verify_pin FROM trips WHERE id = $1', [tripId])).verify_pin;
+  assert.equal((await call('POST', `/driver/trips/${tripId}/start`, who, { pin })).trip.status, 'in_progress');
+  const done = await call('POST', `/driver/trips/${tripId}/complete`, who, {});
+  assert.equal(done.trip.status, 'completed', JSON.stringify(done));
+  return done.trip;
+}
+const ledgerFor = async (tripId: string) => Object.fromEntries((await q(`SELECT kind, sum(amount_cents)::int c FROM driver_ledger WHERE trip_id = $1 GROUP BY kind`, [tripId])).map((r) => [r.kind, r.c]));
+
+test('driver pay defaults: offers (pushed and polled) show pay at 25% and the km to the pickup; nothing else changes', async () => {
+  await clearOpenTrips();
+  await q(`DELETE FROM settings WHERE key = 'driver_pay'`);
+  await onlyD1Online();
+  const t = await book();
+  assert.ok(!t.fare_breakdown.lines.some((l: any) => /Long pickup|Fuel surcharge/.test(l.label)));
+  const o = await waitForOffer('d1');
+  assert.equal(o.driver_pay.fee_pct, 25);
+  assert.equal(o.driver_pay.fare_cents, t.fare_breakdown.trip_cents, 'polled offers carry the trip fare (was dropped)');
+  assert.equal(o.driver_pay.total_cents, t.fare_breakdown.trip_cents - Math.round(t.fare_breakdown.trip_cents * 0.25));
+  assert.equal(o.driver_pay.pickup_pay_cents, 0);
+  assert.equal(typeof o.pickup_m, 'number');
+  assert.equal(o.total_m, o.pickup_m + t.est_distance_m);
+  const done = await rideToEnd(t.id, 'd1');
+  const l = await ledgerFor(done.id);
+  assert.deepEqual(Object.keys(l).sort(), ['commission', 'fare']);
+  assert.equal(l.commission, -Math.round(l.fare * 0.25));
+  const mine = (await call('GET', '/driver/trips', 'd1')).trips.find((x: any) => x.id === done.id);
+  assert.equal(mine.driver_pay_cents, l.fare + l.commission);
+});
+
+test('driver pay switched on: EV rate, long-pickup charge funds pickup pay, fuel surcharge to the driver; rate fixed at accept', async () => {
+  await clearOpenTrips();
+  assert.equal((await call('PUT', '/admin/driver-pay', 'admin', { pickup: { enabled: true, max_km: 999 } })).status, 400, 'bounds checked');
+  assert.equal((await call('PUT', '/admin/driver-pay', 'admin', { surprise: 1 })).status, 400, 'unknown keys refused');
+  await login('dispatcher', '+61400000002', 'admin');
+  assert.equal((await call('PUT', '/admin/driver-pay', 'dispatcher', { service_fee: { green_pct: 1 } })).status, 403, 'admins only');
+  const put = await call('PUT', '/admin/driver-pay', 'admin', {
+    service_fee: { own_car_pct: 20, green_pct: 15 }, pickup: { enabled: true }, fuel_surcharge: { enabled: true, cents: 52 } });
+  assert.equal(put.status, 200, JSON.stringify(put));
+  assert.equal(put.settings.fuel_surcharge.cents, 50, 'rounded to 5c');
+  assert.equal(put.settings.pickup.free_km, 2, 'defaults kept for fields not sent');
+  assert.ok(await one(`SELECT 1 FROM audit_log WHERE action = 'driver_pay'`));
+
+  // Only d1 online, about 3.5 km south of the pickup (≈ 4.6 km by road).
+  for (const w of ['d2', 'd3', 'pd', 'sa']) if (tokens[w]) await call('POST', '/driver/online', w, { online: false });
+  await call('POST', '/driver/online', 'd1', { online: true, lat: TODD_MALL.lat - 0.0316, lng: TODD_MALL.lng, battery_pct: 90 });
+  const quote = await call('POST', '/quotes', 'rider', { service: 'ride', pickup: TODD_MALL, dropoff: HOSPITAL });
+  const lp = quote.quote.lines.find((l: any) => l.label.startsWith('Long pickup'));
+  assert.ok(lp && lp.cents > 0, JSON.stringify(quote.quote.lines));
+  assert.ok(quote.quote.lines.some((l: any) => l.label.startsWith('Fuel surcharge') && l.cents === 50));
+  const sched = await call('POST', '/quotes', 'rider', { service: 'ride', pickup: TODD_MALL, dropoff: HOSPITAL, scheduled_for: new Date(Date.now() + 3600e3).toISOString() });
+  assert.ok(!sched.quote.lines.some((l: any) => l.label.startsWith('Long pickup')), 'no long-pickup charge on bookings');
+
+  const t = await book();
+  assert.equal(t.fare_breakdown.fuel_surcharge_cents, 50);
+  const o = await waitForOffer('d1');
+  assert.equal(o.driver_pay.fee_pct, 15, 'demo cars are electric');
+  assert.equal(o.driver_pay.fee_basis, 'green');
+  assert.ok(o.pickup_m > 4000 && o.pickup_m < 5500, String(o.pickup_m));
+  const expectPickup = Math.round((o.pickup_m / 1000 - 2) * 60);
+  assert.equal(o.driver_pay.pickup_pay_cents, expectPickup);
+  assert.equal(o.driver_pay.fuel_surcharge_cents, 50);
+  assert.equal(o.driver_pay.total_cents, o.driver_pay.fare_cents - Math.round(o.driver_pay.fare_cents * 0.15) + expectPickup + 50);
+
+  assert.equal((await call('POST', `/driver/offers/${t.id}/accept`, 'd1')).trip.status, 'accepted');
+  // Owner changes the rate mid-trip: this trip keeps the rate the driver accepted.
+  await call('PUT', '/admin/driver-pay', 'admin', { service_fee: { green_pct: 5 } });
+  await call('POST', `/driver/trips/${t.id}/arrive`, 'd1');
+  const pin = (await one('SELECT verify_pin FROM trips WHERE id = $1', [t.id])).verify_pin;
+  await call('POST', `/driver/trips/${t.id}/start`, 'd1', { pin });
+  assert.equal((await call('POST', `/driver/trips/${t.id}/complete`, 'd1', {})).trip.status, 'completed');
+  const l = await ledgerFor(t.id);
+  assert.equal(l.commission, -Math.round(l.fare * 0.15));
+  assert.equal(l.pickup_pay, expectPickup);
+  assert.equal(l.fuel_surcharge, 50);
+  const note = await one(`SELECT note FROM driver_ledger WHERE trip_id = $1 AND kind = 'commission'`, [t.id]);
+  assert.match(note.note, /15% \(electric\/hybrid rate\)/);
+  const adminTrip = await call('GET', `/admin/trips/${t.id}`, 'admin');
+  assert.ok(adminTrip.driver_ledger.some((x: any) => x.kind === 'pickup_pay'));
+
+  // Late cancellation: the driver's share uses the rate fixed at accept (5% now).
+  await call('POST', '/driver/online', 'd1', { online: true, lat: TODD_MALL.lat, lng: TODD_MALL.lng, battery_pct: 90 });
+  const t2 = await book();
+  await driveToArrived(t2.id);
+  await pool.query(`UPDATE trips SET arrived_at = now() - interval '6 minutes' WHERE id = $1`, [t2.id]);
+  assert.equal((await call('POST', `/trips/${t2.id}/cancel`, 'rider', {})).trip.cancel_fee_cents, 300);
+  assert.equal((await ledgerFor(t2.id)).cancel_fee, 285);
+
+  const e = await call('GET', '/driver/earnings?days=7', 'd1');
+  assert.equal(e.pay_rules.fee_pct, 5);
+  assert.equal(e.pay_rules.fee_basis, 'green');
+  assert.equal(e.pay_rules.fuel_surcharge_cents, 50);
+  assert.ok(e.summary.pickup_pay_cents >= expectPickup);
+  assert.equal(e.summary.trip_pay_cents, e.summary.fares_cents + e.summary.service_fee_cents + e.summary.pickup_pay_cents + e.summary.fuel_surcharge_cents + e.summary.cancel_fees_cents);
+  assert.ok(e.activity.pickup_km > 4 && e.activity.total_km > e.activity.trip_km);
+  assert.ok(e.activity.engaged_s >= 0);
+  await q(`DELETE FROM settings WHERE key = 'driver_pay'`);
+});
+
+test('earnings floor: weekly top-up per engaged hour, paid once; off by default; only finished weeks', async () => {
+  await clearOpenTrips();
+  await q(`DELETE FROM settings WHERE key = 'driver_pay'`);
+  const lastWeek = weekStartOf(new Date(Date.now() - 7 * 864e5));
+  assert.equal((await call('POST', '/admin/driver-pay/floor/run', 'admin', { week: lastWeek })).error, 'floor_off');
+
+  // A short trip done last Wednesday that kept the driver busy for 40 minutes.
+  await onlyD1Online();
+  const t = await book();
+  await waitForOffer('d1');
+  const done = await rideToEnd(t.id, 'd1');
+  const at = new Date(new Date(lastWeek + 'T12:00:00+09:30').getTime() + 2 * 864e5);
+  await q(`UPDATE trips SET accepted_at = $2, completed_at = $2::timestamptz + interval '40 minutes' WHERE id = $1`, [done.id, at]);
+  await q(`UPDATE driver_ledger SET created_at = $2::timestamptz + interval '40 minutes' WHERE trip_id = $1`, [done.id, at]);
+
+  await call('PUT', '/admin/driver-pay', 'admin', { earnings_floor: { enabled: true, cents_per_engaged_hour: 9000 } });
+  assert.equal((await call('POST', '/admin/driver-pay/floor/run', 'admin', { week: weekStartOf(new Date()) })).error, 'week_not_over');
+  assert.equal((await call('GET', '/admin/driver-pay/floor?week=2026-11-18', 'admin')).error, 'week', 'weeks start on a Monday');
+
+  const rep = await call('GET', `/admin/driver-pay/floor?week=${lastWeek}`, 'admin');
+  assert.equal(rep.status, 200, JSON.stringify(rep));
+  assert.equal(rep.week_over, true);
+  const d1 = await driverId('+61400000011');
+  const row = rep.rows.find((r: any) => r.driver_id === d1);
+  assert.ok(row && row.engaged_s >= 2400, JSON.stringify(row));
+  assert.equal(row.floor_cents, Math.round((row.engaged_s / 3600) * 9000));
+  assert.equal(row.topup_cents, Math.max(0, row.floor_cents - row.earnings_cents));
+  assert.ok(row.topup_cents > 0, 'a $90/h floor needs a top-up');
+
+  const runs = await Promise.all([1, 2].map(() => call('POST', '/admin/driver-pay/floor/run', 'admin', { week: lastWeek })));
+  assert.deepEqual(runs.map((r) => r.status), [200, 200]);
+  const paid = await q(`SELECT amount_cents FROM driver_ledger WHERE driver_id = $1 AND kind = 'earnings_floor'`, [d1]);
+  assert.deepEqual(paid.map((p) => p.amount_cents), [row.topup_cents], 'paid once even when run twice at once');
+  const after = await call('GET', `/admin/driver-pay/floor?week=${lastWeek}`, 'admin');
+  assert.equal(after.settled, true);
+  assert.equal(after.rows.find((r: any) => r.driver_id === d1).paid_cents, row.topup_cents);
+  assert.ok(await one(`SELECT 1 FROM notifications WHERE user_id = $1 AND title = 'Earnings floor top-up'`, [d1]));
+
+  const e = await call('GET', '/driver/earnings?days=30', 'd1');
+  assert.equal(e.summary.earnings_floor_cents, row.topup_cents);
+  assert.equal(e.floor.enabled, true);
+  assert.equal(e.floor.cents_per_engaged_hour, 9000);
+  assert.equal(e.floor.week_start, weekStartOf(new Date()));
+  await q(`DELETE FROM settings WHERE key = 'driver_pay'`);
+});

@@ -36,7 +36,7 @@ npm install
 npm run db:setup                                   # migrations + demo data
 npm run dev:api                                    # http://localhost:4000
 npm run dev:web    # and/or dev:rider, dev:driver, dev:admin, dev:partner, dev:roof
-npm test                                           # 55 API tests (needs a throwaway DB: they reset it)
+npm test                                           # 60 API tests (needs a throwaway DB: they reset it)
 ```
 
 Demo sign-ins (development only — any SMS code is shown on screen, and `000000` always works):
@@ -59,7 +59,7 @@ All partner businesses, advertisers and people in the demo data are fictional.
 
 **Riders:** book rides, pet-friendly rides, parcels (S/M/L), fixed-price tours and event hire; upfront itemised prices with GST and the NT passenger levy; schedule ahead; assistance-animal, women-preferred driver and NDIS options; live tracking; trip PIN; share-trip link; SOS (000 + alert to DingoGo and emergency contact); tips, ratings, tax invoices; Dingo Points, café rewards with QR codes, referrals, DingoGo Pass subscription; DingoGo credit and prepaid vouchers; data export and account deletion.
 
-**Drivers:** onboarding against NT accreditation requirements with document upload; can't go online until licence, H endorsement, ABN, GST, vehicle CVL, rego and insurance are current; offers with countdown and earnings; PIN-verified pickups; courier proof of delivery (recipient PIN, signature or photo); SOS; earnings with fee, tips, lease and charging; GST-on-fares figure for the BAS; charging and battery logs.
+**Drivers:** onboarding against NT accreditation requirements with document upload; can't go online until licence, H endorsement, ABN, GST, vehicle CVL, rego and insurance are current; offers with countdown, their pay and total km (incl. the drive to the pickup); PIN-verified pickups; courier proof of delivery (recipient PIN, signature or photo); SOS; earnings with fee, pickup pay, tips, lease, charging, hours on trips and earnings-floor progress; GST-on-fares figure for the BAS; charging and battery logs.
 
 **Dispatch:** nearest eligible driver, 20-second offers, automatic re-offer; if a driver pulls out before pickup the trip goes to the next driver (repeat cancellers flagged), and ops are alerted when a driver on a trip goes silent. EV-aware: skips cars whose battery (rated range × charge × 0.7 heat derate) can't cover pickup + trip + 40 km reserve. Scheduled trips released 15 minutes ahead. Route-deviation safety alerts.
 
@@ -70,7 +70,8 @@ All partner businesses, advertisers and people in the demo data are fictional.
 | Rule | Default | Source |
 | --- | --- | --- |
 | Ride fare | $3.00 + $1.60/km + $0.25/min + $1 booking + $1 NT levy; min $10; 20% 10pm–5am | set under taxi day tariff ($5.30 + $2.45/km) |
-| Platform fee | 25% of trip fare (driver keeps 75%; 100% of tips) | March 2026 business plan |
+| Platform fee | 25% of trip fare (driver keeps 75%; 100% of tips). Admin → Pricing → Driver pay can set a lower rate for own cars and for electric/hybrid cars (both 25% until changed) | March 2026 business plan |
+| Driver pay extras | Off until switched on: pickup pay after the first 2 km (funded by a rider "Long pickup" charge), fuel surcharge (all to the driver), weekly earnings floor ($32 per hour on trips) | Nov 2026 owner direction |
 | Cancellation | free within 2 min, then $3; tours free until 48 h before, then 50%; hire 24 h | March 2026 draft rider terms |
 | Cash | off for rides, on for parcels | draft terms say rides are in-app only — confirm with NT |
 | Points | earn 10 per $1; 100 points = $1 off (max 50% of a fare) | |

@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { config } from '../config.js';
-import { one, q } from '../db.js';
+import { one, pool, q } from '../db.js';
 import { requireUser } from '../auth.js';
 import { bad, conflict, forbidden, notFound } from '../lib/errors.js';
 import { latLng, parse, z } from '../lib/validate.js';
@@ -10,6 +10,8 @@ import { decodeVin, normaliseVin, vinYearMismatch } from '../lib/vin.js';
 import { toOps } from '../realtime.js';
 import { ownUpload } from '../lib/uploads.js';
 import * as trips from '../services/trips.js';
+import { loadDriverPay, serviceFeeFor, TRIP_PAY_KINDS } from '../lib/driverPay.js';
+import { myFloorWeek } from '../services/earningsFloor.js';
 
 /** Credentials that must be current before a driver can go online. Rules come from the driver's state (jurisdictions table):
  *  NT CPV rules / SA point-to-point rules + DingoGo policy. */
@@ -306,9 +308,18 @@ export default async function driverRoutes(app: FastifyInstance) {
     const offers = await q(
       `SELECT o.trip_id, o.expires_at, o.pickup_eta_s, t.ref, t.kind, t.service, t.pickup_address, t.pickup_lat, t.pickup_lng,
               t.dropoff_address, t.dropoff_lat, t.dropoff_lng, t.est_distance_m, t.est_duration_s, t.quote_cents, (t.fare_breakdown->>'trip_cents')::int AS trip_cents, t.has_pet,
-              t.assistance_animal, t.needs_wheelchair, t.passengers, t.payment_method, t.notes
+              t.assistance_animal, t.needs_wheelchair, t.passengers, t.payment_method, t.notes, t.fare_breakdown,
+              (SELECT (e.data->>'pickup_m')::int FROM trip_events e WHERE e.trip_id = t.id AND e.type = 'offered' AND e.data->>'driver_id' = o.driver_id::text
+               ORDER BY e.at DESC, e.id DESC LIMIT 1) AS pickup_m
        FROM trip_offers o JOIN trips t ON t.id = o.trip_id
        WHERE o.driver_id = $1 AND o.status = 'offered' AND o.expires_at > now()`, [me.id]);
+    // Same pay and distances as the realtime offer (the live site polls: realtime is off on serverless).
+    const rules = offers.length ? await loadDriverPay() : undefined;
+    for (const o of offers) {
+      o.driver_pay = await trips.offerPay(pool, o, me.id, o.pickup_m, rules);
+      o.total_m = (o.pickup_m ?? 0) + o.est_distance_m;
+      delete o.fare_breakdown;
+    }
     return { offers };
   });
 
@@ -330,8 +341,10 @@ export default async function driverRoutes(app: FastifyInstance) {
   app.get('/driver/trips', async (req) => {
     const me = await requireUser(req, 'driver');
     return { trips: await q(
-      `SELECT id, ref, kind, service, status, pickup_address, dropoff_address, requested_at, completed_at, final_cents, tip_cents, payment_method, rider_rating
-       FROM trips WHERE driver_id = $1 ORDER BY requested_at DESC LIMIT 100`, [me.id]) };
+      `SELECT t.id, t.ref, t.kind, t.service, t.status, t.pickup_address, t.dropoff_address, t.requested_at, t.completed_at, t.final_cents, t.tip_cents,
+              t.payment_method, t.rider_rating, coalesce(t.actual_distance_m, t.est_distance_m) AS distance_m,
+              (SELECT sum(l.amount_cents)::int FROM driver_ledger l WHERE l.trip_id = t.id AND l.driver_id = $1 AND l.kind = ANY($2)) AS driver_pay_cents
+       FROM trips t WHERE t.driver_id = $1 ORDER BY t.requested_at DESC LIMIT 100`, [me.id, [...TRIP_PAY_KINDS]]) };
   });
 
   app.post('/driver/trips/:id/arrive', async (req) => {
@@ -362,7 +375,8 @@ export default async function driverRoutes(app: FastifyInstance) {
     return { trip: trips.viewFor(trip, me) };
   });
 
-  /** Earnings: ledger summary for a period, with lease and charging shown so drivers see true take-home. */
+  /** Earnings: ledger summary for a period, grouped so drivers see trip pay, extras, costs and true take-home, plus engaged
+   *  hours, this week's earnings-floor progress and the pay rules for their current car. */
   app.get('/driver/earnings', async (req) => {
     const me = await requireUser(req, 'driver');
     const { days = '7' } = req.query as { days?: string };
@@ -372,16 +386,56 @@ export default async function driverRoutes(app: FastifyInstance) {
        WHERE driver_id = $1 AND created_at > now() - ($2 || ' days')::interval GROUP BY kind`, [me.id, String(n)]);
     const daily = await q(
       `SELECT to_char(date_trunc('day', created_at AT TIME ZONE 'Australia/Darwin'), 'YYYY-MM-DD') AS day, sum(amount_cents)::int cents
-       FROM driver_ledger WHERE driver_id = $1 AND created_at > now() - ($2 || ' days')::interval GROUP BY 1 ORDER BY 1`, [me.id, String(n)]);
+       FROM driver_ledger WHERE driver_id = $1 AND kind <> 'payout' AND created_at > now() - ($2 || ' days')::interval GROUP BY 1 ORDER BY 1`, [me.id, String(n)]);
     const balance = await one('SELECT coalesce(sum(amount_cents),0)::int cents FROM driver_ledger WHERE driver_id = $1', [me.id]);
     const ledger = await q('SELECT * FROM driver_ledger WHERE driver_id = $1 ORDER BY created_at DESC LIMIT 50', [me.id]);
-    const totals = Object.fromEntries(byKind.map((r) => [r.kind, r.cents]));
-    const net = byKind.reduce((s, r) => s + r.cents, 0);
-    const gross = totals.fare ?? 0;
+    const engaged = await one(
+      `SELECT count(*) FILTER (WHERE status = 'completed')::int trips,
+              coalesce(sum(coalesce(actual_distance_m, est_distance_m)) FILTER (WHERE status = 'completed'), 0)::int trip_m,
+              coalesce(sum(least(extract(epoch FROM coalesce(completed_at, cancelled_at) - accepted_at), est_duration_s * 2 + 2700))
+                FILTER (WHERE status IN ('completed','cancelled_rider','cancelled_admin')), 0)::int engaged_s
+       FROM trips WHERE driver_id = $1 AND accepted_at IS NOT NULL AND coalesce(completed_at, cancelled_at) > now() - ($2 || ' days')::interval`,
+      [me.id, String(n)]);
+    const pickup = await one(
+      `SELECT coalesce(sum((e.data->>'pickup_m')::int), 0)::int m FROM trips t
+       JOIN LATERAL (SELECT data FROM trip_events WHERE trip_id = t.id AND type = 'accepted' AND actor_id = $1 ORDER BY at DESC LIMIT 1) e ON true
+       WHERE t.driver_id = $1 AND t.status = 'completed' AND t.completed_at > now() - ($2 || ' days')::interval`, [me.id, String(n)]);
+    const totals: Record<string, number> = Object.fromEntries(byKind.map((r) => [r.kind, r.cents]));
+    const v = (k: string) => Number(totals[k] ?? 0);
+    const tripPay = TRIP_PAY_KINDS.reduce((s, k) => s + v(k), 0);
+    const extras = v('tip') + v('bonus') + v('earnings_floor') + v('charging_credit') + v('adjustment');
+    const costs = v('lease') + v('cash_collected');
+    const net = byKind.reduce((s, r) => s + r.cents, 0);             // kept as before (includes payouts)
+    const takeHome = net - v('payout');
+
+    // Pay rules for the car the driver is using now.
+    const rules = await loadDriverPay();
+    const d = await one(`SELECT d.commission_pct, v.fuel_type, v.ownership FROM drivers d LEFT JOIN vehicles v ON v.id = d.vehicle_id WHERE d.user_id = $1`, [me.id]);
+    const fee = serviceFeeFor(Number(d?.commission_pct ?? 25), d?.fuel_type ? d : null, rules);
+    const engagedH = engaged!.engaged_s / 3600;
     return {
       days: n, by_kind: totals, net_cents: net, balance_cents: balance!.cents, daily, ledger,
-      // GST: drivers are GST-registered; 1/11 of their fare income is GST payable on their BAS.
-      gst_on_fares_cents: Math.round(gross / 11),
+      summary: {
+        fares_cents: v('fare'), service_fee_cents: v('commission'), pickup_pay_cents: v('pickup_pay'), fuel_surcharge_cents: v('fuel_surcharge'),
+        cancel_fees_cents: v('cancel_fee'), trip_pay_cents: tripPay,
+        tips_cents: v('tip'), bonus_cents: v('bonus'), earnings_floor_cents: v('earnings_floor'), charging_cents: v('charging_credit'), adjustments_cents: v('adjustment'),
+        extras_cents: extras, lease_cents: v('lease'), cash_collected_cents: v('cash_collected'), costs_cents: costs,
+        take_home_cents: takeHome, paid_out_cents: -v('payout'),
+      },
+      activity: {
+        trips: engaged!.trips, engaged_s: engaged!.engaged_s, trip_km: Math.round(engaged!.trip_m / 100) / 10,
+        pickup_km: Math.round(pickup!.m / 100) / 10, total_km: Math.round((engaged!.trip_m + pickup!.m) / 100) / 10,
+        per_engaged_hour_cents: engagedH > 0 ? Math.round((tripPay + v('tip')) / engagedH) : null,
+      },
+      floor: await myFloorWeek(me.id),
+      pay_rules: {
+        fee_pct: fee.pct, fee_basis: fee.basis, own_pct: Number(d?.commission_pct ?? 25), fuel_type: d?.fuel_type ?? null,
+        pickup: rules.pickup.enabled ? { free_km: rules.pickup.free_km, cents_per_km: rules.pickup.driver_cents_per_km, max_km: rules.pickup.max_km } : null,
+        fuel_surcharge_cents: rules.fuel_surcharge.enabled ? rules.fuel_surcharge.cents : null,
+        earnings_floor_cents_per_hour: rules.earnings_floor.enabled ? rules.earnings_floor.cents_per_engaged_hour : null,
+      },
+      // GST: drivers are GST-registered; 1/11 of what riders pay them for the trip (fare, pickup pay, fuel surcharge) is GST for their BAS.
+      gst_on_fares_cents: Math.round((v('fare') + v('pickup_pay') + v('fuel_surcharge')) / 11),
     };
   });
 

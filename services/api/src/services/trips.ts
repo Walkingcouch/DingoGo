@@ -3,12 +3,14 @@ import { config } from '../config.js';
 import { one, pool, q, tx, type Q } from '../db.js';
 import { ApiError, bad, conflict, forbidden, notFound } from '../lib/errors.js';
 import { quoteFare, type FareQuote, type FareRule } from '../lib/fares.js';
+import { driverPay, loadDriverPay, longPickupCents, pickupPayCents, serviceFeeFor, type DriverPay, type DriverPaySettings } from '../lib/driverPay.js';
 import { haversine, route, withinZone, type LatLng } from '../lib/geo.js';
 import { pin4, shareToken, tripRef } from '../lib/ids.js';
 import { isEv, isGreen } from '../lib/vehicles.js';
 import { toOps, toTrip, toUser } from '../realtime.js';
 import { notify, sendSms } from './notify.js';
 import * as pay from './payments.js';
+import { autoEarningsFloor } from './earningsFloor.js';
 
 export const ACTIVE = ['requested', 'accepted', 'arrived', 'in_progress'] as const;
 
@@ -97,6 +99,16 @@ export async function buildQuote(userId: string | null, input: QuoteInput, c: Q 
   }
   const user = userId ? await one('SELECT loyalty_points FROM users WHERE id = $1', [userId], c) : null;
 
+  // Driver pay rules: long-pickup charge (nearest free car far away; on-demand only) and fuel surcharge (not tours).
+  const pay = await loadDriverPay(c);
+  let longPickup: { km: number; cents: number } | null = null;
+  if (pay.pickup.enabled && !input.scheduled_for && input.service !== 'tour') {
+    const m = await nearestFreeCarM(input.pickup, zone.state ?? 'NT', c);
+    const cents = longPickupCents(m, pay);
+    if (m != null && cents > 0) longPickup = { km: m / 1000, cents };
+  }
+  const fuelSurchargeCents = pay.fuel_surcharge.enabled && input.service !== 'tour' ? pay.fuel_surcharge.cents : 0;
+
   const quote: FareQuote = quoteFare(rule, {
     distance_m: r.distance_m,
     duration_s: r.duration_s,
@@ -114,8 +126,40 @@ export async function buildQuote(userId: string | null, input: QuoteInput, c: Q 
     availablePoints: user?.loyalty_points ?? 0,
     fixedPriceCents,
     levy: zone.state_levy_cents != null ? { cents: Number(zone.state_levy_cents), label: zone.state_levy_label } : null,
+    longPickup,
+    fuelSurchargeCents,
   });
   return { quote, route: r, zone, rule, promo };
+}
+
+/** Road-distance estimate (straight line × 1.3, as dispatch ranks drivers) from the pickup to the nearest free, approved,
+ *  online car in that state. Null when no car is free (no long-pickup charge then: we can't know who will come). */
+export async function nearestFreeCarM(p: LatLng, state: string, c: Q = pool): Promise<number | null> {
+  const cars = await q(
+    `SELECT d.lat, d.lng FROM drivers d JOIN vehicles v ON v.id = d.vehicle_id AND v.active AND v.status = 'approved'
+     JOIN users du ON du.id = d.user_id AND NOT du.blocked AND du.deleted_at IS NULL
+     WHERE d.status = 'approved' AND d.online AND d.lat IS NOT NULL AND d.last_seen_at > now() - interval '3 minutes' AND d.state = $1
+       AND NOT EXISTS (SELECT 1 FROM trips x WHERE x.driver_id = d.user_id AND x.status IN ('accepted','arrived','in_progress'))`, [state], c);
+  let best: number | null = null;
+  for (const d of cars) {
+    const m = haversine({ lat: d.lat, lng: d.lng }, p) * 1.3;
+    if (m <= config.dispatch.searchRadiusKm * 1000 && (best == null || m < best)) best = m;
+  }
+  return best;
+}
+
+/** What a driver would be paid for this trip in their current car, picked up from `pickupM` metres away.
+ *  Fare = the trip fare (excludes booking fee, levy and the rider's discounts, which DingoGo funds). */
+export async function offerPay(c: Q, t: any, driverId: string, pickupM: number | null, s?: DriverPaySettings): Promise<DriverPay> {
+  const rules = s ?? await loadDriverPay(c);
+  const d = await one(
+    `SELECT d.commission_pct, v.fuel_type, v.ownership FROM drivers d LEFT JOIN vehicles v ON v.id = d.vehicle_id WHERE d.user_id = $1`, [driverId], c);
+  const fee = serviceFeeFor(Number(d?.commission_pct ?? 25), d?.fuel_type ? d : null, rules);
+  const fb = t.fare_breakdown ?? {};
+  return driverPay({
+    fareCents: Number(fb.trip_cents ?? t.quote_cents), feePct: fee.pct, feeBasis: fee.basis, pickupM,
+    pickupPayCents: pickupPayCents(pickupM, rules), fuelSurchargeCents: Number(fb.fuel_surcharge_cents ?? 0),
+  }, rules);
 }
 
 export interface CreateTripInput extends QuoteInput {
@@ -355,7 +399,9 @@ export async function dispatchTrip(tripId: string): Promise<'offered' | 'waiting
     await c.query(
       `INSERT INTO trip_offers (trip_id, driver_id, expires_at, pickup_eta_s) VALUES ($1, $2, now() + ($3 || ' seconds')::interval, $4)`,
       [tripId, pick.user_id, String(config.dispatch.offerTimeoutS), etaS]);
-    await event(c, tripId, 'offered', null, { driver_id: pick.user_id, eta_s: etaS });
+    const pickupM = Math.round(pick.toPickup);
+    await event(c, tripId, 'offered', null, { driver_id: pick.user_id, eta_s: etaS, pickup_m: pickupM });
+    const dp = await offerPay(c, t, pick.user_id, pickupM);
     const offer = {
       trip_id: t.id, ref: t.ref, kind: t.kind, service: t.service,
       pickup: { lat: t.pickup_lat, lng: t.pickup_lng, address: t.pickup_address },
@@ -363,6 +409,7 @@ export async function dispatchTrip(tripId: string): Promise<'offered' | 'waiting
       est_distance_m: t.est_distance_m, est_duration_s: t.est_duration_s, quote_cents: t.quote_cents,
       trip_cents: t.fare_breakdown?.trip_cents ?? null,
       pickup_eta_s: etaS, expires_in_s: config.dispatch.offerTimeoutS, has_pet: t.has_pet,
+      pickup_m: pickupM, total_m: pickupM + t.est_distance_m, driver_pay: dp,
       assistance_animal: t.assistance_animal, needs_wheelchair: t.needs_wheelchair, passengers: t.passengers,
       payment_method: t.payment_method, notes: t.notes,
     };
@@ -463,6 +510,7 @@ export async function dispatchTick() {
     }
 
     await watchDrivers().catch((e) => console.error('watch drivers', e));
+    await autoEarningsFloor().catch((e) => console.error('earnings floor', e));
 
     const open = await q(`SELECT id FROM trips WHERE status = 'requested' ORDER BY requested_at LIMIT 50`);
     for (const t of open) await dispatchTrip(t.id).catch((e) => console.error('dispatch', e));
@@ -589,7 +637,10 @@ export async function acceptOffer(driverId: string, tripId: string) {
     await c.query(`UPDATE trip_offers SET status = 'accepted' WHERE trip_id = $1 AND driver_id = $2`, [tripId, driverId]);
     await c.query(`UPDATE trips SET status = 'accepted', driver_id = $2, vehicle_id = $3, accepted_at = now() WHERE id = $1`,
       [tripId, driverId, d.vehicle_id]);
-    await event(c, tripId, 'accepted', driverId, { eta_s: offer.pickup_eta_s });
+    // Pay is fixed now, as shown on the offer: service fee rate for this car and pickup pay for the distance offered.
+    const pickupM = await offeredPickupM(c, tripId, driverId);
+    const dp = await offerPay(c, t, driverId, pickupM);
+    await event(c, tripId, 'accepted', driverId, { eta_s: offer.pickup_eta_s, pickup_m: pickupM, pay: dp });
     return { t, eta: offer.pickup_eta_s };
   });
   const trip = await getTrip(tripId);
@@ -598,6 +649,22 @@ export async function acceptOffer(driverId: string, tripId: string) {
     `${trip.driver.name} is coming in a ${trip.vehicle.colour} ${trip.vehicle.make} ${trip.vehicle.model} (${trip.vehicle.rego}). ETA ${Math.ceil(out.eta / 60)} min.`,
     { trip_id: tripId });
   return trip;
+}
+
+/** Distance to the pickup when the trip was offered to this driver (recorded on the offer event). */
+async function offeredPickupM(c: Q, tripId: string, driverId: string): Promise<number | null> {
+  const e = await one(
+    `SELECT (data->>'pickup_m')::int AS m FROM trip_events WHERE trip_id = $1 AND type = 'offered' AND data->>'driver_id' = $2 ORDER BY at DESC, id DESC LIMIT 1`,
+    [tripId, driverId], c);
+  return e?.m ?? null;
+}
+
+/** Pay fixed at accept for the trip's current driver (null for trips accepted before Round 4). */
+async function acceptedPay(c: Q, tripId: string, driverId: string): Promise<DriverPay | null> {
+  const e = await one(
+    `SELECT data->'pay' AS pay FROM trip_events WHERE trip_id = $1 AND type = 'accepted' AND actor_id = $2 ORDER BY at DESC, id DESC LIMIT 1`,
+    [tripId, driverId], c);
+  return e?.pay ?? null;
 }
 
 /** Driver cancel reasons that are about the rider or the load: the trip ends. Any other reason (car trouble, something
@@ -795,7 +862,7 @@ export async function completeTrip(driverId: string, tripId: string, input: Comp
   });
   const trip = await getTrip(tripId);
   broadcast(trip);
-  void notify(trip.rider_id, trip.kind === 'courier' ? 'Parcel delivered ✅' : 'Thanks for riding DingoGo',
+  void notify(trip.rider_id, trip.kind === 'courier' ? 'Parcel delivered' : 'Thanks for riding DingoGo',
     `${trip.ref}: $${(trip.final_cents / 100).toFixed(2)} incl. GST. Your tax invoice is in the app.`, { trip_id: tripId });
   if (trip.kind === 'courier' && trip.parcel) {
     void sendSms(trip.parcel.sender_phone, `DingoGo: parcel ${trip.ref} delivered to ${trip.parcel.pod_received_by || trip.parcel.recipient_name}.`);
@@ -803,6 +870,8 @@ export async function completeTrip(driverId: string, tripId: string, input: Comp
   void result;
   return trip;
 }
+
+const FEE_NOTE: Record<string, string> = { green: ' (electric/hybrid rate)', own_car: ' (own-car rate)' };
 
 /** Money movement on completion: capture payment, driver ledger, loyalty, referral. */
 async function settle(c: pg.PoolClient, t: any) {
@@ -833,13 +902,25 @@ async function settle(c: pg.PoolClient, t: any) {
                    VALUES ($1,$2,'wallet','capture',$3,$4,'succeeded')`, [t.id, t.rider_id, amount, gst]);
   }
 
-  // Driver earnings: trip fare (before rider discounts — DingoGo funds promos/points; excludes booking fee & levy) minus commission.
+  // Driver earnings: trip fare (before rider discounts — DingoGo funds promos/points; excludes booking fee & levy) minus the
+  // service fee, plus pickup pay and fuel surcharge (no fee on either). Rate and pickup pay as fixed when the driver accepted.
   const adj = (t.fare_breakdown.lines ?? []).find((l: any) => l.label === 'Route change adjustment')?.cents ?? 0;
   const gross = (t.fare_breakdown.trip_cents ?? amount) + adj;
-  const d = await one('SELECT commission_pct FROM drivers WHERE user_id = $1', [t.driver_id], c);
-  const commission = Math.round((gross * Number(d.commission_pct)) / 100);
+  const fixed = await acceptedPay(c, t.id, t.driver_id);
+  const dp = fixed ?? await offerPay(c, t, t.driver_id, null);
+  const pct = Number(dp.fee_pct);
+  const commission = Math.round((gross * pct) / 100);
   await c.query(`INSERT INTO driver_ledger (driver_id, trip_id, kind, amount_cents, note) VALUES ($1,$2,'fare',$3,$4), ($1,$2,'commission',$5,$6)`,
-    [t.driver_id, t.id, gross, `Fare ${t.ref}`, -commission, `DingoGo service fee ${d.commission_pct}%`]);
+    [t.driver_id, t.id, gross, `Fare ${t.ref}`, -commission, `DingoGo service fee ${pct}%${FEE_NOTE[dp.fee_basis] ?? ''}`]);
+  if (Number(dp.pickup_pay_cents) > 0) {
+    await c.query(`INSERT INTO driver_ledger (driver_id, trip_id, kind, amount_cents, note) VALUES ($1,$2,'pickup_pay',$3,$4)`,
+      [t.driver_id, t.id, Number(dp.pickup_pay_cents), `Pickup ${dp.pickup_km} km, ${dp.pickup_paid_km} km paid (${t.ref})`]);
+  }
+  const fuel = Number(t.fare_breakdown.fuel_surcharge_cents ?? 0);
+  if (fuel > 0) {
+    await c.query(`INSERT INTO driver_ledger (driver_id, trip_id, kind, amount_cents, note) VALUES ($1,$2,'fuel_surcharge',$3,$4)`,
+      [t.driver_id, t.id, fuel, `Fuel surcharge ${t.ref}, 100% to you`]);
+  }
 
   // Loyalty points on what the rider actually paid
   const pts = Math.floor((amount / 100) * config.loyalty.pointsPerDollar);
@@ -861,7 +942,7 @@ async function settle(c: pg.PoolClient, t: any) {
     await c.query('UPDATE users SET loyalty_points = loyalty_points + $2 WHERE id = ANY($1)', [[ref.referrer_id, ref.referee_id], bonus]);
     await c.query(`INSERT INTO loyalty_ledger (user_id, points, reason) VALUES ($1,$3,'referral_bonus'), ($2,$3,'referral_bonus')`,
       [ref.referrer_id, ref.referee_id, bonus]);
-    setImmediate(() => void notify(ref.referrer_id, 'Referral bonus! 🎉', `Your friend took their first DingoGo trip — ${bonus} Dingo Points added.`, {}, 'promo'));
+    setImmediate(() => void notify(ref.referrer_id, 'Referral bonus', `Your friend took their first DingoGo trip — ${bonus} Dingo Points added.`, {}, 'promo'));
   }
 }
 
@@ -889,7 +970,7 @@ export async function addTip(riderId: string, tripId: string, cents: number) {
     await c.query(`INSERT INTO payments (trip_id, user_id, provider, provider_ref, kind, amount_cents, status) VALUES ($1,$2,$3,$4,'tip',$5,'succeeded')`, [tripId, riderId, provider, ref, cents]);
     // 100% of tips go to the driver.
     await c.query(`INSERT INTO driver_ledger (driver_id, trip_id, kind, amount_cents, note) VALUES ($1,$2,'tip',$3,'Tip — 100% to driver')`, [t.driver_id, tripId, cents]);
-    setImmediate(() => void notify(t.driver_id, 'You got a tip! 💛', `$${(cents / 100).toFixed(2)} on ${t.ref}`));
+    setImmediate(() => void notify(t.driver_id, 'You got a tip', `$${(cents / 100).toFixed(2)} on ${t.ref}`));
     return { ok: true };
   });
 }
@@ -936,9 +1017,8 @@ export async function cancelTrip(actor: { id: string; role: string }, tripId: st
     if (t.promo_code) await c.query('UPDATE promo_codes SET uses = greatest(uses - 1, 0) WHERE code = $1', [t.promo_code]);
     await releaseHoldsAndPoints(c, t, fee);
     if (fee && t.driver_id) {
-      // Driver keeps the same share as on fares (100% − their DingoGo service fee, 25% by default).
-      const d = await one('SELECT commission_pct FROM drivers WHERE user_id = $1', [t.driver_id], c);
-      const pct = Number(d?.commission_pct ?? 25);
+      // Driver keeps the same share as on fares (100% − the service fee fixed when they accepted, 25% by default).
+      const pct = Number((await acceptedPay(c, tripId, t.driver_id) ?? await offerPay(c, t, t.driver_id, null)).fee_pct);
       await c.query(`INSERT INTO driver_ledger (driver_id, trip_id, kind, amount_cents, note) VALUES ($1,$2,'cancel_fee',$3,$4)`,
         [t.driver_id, tripId, Math.round((fee * (100 - pct)) / 100), `Rider late cancellation (after ${pct}% service fee)`]);
     }

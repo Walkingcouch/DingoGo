@@ -3,7 +3,7 @@ import { get, post, money, dateTime, time, km, mins, STATUS_LABEL, COURIER_STATU
 import { DgMap, type MapMarker } from '@dingogo/shared/map';
 import { Page } from '../ctx';
 import { Chip, Drawer, ErrorMsg, Modal, Table, exportCsv, useRun, type Col } from '../ui';
-import { CHANNEL, EVENT_TYPE, OFFER_STATUS, PARCEL_SIZE, PAYMENT_KIND, PAYMENT_METHOD, PAYMENT_STATUS, SERVICE_NAME, label } from '../labels';
+import { CHANNEL, EVENT_TYPE, LEDGER_KIND, OFFER_STATUS, PARCEL_SIZE, PAYMENT_KIND, PAYMENT_METHOD, PAYMENT_STATUS, SERVICE_NAME, label } from '../labels';
 
 const SERVICES: [string, string][] = [['ride', 'Ride'], ['pet', 'Pet-friendly'], ['courier_s', 'Courier small'], ['courier_m', 'Courier medium'], ['courier_l', 'Courier large'], ['hourly', 'Hourly hire']];
 
@@ -113,6 +113,13 @@ function TripDrawer({ id, onClose }: { id: string; onClose: () => void }) {
         {data.payments.length > 0 && (<>
           <h3 style={{ marginTop: 18 }}>Payments</h3>
           <table className="tbl"><tbody>{data.payments.map((p: any) => <tr key={p.id}><td>{label(PAYMENT_KIND, p.kind)}</td><td>{label({ stripe: 'Stripe', mock: 'Test payment', cash: 'Cash', wallet: 'DingoGo credit', corporate: 'Business account' }, p.provider)}</td><td>{label(PAYMENT_STATUS, p.status)}</td><td className="num">{money(p.amount_cents)}</td></tr>)}</tbody></table>
+        </>)}
+        {data.driver_ledger?.length > 0 && (<>
+          <h3 style={{ marginTop: 18 }}>Driver pay</h3>
+          <table className="tbl"><tbody>
+            {data.driver_ledger.map((l: any) => <tr key={l.id}><td>{label(LEDGER_KIND, l.kind)}{l.note && <span className="sub">{l.note}</span>}</td><td className="num">{money(l.amount_cents)}</td></tr>)}
+            <tr><td><strong>Driver total</strong></td><td className="num"><strong>{money(data.driver_ledger.filter((l: any) => l.kind !== 'cash_collected').reduce((s: number, l: any) => s + l.amount_cents, 0))}</strong></td></tr>
+          </tbody></table>
         </>)}
         {t.status === 'no_drivers' && (
           <div className="panel" style={{ marginTop: 18 }}>

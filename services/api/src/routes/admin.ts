@@ -14,6 +14,33 @@ import { notify } from '../services/notify.js';
 import * as pay from '../services/payments.js';
 import * as trips from '../services/trips.js';
 import { complianceIssues } from './driver.js';
+import { DRIVER_PAY_DEFAULTS, loadDriverPay, mergeDriverPay } from '../lib/driverPay.js';
+import { floorReport, runEarningsFloor } from '../services/earningsFloor.js';
+
+/** Driver pay rules (all optional on update; merged over what is stored). Bounds keep a typo from paying out wildly. */
+const driverPayBody = z.object({
+  service_fee: z.object({ own_car_pct: z.number().min(0).max(50), green_pct: z.number().min(0).max(50) }).partial().optional(),
+  pickup: z.object({
+    enabled: z.boolean(), free_km: z.number().min(0).max(20), driver_cents_per_km: z.number().int().min(0).max(300),
+    rider_cents_per_km: z.number().int().min(0).max(300), max_km: z.number().min(0).max(50),
+  }).partial().optional(),
+  fuel_surcharge: z.object({ enabled: z.boolean(), cents: z.number().int().min(0).max(500) }).partial().optional(),
+  earnings_floor: z.object({ enabled: z.boolean(), cents_per_engaged_hour: z.number().int().min(0).max(10000), auto_weekly: z.boolean() }).partial().optional(),
+}).strict();
+
+async function saveDriverPay(actorId: string, body: unknown) {
+  const b = parse(driverPayBody, body);
+  const cur = await loadDriverPay();
+  const next = mergeDriverPay({
+    service_fee: { ...cur.service_fee, ...b.service_fee }, pickup: { ...cur.pickup, ...b.pickup },
+    fuel_surcharge: { ...cur.fuel_surcharge, ...b.fuel_surcharge }, earnings_floor: { ...cur.earnings_floor, ...b.earnings_floor },
+  });
+  next.fuel_surcharge.cents = Math.round(next.fuel_surcharge.cents / 5) * 5;   // cash-friendly
+  await q(`INSERT INTO settings (key, value) VALUES ('driver_pay', $1) ON CONFLICT (key) DO UPDATE SET value = $1`, [JSON.stringify(next)]);
+  await q('INSERT INTO audit_log (actor_id, action, entity, entity_id, data) VALUES ($1,$2,$3,$4,$5)',
+    [actorId, 'driver_pay', 'settings', 'driver_pay', JSON.stringify({ before: cur, after: next })]);
+  return next;
+}
 
 const ops = (req: FastifyRequest) => requireUser(req, 'admin', 'dispatcher');
 const admin = (req: FastifyRequest) => requireUser(req, 'admin');
@@ -193,7 +220,9 @@ export default async function adminRoutes(app: FastifyInstance) {
     const track = await q('SELECT lat, lng, at FROM trip_track WHERE trip_id = $1 ORDER BY at', [t.id]);
     const offers = await q('SELECT o.*, u.name FROM trip_offers o JOIN users u ON u.id = o.driver_id WHERE trip_id = $1 ORDER BY offered_at', [t.id]);
     const payments = await q('SELECT * FROM payments WHERE trip_id = $1 ORDER BY created_at', [t.id]);
-    return { trip: trips.viewFor(t, me), events, track, offers, payments };
+    // What the driver was paid for this trip (fare, fee, pickup pay, fuel surcharge, tip, cancellation share).
+    const driver_ledger = await q('SELECT id, driver_id, kind, amount_cents, note, created_at FROM driver_ledger WHERE trip_id = $1 ORDER BY id', [t.id]);
+    return { trip: trips.viewFor(t, me), events, track, offers, payments, driver_ledger };
   });
 
   app.post('/admin/trips/:id/cancel', async (req) => {
@@ -851,6 +880,8 @@ export default async function adminRoutes(app: FastifyInstance) {
   app.put('/admin/settings/:key', async (req) => {
     const me = await admin(req);
     const b = parse(z.object({ value: z.any() }), req.body);
+    // Driver pay goes through its own validation.
+    if ((req.params as any).key === 'driver_pay') return { item: { key: 'driver_pay', value: await saveDriverPay(me.id, b.value) } };
     const row = await one(`INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2 RETURNING *`, [(req.params as any).key, JSON.stringify(b.value)]);
     // Legacy setting: the NT max age now lives on the NT jurisdiction — keep them in step.
     if (row.key === 'vehicle_max_age_years' && Number(b.value) >= 1 && Number(b.value) <= 50) {
@@ -858,6 +889,26 @@ export default async function adminRoutes(app: FastifyInstance) {
     }
     await audit(me.id, 'setting', 'settings', row.key, b.value);
     return { item: row };
+  });
+
+  // ───────────── Driver pay (Round 4) ─────────────
+  app.get('/admin/driver-pay', async (req) => {
+    await ops(req);
+    return { settings: await loadDriverPay(), defaults: DRIVER_PAY_DEFAULTS };
+  });
+  app.put('/admin/driver-pay', async (req) => {
+    const me = await admin(req);
+    return { settings: await saveDriverPay(me.id, req.body) };
+  });
+  /** Weekly earnings floor: per-driver engaged hours, counted earnings and top-ups for a week (default: last full week). */
+  app.get('/admin/driver-pay/floor', async (req) => {
+    await ops(req);
+    return floorReport((req.query as any).week);
+  });
+  app.post('/admin/driver-pay/floor/run', async (req) => {
+    const me = await admin(req);
+    const b = parse(z.object({ week: z.string().max(10).optional() }), req.body ?? {});
+    return runEarningsFloor(b.week, me.id);
   });
 
   /** Promotional broadcast — Spam Act: only to riders who opted in; every message identifies DingoGo and how to opt out. */

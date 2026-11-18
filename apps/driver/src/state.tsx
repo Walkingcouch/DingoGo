@@ -117,6 +117,7 @@ export function DriverProvider({ children }: { children: React.ReactNode }) {
             pickup: { lat: o.pickup_lat, lng: o.pickup_lng, address: o.pickup_address },
             dropoff: { lat: o.dropoff_lat, lng: o.dropoff_lng, address: o.dropoff_address },
             est_distance_m: o.est_distance_m, est_duration_s: o.est_duration_s, quote_cents: o.quote_cents, pickup_eta_s: o.pickup_eta_s,
+            trip_cents: o.trip_cents, driver_pay: o.driver_pay, pickup_m: o.pickup_m, total_m: o.total_m,
             expires_at: o.expires_at, has_pet: o.has_pet, assistance_animal: o.assistance_animal, needs_wheelchair: o.needs_wheelchair,
             passengers: o.passengers, payment_method: o.payment_method, notes: o.notes,
           });
@@ -154,10 +155,14 @@ export function DriverProvider({ children }: { children: React.ReactNode }) {
     offer, clearOffer, trip, reloadTrip, setTrip, toast, showToast }}>{children}</C.Provider>;
 }
 
-/** What the driver earns from an offer: the trip fare (excludes booking fee & NT levy) less the DingoGo fee (25% by default). */
-export function estimateEarnings(o: { quote_cents: number; kind: string; trip_cents?: number | null }, commissionPct = 25) {
+/** What the driver earns from an offer. The API sends `driver_pay` (fare less the DingoGo fee for this car, plus pickup pay and
+ *  fuel surcharge); older servers only send the trip fare (excludes booking fee & levy), so fall back to fare less the fee. */
+export function estimateEarnings(o: { quote_cents: number; kind: string; trip_cents?: number | null; driver_pay?: { total_cents: number } | null }, commissionPct = 25) {
+  if (o.driver_pay?.total_cents != null) return o.driver_pay.total_cents;
   const trip = o.trip_cents ?? (o.kind === 'ride' ? Math.max(0, o.quote_cents - 200) : o.quote_cents);
   return Math.round(trip * (1 - commissionPct / 100));
 }
+
+export const FEE_BASIS: Record<string, string> = { green: 'electric/hybrid rate', own_car: 'own-car rate', driver: 'your rate' };
 
 export const rangeKm = (rangeRated: number | undefined, pct: number) => Math.round((rangeRated ?? 427) * (pct / 100) * 0.7);

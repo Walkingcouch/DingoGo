@@ -32,6 +32,10 @@ export interface FareContext {
   /** Passenger levy of the pickup zone's state (jurisdictions.levy_cents / levy_label). Applies only to services whose
    *  fare rule carries a levy (passenger services); replaces rule.levy_cents. Omit to use rule.levy_cents ("NT passenger levy"). */
   levy?: { cents: number; label: string } | null;
+  /** Rider long-pickup charge (nearest free car is far away): discountable like the booking fee; paid to the driver as pickup pay. */
+  longPickup?: { km: number; cents: number } | null;
+  /** Fuel surcharge (admin switch): added after discounts, 100% to the driver. Not on fixed-price tours. */
+  fuelSurchargeCents?: number;
 }
 
 export interface FareLine { label: string; cents: number }
@@ -42,6 +46,9 @@ export interface FareQuote {
   trip_cents: number;        // metered/package fare — the part the driver earns on
   booking_fee_cents: number;
   levy_cents: number;
+  long_pickup_cents: number;
+  long_pickup_km: number | null;
+  fuel_surcharge_cents: number;
   discount_cents: number;
   points_redeemed: number;
   total_cents: number;
@@ -104,10 +111,14 @@ export function quoteFare(rule: FareRule, ctx: FareContext): FareQuote {
   }
   if (ctx.plan?.waive_booking_fee) booking = 0;
 
+  const longPickup = ctx.fixedPriceCents == null && ctx.longPickup && ctx.longPickup.cents > 0 ? ctx.longPickup : null;
+  if (longPickup) lines.push({ label: `Long pickup (nearest car ${longPickup.km.toFixed(1)} km away)`, cents: longPickup.cents });
+  const pickupCents = longPickup?.cents ?? 0;
+
   const ruleLevy = rule.levy_cents ?? 0;
   const levy = ruleLevy > 0 && ctx.levy ? Math.max(0, ctx.levy.cents) : ruleLevy;
   const levyLabel = ruleLevy > 0 && ctx.levy ? ctx.levy.label : 'NT passenger levy';
-  const subtotal = trip + booking;  // discountable amount (levy added after discounts)
+  const subtotal = trip + booking + pickupCents;  // discountable amount (levy and fuel surcharge added after discounts)
   let discount = 0;
 
   if (ctx.plan?.free_delivery && rule.service.startsWith('courier')) {
@@ -145,15 +156,20 @@ export function quoteFare(rule: FareRule, ctx: FareContext): FareQuote {
     }
   }
 
+  const fuel = ctx.fixedPriceCents == null ? Math.max(0, round5(ctx.fuelSurchargeCents ?? 0)) : 0;
+  if (fuel) lines.push({ label: 'Fuel surcharge (all to your driver)', cents: fuel });
   if (levy) lines.push({ label: levyLabel, cents: levy });
-  const total = Math.max(0, round5(subtotal - discount)) + levy;
+  const total = Math.max(0, round5(subtotal - discount)) + fuel + levy;
   return {
     service: rule.service,
     lines,
-    subtotal_cents: subtotal + levy,
+    subtotal_cents: subtotal + fuel + levy,
     trip_cents: trip,
     booking_fee_cents: booking,
     levy_cents: levy,
+    long_pickup_cents: pickupCents,
+    long_pickup_km: longPickup ? Math.round(longPickup.km * 10) / 10 : null,
+    fuel_surcharge_cents: fuel,
     discount_cents: discount,
     points_redeemed: pointsRedeemed,
     total_cents: total,
