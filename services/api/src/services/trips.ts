@@ -9,6 +9,7 @@ import { pin4, shareToken, tripRef } from '../lib/ids.js';
 import { isEv, isGreen } from '../lib/vehicles.js';
 import { toOps, toTrip, toUser } from '../realtime.js';
 import { notify, sendSms } from './notify.js';
+import { sendDocExpiryReminders } from './docExpiry.js';
 import * as pay from './payments.js';
 import { autoEarningsFloor } from './earningsFloor.js';
 
@@ -523,6 +524,7 @@ export async function dispatchTick() {
 
     await watchDrivers().catch((e) => console.error('watch drivers', e));
     await autoEarningsFloor().catch((e) => console.error('earnings floor', e));
+    await sendDocExpiryReminders().catch((e) => console.error('document reminders', e));
 
     const open = await q(`SELECT id FROM trips WHERE status = 'requested' ORDER BY requested_at LIMIT 50`);
     for (const t of open) await dispatchTrip(t.id).catch((e) => console.error('dispatch', e));
@@ -782,14 +784,40 @@ async function driverTrip(c: Q, driverId: string, tripId: string) {
   return t;
 }
 
-export async function markArrived(driverId: string, tripId: string) {
-  await tx(async (c) => {
+/** A trip action sent again by the driver app (queued while there was no signal, or the reply was lost). `key` is the app's
+ *  Idempotency-Key for the tap; `clientAt` is when the driver tapped. */
+export interface Replay { key?: string | null; clientAt?: string | null }
+const LATER: Record<string, string[]> = {
+  arrived: ['arrived', 'in_progress', 'completed'],
+  started: ['in_progress', 'completed'],
+  completed: ['completed'],
+};
+/** True when this tap has already been applied: same key recorded on the event, or (with a key) the trip is already at or past
+ *  the step, e.g. the first send got through but the reply was lost. Without a key the old strict behaviour stays. */
+async function alreadyDone(c: Q, t: any, type: 'arrived' | 'started' | 'completed', r: Replay) {
+  if (!r.key) return false;
+  const seen = await one(`SELECT 1 FROM trip_events WHERE trip_id = $1 AND type = $2 AND data->>'idem' = $3 LIMIT 1`, [t.id, type, r.key], c);
+  return !!seen || LATER[type].includes(t.status);
+}
+/** Late replays keep the time the driver actually tapped: never before the previous step, never in the future, at most
+ *  REPLAY_MAX_MIN old (so a stuck phone can't rewrite history). Live taps use the server clock. */
+const REPLAY_MAX_MIN = 15;
+const tapTime = (prevCol: string, r: Replay) => r.key && r.clientAt
+  ? `least(now(), greatest(${prevCol}, now() - interval '${REPLAY_MAX_MIN} minutes', $2::timestamptz))` : 'now()';
+const tapArg = (r: Replay) => (r.key && r.clientAt ? [r.clientAt] : []);
+const idemData = (r: Replay, data?: Record<string, unknown>) => (r.key ? { ...(data ?? {}), idem: r.key, ...(r.clientAt ? { client_at: r.clientAt } : {}) } : data);
+
+export async function markArrived(driverId: string, tripId: string, r: Replay = {}) {
+  const changed = await tx(async (c) => {
     const t = await driverTrip(c, driverId, tripId);
+    if (await alreadyDone(c, t, 'arrived', r)) return false;
     if (t.status !== 'accepted') throw conflict('bad_state', `Cannot arrive from ${t.status}`);
-    await c.query(`UPDATE trips SET status = 'arrived', arrived_at = now() WHERE id = $1`, [tripId]);
-    await event(c, tripId, 'arrived', driverId);
+    await c.query(`UPDATE trips SET status = 'arrived', arrived_at = ${tapTime('accepted_at', r)} WHERE id = $1`, [tripId, ...tapArg(r)]);
+    await event(c, tripId, 'arrived', driverId, idemData(r));
+    return true;
   });
   const trip = await getTrip(tripId);
+  if (!changed) return trip;
   broadcast(trip);
   void notify(trip.rider_id, 'Your driver is here',
     trip.kind === 'ride' ? `Look for ${trip.vehicle.rego}. Your trip PIN is ${trip.verify_pin}.` : `Driver has arrived to collect parcel ${trip.ref}.`,
@@ -797,18 +825,20 @@ export async function markArrived(driverId: string, tripId: string) {
   return trip;
 }
 
-export async function startTrip(driverId: string, tripId: string, pin?: string) {
-  await tx(async (c) => {
+export async function startTrip(driverId: string, tripId: string, pin?: string, r: Replay = {}) {
+  const changed = await tx(async (c) => {
     const t = await driverTrip(c, driverId, tripId);
+    if (await alreadyDone(c, t, 'started', r)) return false;
     if (t.status !== 'arrived') throw conflict('bad_state', `Cannot start from ${t.status}`);
     // Ride: rider shows the 4-digit PIN so they know it's the right car. Courier: pickup is confirmed by scanning/handover.
     if (t.kind === 'ride' && pin !== t.verify_pin) throw bad('pin_mismatch', 'PIN does not match — check you have the right passenger');
-    await c.query(`UPDATE trips SET status = 'in_progress', started_at = now() WHERE id = $1`, [tripId]);
+    await c.query(`UPDATE trips SET status = 'in_progress', started_at = ${tapTime('arrived_at', r)} WHERE id = $1`, [tripId, ...tapArg(r)]);
     if (t.kind === 'courier') await c.query('UPDATE parcels SET picked_up_at = now() WHERE trip_id = $1', [tripId]);
-    await event(c, tripId, 'started', driverId);
+    await event(c, tripId, 'started', driverId, idemData(r));
+    return true;
   });
   const trip = await getTrip(tripId);
-  broadcast(trip);
+  if (changed) broadcast(trip);
   return trip;
 }
 
@@ -824,12 +854,13 @@ export interface CompleteInput {
 /** Wrong delivery PINs allowed per parcel before the PIN stops working (stops a driver guessing 0000–9999). */
 export const DELIVERY_PIN_MAX_TRIES = 5;
 
-export async function completeTrip(driverId: string, tripId: string, input: CompleteInput) {
+export async function completeTrip(driverId: string, tripId: string, input: CompleteInput, r: Replay = {}) {
   const fails = input.delivery_pin
     ? (await one<{ n: number }>(`SELECT count(*)::int n FROM trip_events WHERE trip_id = $1 AND type = 'pod_pin_failed'`, [tripId]))!.n : 0;
   const pinLocked = fails >= DELIVERY_PIN_MAX_TRIES;
   const result = await tx(async (c) => {
     const t = await driverTrip(c, driverId, tripId);
+    if (await alreadyDone(c, t, 'completed', r)) return null;
     if (t.status !== 'in_progress') throw conflict('bad_state', `Cannot complete from ${t.status}`);
 
     if (t.kind === 'courier') {
@@ -861,10 +892,11 @@ export async function completeTrip(driverId: string, tripId: string, input: Comp
       await c.query('UPDATE trips SET fare_breakdown = $2 WHERE id = $1', [tripId, JSON.stringify(breakdown)]);
     }
 
+    const doneAt = r.key && r.clientAt ? `least(now(), greatest(started_at, now() - interval '${REPLAY_MAX_MIN} minutes', $4::timestamptz))` : 'now()';
     await c.query(
-      `UPDATE trips SET status = 'completed', completed_at = now(), final_cents = $2, actual_distance_m = $3 WHERE id = $1`,
-      [tripId, final, actualM]);
-    await event(c, tripId, 'completed', driverId, { final_cents: final });
+      `UPDATE trips SET status = 'completed', completed_at = ${doneAt}, final_cents = $2, actual_distance_m = $3 WHERE id = $1`,
+      [tripId, final, actualM, ...tapArg(r)]);
+    await event(c, tripId, 'completed', driverId, idemData(r, { final_cents: final }));
     await settle(c, { ...t, final_cents: final });
     return t;
   }).catch(async (e) => {
@@ -873,6 +905,7 @@ export async function completeTrip(driverId: string, tripId: string, input: Comp
     throw e;
   });
   const trip = await getTrip(tripId);
+  if (!result) return trip; // a replay of a completion already recorded: nothing more to send
   broadcast(trip);
   void notify(trip.rider_id, trip.kind === 'courier' ? 'Parcel delivered' : 'Thanks for riding DingoGo',
     `${trip.ref}: $${(trip.final_cents / 100).toFixed(2)} incl. GST. Your tax invoice is in the app.`, { trip_id: tripId });
@@ -1119,11 +1152,24 @@ export function distToSegment(p: LatLng, a: LatLng, b: LatLng) {
   return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
 }
 
+/** Late GPS points (sent after a signal drop) go on the driver's live trip track at the time they were taken. Points from
+ *  before the driver accepted the trip are not part of it. Returns how many were stored. */
+export async function storeTrack(driverId: string, pts: { lat: number; lng: number; at: string }[]) {
+  const t = await one(`SELECT id, accepted_at FROM trips WHERE driver_id = $1 AND status IN ('accepted','arrived','in_progress')`, [driverId]);
+  if (!t || !pts.length) return 0;
+  const r = await q(
+    `INSERT INTO trip_track (trip_id, lat, lng, at)
+     SELECT $1, p.lat, p.lng, p.at FROM unnest($2::float8[], $3::float8[], $4::timestamptz[]) AS p(lat, lng, at)
+     WHERE p.at >= $5 RETURNING 1`,
+    [t.id, pts.map((p) => p.lat), pts.map((p) => p.lng), pts.map((p) => p.at), t.accepted_at]);
+  return r.length;
+}
+
 /** Called on every driver location ping: stores breadcrumb, pushes live position, checks for route deviation. */
-export async function onDriverLocation(driverId: string, p: LatLng & { heading?: number }) {
+export async function onDriverLocation(driverId: string, p: LatLng & { heading?: number }, opts: { track?: boolean } = {}) {
   const t = await one(`SELECT * FROM trips WHERE driver_id = $1 AND status IN ('accepted','arrived','in_progress')`, [driverId]);
   if (!t) return null;
-  await q('INSERT INTO trip_track (trip_id, lat, lng) VALUES ($1,$2,$3)', [t.id, p.lat, p.lng]);
+  if (opts.track !== false) await q('INSERT INTO trip_track (trip_id, lat, lng) VALUES ($1,$2,$3)', [t.id, p.lat, p.lng]);
   const payload = { trip_id: t.id, lat: p.lat, lng: p.lng, heading: p.heading ?? null };
   toTrip(t.id, 'driver.location', payload);
   toUser(t.rider_id, 'driver.location', payload);

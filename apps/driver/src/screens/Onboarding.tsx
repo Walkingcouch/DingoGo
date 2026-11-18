@@ -70,7 +70,7 @@ export function Onboarding() {
   const doneCount = steps.filter((s) => s.state === 'done').length;
 
   return (
-    <div className="screen">
+    <div className="screen" tabIndex={0} aria-label="Getting set up">
       <h1>Get ready to drive</h1>
       <p className="dg-muted" style={{ marginTop: 0 }}>{doneCount} of {steps.length} done. Status: <strong>{(d.status ?? 'applied').replace(/_/g, ' ')}</strong></p>
       <div className="battery-bar" style={{ marginBottom: 16 }} aria-hidden><i style={{ width: `${(doneCount / steps.length) * 100}%` }} /></div>

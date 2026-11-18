@@ -36,7 +36,7 @@ npm install
 npm run db:setup                                   # migrations + demo data
 npm run dev:api                                    # http://localhost:4000
 npm run dev:web    # and/or dev:rider, dev:driver, dev:admin, dev:partner, dev:roof
-npm test                                           # 62 API tests (needs a throwaway DB: they reset it)
+npm test                                           # 64 API tests (needs a throwaway DB: they reset it)
 node scripts/a11y-check.mjs                        # WCAG 2.2 AA check (axe-core + Playwright) of the website and rider app; needs api, web and rider running
 ```
 

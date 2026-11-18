@@ -1,14 +1,15 @@
 #!/usr/bin/env node
 /**
- * Accessibility check (WCAG 2.2 A/AA rules from axe-core) for the website and the rider app, in light and dark mode at phone size.
+ * Accessibility check (WCAG 2.2 A/AA rules from axe-core) for the website, rider app and driver app, in light and dark mode at phone size.
  *
- * Needs the API, website and rider app running (npm run dev:api / dev:web / dev:rider, API with OTP_DEV_MODE=true so the demo
+ * Needs the API, website, rider and driver apps running (npm run dev:api / dev:web / dev:rider / dev:driver, API with OTP_DEV_MODE=true so the demo
  * code works) and Playwright with Chromium (`npm i -g playwright && npx playwright install chromium`, or set PLAYWRIGHT_PATH).
  *
  *   node scripts/a11y-check.mjs                      # default pages
  *   node scripts/a11y-check.mjs web:/drive rider:/trips
  *
- * Env: WEB_URL (http://localhost:5173), RIDER_URL (http://localhost:5174), API_URL (http://localhost:4000), RIDER_PHONE (0400000100).
+ * Env: WEB_URL (http://localhost:5173), RIDER_URL (http://localhost:5174), DRIVER_URL (http://localhost:5175), API_URL (http://localhost:4000),
+ *      RIDER_PHONE (0400000100), DRIVER_PHONE (+61400000011, an approved demo driver).
  * Exits 1 if any page has a violation.
  */
 import { createRequire } from 'node:module';
@@ -19,6 +20,8 @@ const WEB = process.env.WEB_URL ?? 'http://localhost:5173';
 const RIDER = process.env.RIDER_URL ?? 'http://localhost:5174';
 const API = process.env.API_URL ?? 'http://localhost:4000';
 const PHONE = process.env.RIDER_PHONE ?? '0400000100';
+const DRIVER = process.env.DRIVER_URL ?? 'http://localhost:5175';
+const DRIVER_PHONE = process.env.DRIVER_PHONE ?? '+61400000011';
 
 let chromium;
 for (const p of [process.env.PLAYWRIGHT_PATH, 'playwright', '/opt/npm-tools/node_modules/playwright'].filter(Boolean)) {
@@ -29,27 +32,31 @@ const axeSrc = readFileSync(require.resolve('axe-core/axe.min.js'), 'utf8');
 
 const DEFAULT = ['web:/', 'web:/rides', 'web:/parcels', 'web:/tours', 'web:/business', 'web:/drive', 'web:/rewards', 'web:/help', 'web:/safety', 'web:/about',
   'rider-signed-out:/', 'rider:/', 'rider:/trips', 'rider:/rewards', 'rider:/account', 'rider:/account/profile', 'rider:/account/help',
-  'rider:/account/payment', 'rider:/account/safety', 'rider:/account/privacy'];
+  'rider:/account/payment', 'rider:/account/safety', 'rider:/account/privacy',
+  'driver-signed-out:/', 'driver:/', 'driver:/earnings', 'driver:/trips', 'driver:/profile', 'driver:/charging'];
 const pages = process.argv.slice(2).length ? process.argv.slice(2) : DEFAULT;
 
-async function riderToken() {
+async function signIn(phone, app) {
   const post = (p, b) => fetch(API + p, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(b) }).then((r) => r.json());
-  await post('/auth/otp/request', { phone: PHONE });
-  const v = await post('/auth/otp/verify', { phone: PHONE, code: '000000', app: 'rider' });
-  if (!v.token) throw new Error(`Could not sign in ${PHONE}: ${JSON.stringify(v)}`);
+  await post('/auth/otp/request', { phone });
+  const v = await post('/auth/otp/verify', { phone, code: '000000', app });
+  if (!v.token) throw new Error(`Could not sign in ${phone}: ${JSON.stringify(v)}`);
   return v.token;
 }
 
 const browser = await chromium.launch();
-const token = pages.some((p) => p.startsWith('rider:')) ? await riderToken() : null;
+const token = pages.some((p) => p.startsWith('rider:')) ? await signIn(PHONE, 'rider') : null;
+const driverToken = pages.some((p) => p.startsWith('driver:')) ? await signIn(DRIVER_PHONE, 'driver') : null;
+const BASES = { web: WEB, rider: RIDER, 'rider-signed-out': RIDER, driver: DRIVER, 'driver-signed-out': DRIVER };
 let total = 0;
 for (const scheme of ['light', 'dark']) {
   for (const spec of pages) {
     const [app, path] = spec.split(/:(.*)/);
     const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, colorScheme: scheme });
     if (app === 'rider') await ctx.addInitScript((t) => localStorage.setItem('dingogo.rider.token', t), token);
+    if (app === 'driver') await ctx.addInitScript((t) => localStorage.setItem('dingogo.driver.token', t), driverToken);
     const page = await ctx.newPage();
-    await page.goto((app === 'web' ? WEB : RIDER) + path, { waitUntil: 'networkidle' }).catch(() => {});
+    await page.goto(BASES[app] + path, { waitUntil: 'networkidle' }).catch(() => {});
     await page.waitForTimeout(600);
     await page.addScriptTag({ content: axeSrc });
     const res = await page.evaluate(() => window.axe.run(document, { runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa'] } }));

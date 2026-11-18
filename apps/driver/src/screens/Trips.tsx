@@ -3,7 +3,7 @@ import { Icon, STATUS_LABEL, SERVICE_ICON_NAME, dayName, get, money, statusTone,
 export function Trips() {
   const { data, error, loading } = useLoad(() => get('/driver/trips'));
   return (
-    <div className="screen">
+    <div className="screen" tabIndex={0} aria-label="Your trips">
       <h1>Trips</h1>
       {error && <p className="dg-error">{error}</p>}
       {loading && !data && <p className="dg-muted">Loading…</p>}

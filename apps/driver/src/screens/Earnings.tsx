@@ -64,7 +64,7 @@ export function Earnings() {
                 <button key={s.day} type="button" className={(i === selIdx ? 'sel' : '') + (i === series.length - 1 ? ' today' : '')}
                   aria-pressed={i === selIdx} aria-label={`${dayName(s.day)}: ${money(s.cents)}`} onClick={() => setSel(i)}>
                   <span className="bar-track"><i style={{ height: `${Math.max(0, (s.cents / max) * 100)}%` }} /></span>
-                  {days === 7 && <small>{new Date(s.day + 'T12:00:00').toLocaleDateString('en-AU', { weekday: 'short' }).slice(0, 2)}</small>}
+                  {days === 7 && <small>{new Date(s.day + 'T12:00:00').toLocaleDateString('en-AU', { weekday: 'short' })}</small>}
                 </button>
               ))}
             </div>
@@ -91,7 +91,7 @@ export function Earnings() {
                 <div key={g.title} className="earn-group">
                   <h3>{g.title}</h3>
                   <ul className="list">
-                    {ks.map((k) => <li key={k}><span>{KIND[k]}</span><span className="dg-money" style={{ color: byKind[k] < 0 ? 'var(--earth)' : undefined }}>{money(byKind[k])}</span></li>)}
+                    {ks.map((k) => <li key={k}><span>{KIND[k]}</span><span className="dg-money" style={{ color: byKind[k] < 0 ? 'var(--earth-ink)' : undefined }}>{money(byKind[k])}</span></li>)}
                     {sum && g.total && ks.length > 1 && <li className="earn-total"><span>{g.title} total</span><strong className="dg-money">{money(sum[g.total])}</strong></li>}
                   </ul>
                 </div>
@@ -123,7 +123,7 @@ export function Earnings() {
             {(data.ledger ?? []).map((l: any) => (
               <li key={l.id}>
                 <div><div>{KIND[l.kind] ?? l.kind}</div><div className="sub">{l.note ? `${l.note}, ` : ''}{dayName(l.created_at)}</div></div>
-                <span className="dg-money" style={{ color: l.amount_cents < 0 ? 'var(--earth)' : 'var(--saltbush)' }}>{money(l.amount_cents)}</span>
+                <span className="dg-money" style={{ color: l.amount_cents < 0 ? 'var(--earth-ink)' : 'var(--saltbush-ink)' }}>{money(l.amount_cents)}</span>
               </li>
             ))}
           </ul>

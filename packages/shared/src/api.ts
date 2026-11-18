@@ -41,23 +41,29 @@ const READ_TIMEOUT_MS = 15000;
 const READ_RETRIES = [800, 2500];
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-async function send(method: string, path: string, body: unknown, timeoutMs: number | null): Promise<Response> {
+async function send(method: string, path: string, body: unknown, timeoutMs: number | null, extra?: Record<string, string>): Promise<Response> {
   const ctl = timeoutMs && typeof AbortController !== 'undefined' ? new AbortController() : null;
   const timer = ctl ? setTimeout(() => ctl.abort(), timeoutMs!) : null;
   try {
     return await fetch(BASE + path, {
       method, signal: ctl?.signal,
-      headers: { ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}), ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      headers: { ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}), ...(token ? { Authorization: `Bearer ${token}` } : {}), ...extra },
       body: body !== undefined ? JSON.stringify(body) : undefined,
     });
   } finally { if (timer) clearTimeout(timer); }
 }
 
-export async function api<T = any>(method: string, path: string, body?: unknown): Promise<T> {
+export interface ApiOpts {
+  /** Extra request headers, e.g. Idempotency-Key for a write the app may send again. */
+  headers?: Record<string, string>;
+  /** Give up after this long (writes default to no timeout). */
+  timeoutMs?: number;
+}
+export async function api<T = any>(method: string, path: string, body?: unknown, opts: ApiOpts = {}): Promise<T> {
   const read = method === 'GET';
   let res: Response | null = null;
   for (let attempt = 0; ; attempt++) {
-    try { res = await send(method, path, body, read ? READ_TIMEOUT_MS : null); break; }
+    try { res = await send(method, path, body, opts.timeoutMs ?? (read ? READ_TIMEOUT_MS : null), opts.headers); break; }
     catch {
       if (read && attempt < READ_RETRIES.length) { await sleep(READ_RETRIES[attempt]); continue; }
       setOnline(false);
@@ -77,7 +83,7 @@ export async function api<T = any>(method: string, path: string, body?: unknown)
   return json as T;
 }
 export const get = <T = any>(p: string) => api<T>('GET', p);
-export const post = <T = any>(p: string, b?: unknown) => api<T>('POST', p, b ?? {});
+export const post = <T = any>(p: string, b?: unknown, o?: ApiOpts) => api<T>('POST', p, b ?? {}, o);
 export const patch = <T = any>(p: string, b?: unknown) => api<T>('PATCH', p, b ?? {});
 export const put = <T = any>(p: string, b?: unknown) => api<T>('PUT', p, b ?? {});
 export const del = <T = any>(p: string) => api<T>('DELETE', p);

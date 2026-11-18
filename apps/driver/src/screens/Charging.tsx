@@ -1,3 +1,4 @@
+import { Sheet } from '../Sheet';
 import { useState } from 'react';
 import { ApiError, Icon, dateTime, get, money, post, useLoad } from '@dingogo/shared';
 import { rangeKm, useDriver } from '../state';
@@ -91,8 +92,8 @@ function LogCharge({ onClose, onSaved }: { onClose: () => void; onSaved: (endPct
   }
 
   return (
-    <div className="overlay" onClick={(e) => e.target === e.currentTarget && onClose()}>
-      <form className="sheet" onSubmit={save} role="dialog" aria-modal="true" aria-labelledby="lc-h">
+    <Sheet onClose={onClose} labelledBy="lc-h">
+      <form onSubmit={save}>
         <h2 id="lc-h">Log a charge</h2>
         <div className="seg" role="group" aria-label="Where">
           {['home', 'depot', 'public'].map((l) => <button type="button" key={l} aria-pressed={v.location === l} onClick={() => setV({ ...v, location: l })}>{l[0].toUpperCase() + l.slice(1)}</button>)}
@@ -117,7 +118,7 @@ function LogCharge({ onClose, onSaved }: { onClose: () => void; onSaved: (endPct
           <button className="dg-btn" disabled={busy || !v.kwh}>{busy ? 'Saving…' : 'Save charge'}</button>
         </div>
       </form>
-    </div>
+    </Sheet>
   );
 }
 
@@ -133,8 +134,8 @@ function CheckIn({ onClose, onSaved }: { onClose: () => void; onSaved: (p: numbe
     catch (e2) { setErr(e2 instanceof ApiError ? e2.message : 'Could not save'); }
   }
   return (
-    <div className="overlay" onClick={(e) => e.target === e.currentTarget && onClose()}>
-      <form className="sheet" onSubmit={save} role="dialog" aria-modal="true" aria-labelledby="ci-h">
+    <Sheet onClose={onClose} labelledBy="ci-h">
+      <form onSubmit={save}>
         <h2 id="ci-h">Battery check-in</h2>
         <div className="dial-num">{pct}%</div>
         <input type="range" min={0} max={100} value={pct} onChange={(e) => setPct(Number(e.target.value))} aria-label="Battery percent" className="range-input" />
@@ -145,6 +146,6 @@ function CheckIn({ onClose, onSaved }: { onClose: () => void; onSaved: (p: numbe
         {err && <p className="dg-error">{err}</p>}
         <button className="dg-btn dg-btn--block btn-xl">Save</button>
       </form>
-    </div>
+    </Sheet>
   );
 }

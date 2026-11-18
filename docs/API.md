@@ -75,6 +75,7 @@ Base URL: `http://localhost:4000` in development. Auth: `Authorization: Bearer <
 | POST | `/driver/vehicles/:id/use` |
 | POST | `/driver/online` |
 | POST | `/driver/location` |
+| POST | `/driver/location/batch` |
 | GET | `/driver/offers` |
 | POST | `/driver/offers/:tripId/accept` |
 | POST | `/driver/offers/:tripId/decline` |
@@ -422,3 +423,24 @@ Top-up = max(0, rate × engaged hours − counted earnings). Table `driver_pay_w
   it's a normal ticket.
 - **Clients (shared `api()`).** GET requests time out after 15 s and retry twice (0.8 s, 2.5 s) on network failure; writes are never retried. Network failures and
   bare 502–504 gateway answers throw `ApiError` code `offline`. `isOnline()` / `onNetworkChange()` / `useOnline()` expose the connection state for "no signal" UI.
+
+## Driver app: poor signal and papers (Round 6)
+
+- **Replaying trip taps.** `POST /driver/trips/:id/arrive|start|complete` accept an optional `Idempotency-Key` header (8–80 of `A–Z a–z 0–9 - _`; anything
+  else is 400 `bad_idempotency_key`) and body `client_at` (ISO time of the tap). With a key: a repeat of a tap already applied (same key on the trip event, or the
+  trip already at or past that step) returns `200 { trip }` as it is now, with no second event, notification, capture or ledger entry. Without a key the old strict
+  behaviour stays (409 `bad_state`). A replay still fails for a real reason (wrong PIN 400 `pin_mismatch`, trip cancelled 409 `bad_state`, given to another
+  driver 403). With a key and `client_at`, `arrived_at` / `started_at` / `completed_at` use the tap time, clamped to: not before the previous step, not more than
+  15 minutes ago, not in the future. Keys and tap times are kept in `trip_events.data` (`idem`, `client_at`).
+- **`POST /driver/location/batch`** `{ points: [{ lat, lng, heading?, at }] (1–720), battery_pct? }` → `{ ok, stored, online }`. GPS points the phone kept with
+  no signal. Points older than 2 h or more than 1 min in the future are dropped; the rest go on the live trip's `trip_track` at their own time (only those after
+  the trip was accepted). The driver's live position, the route-deviation check and the ops map use the newest point.
+- **`GET /driver/me`** adds `expiring: [{ key, label, expires_on, days_left, level: 'expired'|'urgent'|'soon'|'upcoming', replacement_pending, vehicle_id? }]`,
+  soonest first: the driver licence, H endorsement (NT), other approved driver documents with an expiry, and the current car's CVL (NT), inspection (SA),
+  registration, insurance and other car documents, that expire within 30 days (Darwin dates). `urgent` ≤ 3 days, `soon` ≤ 14, `upcoming` ≤ 30.
+  `replacement_pending`: a newer copy is waiting for DingoGo to check it.
+- **Expiry reminders.** The dispatch tick (at most every 30 min per instance, 8 am–8 pm Darwin time) sends approved drivers one in-app/push notification per
+  credential per reminder point (30, 14 and 3 days before), category `documents`, `data { reminder: '<key>:<date>:<point>', key, expires_on, days_left }`.
+  None while a replacement is waiting. No new table: de-duplicated against the driver's notifications.
+- **Clients.** Shared `api()`/`post()` take `{ headers, timeoutMs }`. Shared `useModal(ref, onClose?)` gives a portal dialog modal behaviour (inert app, focus in
+  and back, Tab wraps, Escape).

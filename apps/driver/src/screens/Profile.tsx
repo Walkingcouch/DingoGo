@@ -1,19 +1,23 @@
 import { useState } from 'react';
+import { usePrefs, type Prefs, type Theme } from '../lib/prefs';
+import { NAV_APPS } from '../lib/nav';
 import { ApiError, Icon, date, patch, post } from '@dingogo/shared';
 import { Link } from 'react-router-dom';
 import { useDriver } from '../state';
 import { CarStatus, FuelChip, carName } from '../vehicle';
 import { DOC_LABEL } from '../rules';
 import { AddCarForm, CarExpiries, CarPapers, CarRules } from './Car';
+import { Sheet } from '../Sheet';
+import { ExpiryList } from './Expiry';
 
 export function Profile({ onSignOut }: { onSignOut: () => void }) {
-  const { me, reloadMe, cars, myState, online, showToast } = useDriver();
+  const { me, reloadMe, cars, myState, online, showToast, waiting } = useDriver();
+  const [prefs, setPrefs] = usePrefs();
   const [adding, setAdding] = useState(false);
   const [papersFor, setPapersFor] = useState<{ car: any; ownerNeeded?: boolean } | null>(null);
   const [carErr, setCarErr] = useState<string | null>(null);
   const [langs, setLangs] = useState<string>((me?.driver?.languages ?? []).join(', '));
   const [err, setErr] = useState<string | null>(null);
-  const [theme, setTheme] = useState<string>(() => document.documentElement.dataset.theme ?? 'auto');
   if (!me) return null;
   const d = me.driver; const v = d?.vehicle;
   const others = (cars?.vehicles ?? []).filter((c) => c.id !== v?.id);
@@ -29,11 +33,6 @@ export function Profile({ onSignOut }: { onSignOut: () => void }) {
     setErr(null);
     try { await patch('/driver/me', { [key]: value }); await reloadMe(); showToast('Saved'); }
     catch (e) { setErr(e instanceof ApiError ? e.message : 'Could not save'); }
-  }
-  function applyTheme(t: string) {
-    setTheme(t);
-    if (t === 'auto') delete document.documentElement.dataset.theme; else document.documentElement.dataset.theme = t;
-    try { localStorage.setItem('dingogo.driver.theme', t); } catch { /* ignore */ }
   }
 
   return (
@@ -95,6 +94,8 @@ export function Profile({ onSignOut }: { onSignOut: () => void }) {
         {err && <p className="dg-error">{err}</p>}
       </section>
 
+      <ExpiryList />
+
       <section className="panel">
         <h2 style={{ marginTop: 0 }}>Documents</h2>
         <ul className="list">
@@ -108,36 +109,52 @@ export function Profile({ onSignOut }: { onSignOut: () => void }) {
         <Link className="dg-btn dg-btn--ghost dg-btn--block" to="/setup">Update documents</Link>
       </section>
 
-      <section className="panel">
-        <h2 style={{ marginTop: 0 }}>Display</h2>
-        <div className="seg" role="group" aria-label="Theme">
-          {[['auto', 'Automatic'], ['light', 'Light'], ['dark', 'Dark']].map(([k, l]) => <button key={k} aria-pressed={theme === k} onClick={() => applyTheme(k)}>{l}</button>)}
-        </div>
-      </section>
+      <InCar prefs={prefs} setPrefs={setPrefs} />
 
-      <button className="dg-btn dg-btn--dark dg-btn--block btn-xl" style={{ marginTop: 16 }} onClick={onSignOut} disabled={online}>Sign out</button>
+      <button className="dg-btn dg-btn--dark dg-btn--block btn-xl" style={{ marginTop: 16 }} onClick={onSignOut} disabled={online || waiting.taps > 0}>Sign out</button>
       {online && <p className="dg-muted" style={{ textAlign: 'center', fontSize: 'var(--fs-sm)' }}>Go offline before signing out.</p>}
+      {!online && waiting.taps > 0 && <p className="dg-muted" style={{ textAlign: 'center', fontSize: 'var(--fs-sm)' }}>Trip updates are still waiting for signal. Sign out once they have sent.</p>}
 
       {adding && (
-        <div className="overlay" onClick={(e) => e.target === e.currentTarget && setAdding(false)}>
-          <div className="sheet" role="dialog" aria-modal="true" aria-labelledby="add-car-h">
+        <Sheet onClose={() => setAdding(false)} labelledBy="add-car-h">
             <h2 id="add-car-h">Add a car</h2>
             <CarRules j={myState} />
             <AddCarForm onCancel={() => setAdding(false)} onSaved={async (c, registeredOwner) => {
               setAdding(false); await reloadMe(); setPapersFor({ car: c, ownerNeeded: !registeredOwner }); showToast('Car added. Now upload its papers.');
             }} />
-          </div>
-        </div>
+        </Sheet>
       )}
       {papersFor && (
-        <div className="overlay" onClick={(e) => e.target === e.currentTarget && setPapersFor(null)}>
-          <div className="sheet" role="dialog" aria-modal="true" aria-labelledby="papers-h">
+        <Sheet onClose={() => setPapersFor(null)} labelledBy="papers-h">
             <h2 id="papers-h">Car papers</h2>
             <CarPapers car={(cars?.vehicles ?? []).find((c) => c.id === papersFor.car.id) ?? papersFor.car} ownerPermissionNeeded={papersFor.ownerNeeded} />
             <button className="dg-btn dg-btn--ghost dg-btn--block" style={{ marginTop: 16 }} onClick={() => setPapersFor(null)}>Done</button>
-          </div>
-        </div>
+        </Sheet>
       )}
     </div>
+  );
+}
+
+/** Settings for driving: kept on this phone. */
+function InCar({ prefs, setPrefs }: { prefs: Prefs; setPrefs: (p: Partial<Prefs>) => void }) {
+  const seg = <K extends keyof Prefs>(label: string, key: K, opts: [Prefs[K], string][]) => (
+    <fieldset className="choice-set">
+      <legend>{label}</legend>
+      <div className="seg">
+        {opts.map(([k, l]) => <button key={String(k)} type="button" aria-pressed={prefs[key] === k} onClick={() => setPrefs({ [key]: k } as Partial<Prefs>)}>{l}</button>)}
+      </div>
+    </fieldset>
+  );
+  const themes: [Theme, string][] = [['auto', 'Phone'], ['sun', 'After dark'], ['light', 'Day'], ['dark', 'Night']];
+  return (
+    <section className="panel" aria-labelledby="incar-h">
+      <h2 id="incar-h" style={{ marginTop: 0 }}>In the car</h2>
+      {seg('Navigation app', 'nav', NAV_APPS.map((a) => [a.key, a.label]))}
+      {seg('Screen', 'theme', themes)}
+      <p className="field-hint" style={{ margin: '-8px 0 12px' }}>“After dark” switches to the night screen from sunset to sunrise, so it doesn’t dazzle you.</p>
+      {seg('Accept button on the', 'hand', [['right', 'Right'], ['left', 'Left']])}
+      <label className="dg-check"><input type="checkbox" checked={prefs.awake} onChange={(e) => setPrefs({ awake: e.target.checked })} /><span>Keep the screen on while I’m online</span></label>
+      <label className="dg-check"><input type="checkbox" checked={prefs.speak} onChange={(e) => setPrefs({ speak: e.target.checked })} /><span>Read new requests out loud (pay, pickup time and distance)</span></label>
+    </section>
   );
 }

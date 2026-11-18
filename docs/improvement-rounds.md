@@ -184,3 +184,72 @@ Ideas for next rounds:
 - Offline/poor-signal write queue with idempotency keys for driver arrive/start/complete taps and rider rating/tip/help.
 - Easy-read mode (larger type, fewer options, pictures for pickup/drop-off) and "book for someone else" (carer/family books and tracks for an Elder), with SMS-only updates for riders without smartphones.
 - Run `scripts/a11y-check.mjs` in CI (GitHub Actions with API + Postgres service) so contrast and labelling regressions fail the build.
+
+### Round 6 — driver app in the car: accessibility, glanceable offers, navigation, poor signal, papers
+Scan: read every driver screen and the trip-action API; axe-core (WCAG 2.2 AA) over the signed-out and signed-in driver app (7 screens) in light and dark, plus a
+Playwright drive-through (offer → accept → arrive/start/complete with the network cut). Found: sheets and the offer takeover weren't modal (no focus move/trap,
+no Escape, app behind still reachable); the whole trip sheet was `aria-live` (re-read on every change); the earnings day bars' names didn't match their visible
+text; negative amounts in dark mode 2.4:1; two scrolling screens with no keyboard access; arrive/start/complete failed outright with no signal ("No connection,
+try again") and a lost reply made the retry a 409; GPS pings were dropped while out of range (track gaps); only Google/Apple Maps links, small and equal weight;
+the offer's pay, pickup time and distance were in one sentence of small grey text; the theme switch was day/night only; nothing told drivers papers were about
+to run out until they were blocked from going online.
+
+Suggested:
+1. [fix] Driver app accessibility pass: every sheet (go online, set location, cancel, SOS, add car, car papers, log charge, battery check-in) and the offer are
+   real modals via a shared `useModal` (portal, inert app, focus in and back, Tab wraps, Escape except on the offer); trip steps announced once through a polite
+   region and shown in the page title; 5-second warning on the offer read out; rating stars are a radio group; earnings bar names match their labels; AA colours
+   for amounts in dark mode; scrolling screens keyboard-reachable; axe 0 violations on all driver screens, the offer, the live trip and the done screen.
+2. [add] Glanceable, one-handed offer: pay in very large type, two tiles "Pickup: 4 min, 1.2 km, suburb" and "Trip: 12 km, 18 min, suburb", Cash badge,
+   80 px Accept (twice the width of Decline) on the thumb side, with a left-handed option; timer ring turns red at 5 s.
+3. [add] Read-out offers (optional): pay, pickup time and distance, trip length, cash and assistance animal spoken in en-AU when a request arrives.
+4. [add] Navigation hand-off: one big "Navigate to pickup / drop-off / delivery" button opening the driver's chosen app (Google Maps, Waze or Apple Maps,
+   default Apple on iPhone) plus small links to the other two.
+5. [add] Night mode and glare: Screen setting Phone / After dark / Day / Night, where "After dark" switches to the night theme from sunset to sunrise where the
+   car is (NOAA formula, Mparntwe until GPS); keep the screen on while online or on a trip (Wake Lock, can be turned off); bigger map buttons and status pill.
+6. [add] Poor signal, API: arrive/start/complete take an `Idempotency-Key` and `client_at`: a replayed tap returns the trip (no second event, capture,
+   ledger entry or notification); tap times are kept, clamped (after the previous step, at most 15 min old, never future). New `POST /driver/location/batch` puts
+   GPS kept on the phone onto the trip track at the time each point was taken.
+7. [add] Poor signal, app: an outbox keeps arrive/start/complete taps (in order) and up to an hour of GPS points on the phone; the screen moves on with "No
+   signal. Saved on your phone"; everything is sent when signal returns (and every 10 s), a refused replay (wrong PIN, trip cancelled) puts the driver back
+   with a plain message; a "No signal. Reconnecting…" bar with the number of waiting updates, then "Sending…"; sign-out blocked while taps wait; cancelling
+   still needs signal and says so.
+8. [add] Document expiry: `GET /driver/me` lists papers (licence, H endorsement, other driver documents, the car's CVL/inspection, rego, insurance, car
+   documents) that run out within 30 days; Drive screen banner for the soonest (red at 3 days or expired) with "Update"; Profile "Running out soon" list;
+   in-app/push reminders at 30, 14 and 3 days, once each, none while a new copy waits for checking, 8 am–8 pm Darwin.
+9. [add] `scripts/a11y-check.mjs` covers the driver app (signed out, Drive, Earnings, Trips, Profile, Charging); docs (API.md, README test count).
+
+Done (all 9). No migration (idempotency keys and tap times live in `trip_events.data`; reminders de-duplicate against `notifications.data`; GPS uses the
+existing `trip_track.at`). Tests: 62 → 64 (replayed arrive/start/complete with keys and tap-time clamps, wrong-PIN replay refused, single settle/capture,
+location batch drops old/future points and sets the live position, bad key; expiring papers listed with levels and pending replacements, reminders once per
+point, none at night or while a new copy waits, new date → new reminder; reminder-point unit test). axe: 0 violations on the 7 driver pages × light/dark and
+with the offer open, the live trip, the offline done screen and Profile with papers running out. Playwright (light and dark): focus on Accept and app inert under
+the offer; navigate link; network cut → arrive kept, signal bar, GPS kept, server untouched; wrong PIN while offline refused on reconnect with message and PIN
+screen back; complete offline → replayed once, fare updated; Waze + Night saved.
+- API: new `src/services/docExpiry.ts` (`expiringDocs`, `reminderPoint`, `sendDocExpiryReminders`, run from the dispatch tick); `services/trips.ts`
+  (`Replay`, `alreadyDone`, tap-time clamp on arrive/start/complete, `storeTrack`, `onDriverLocation` `{ track: false }`); `routes/driver.ts`
+  (`Idempotency-Key`/`client_at`, `POST /driver/location/batch`, `expiring` on `/driver/me`).
+- Shared: `api.ts` (`ApiOpts { headers, timeoutMs }` on `api`/`post`), `hooks.ts` (`useModal`), `Icon.tsx` (`nosignal`).
+- Driver app: new `lib/outbox.ts`, `lib/prefs.ts` (prefs store, sun times, theme), `lib/nav.ts`, `Sheet.tsx`, `screens/Expiry.tsx`; `state.tsx`
+  (`tripAction`, flush on reconnect, GPS kept offline, wake lock, theme), `App.tsx` (signal bar, outbox cleared on sign-out), `Offer.tsx`, `ActiveTrip.tsx`,
+  `Drive.tsx`, `Profile.tsx` ("In the car" settings, papers list), `Charging.tsx`, `Earnings.tsx`, `Trips.tsx`, `Onboarding.tsx`, `index.html` (live regions
+  outside the app root), `app.css`.
+- Behaviour changes to note: arrive/start/complete with an Idempotency-Key return 200 for a repeat instead of 409 (without a key nothing changes); with no
+  signal the driver app moves the trip screen on and sends later (the rider sees the change when it arrives); the old `dingogo.driver.theme` setting is moved
+  into the new prefs; drivers get document reminder notifications (category `documents`); the screen stays on while online (Profile switch).
+- Deploy: no migration, no env vars, no data fix. Old app versions keep working against the new API and the new app degrades on an old API (no batch endpoint
+  → kept GPS is dropped after one failed send; no `expiring` → no banner).
+
+Deferred:
+- Native background location (Capacitor plugin) so pings and the outbox keep going while the driver is in Google Maps/Waze: the web app is paused in the
+  background, so the outbox only sends when the driver comes back to DingoGo. Needs a native plugin and store review.
+- Offline queue for cancel, SOS and POD photo uploads: cancel may pass the trip to another driver (must be live); SOS must never be "saved for later" (the
+  sheet already says call 000); photos need storage and a resumable upload. Signature and PIN deliveries do queue.
+- Admin/partner keyboard and axe pass (the shared `useModal` is ready for them); rider app `Dialog` could move onto it.
+- Voice commands ("accept") — hands-free accept needs care (accidental accepts) and testing in a moving car.
+
+Ideas for next rounds:
+- Native Capacitor shell work: background location + local notifications for offers when the app is behind the nav app, then turn on auto-reassign.
+- Admin "papers running out" board (next 30 days, by driver and car, with reminder history) and an SMS reminder at 3 days for drivers without push.
+- Rider side of poor signal: rating/tip/help queued with idempotency keys (the API pattern from this round), and "driver has poor signal" shown to the rider.
+- Driver heat map / "where to wait" from recent demand, and offer de-duplication when the same rider re-requests within a minute.
+- Run `scripts/a11y-check.mjs` (now web, rider and driver) in CI with the API and Postgres as services.

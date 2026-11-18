@@ -1405,3 +1405,117 @@ test('rider report of an assistance-animal refusal flags the driver once; own tr
   assert.equal(r3.ticket.flagged, undefined);
   await call('POST', `/trips/${lonely.id}/cancel`, 'rider', { reason: 'test' });
 });
+
+async function callH(method: string, url: string, who: string, body: unknown, headers: Record<string, string>) {
+  const res = await app.inject({ method: method as any, url, payload: body as any, headers: { authorization: `Bearer ${tokens[who]}`, ...headers } });
+  return { status: res.statusCode, ...JSON.parse(res.body) } as any;
+}
+
+test('poor signal: queued arrive/start/complete replay once (Idempotency-Key), keep the tap time within limits; late GPS points fill the track', async () => {
+  await clearOpenTrips();
+  await onlyOnline(['d1']);
+  const trip = await book();
+  await waitForOffer('d1');
+  assert.equal((await call('POST', `/driver/offers/${trip.id}/accept`, 'd1')).trip.status, 'accepted');
+  await q(`UPDATE trips SET accepted_at = now() - interval '20 minutes' WHERE id = $1`, [trip.id]);
+  const ago = (min: number) => new Date(Date.now() - min * 60_000).toISOString();
+
+  assert.equal((await callH('POST', `/driver/trips/${trip.id}/arrive`, 'd1', {}, { 'idempotency-key': 'x' })).error, 'bad_idempotency_key');
+  const a1 = await callH('POST', `/driver/trips/${trip.id}/arrive`, 'd1', { client_at: ago(18) }, { 'idempotency-key': 'arrive-key-0001' });
+  assert.equal(a1.trip.status, 'arrived');
+  const at = await one(`SELECT extract(epoch FROM now() - arrived_at)::int AS age FROM trips WHERE id = $1`, [trip.id]);
+  assert.ok(at.age >= 14 * 60 && at.age <= 16 * 60, `tap time capped at 15 min old (got ${at.age}s)`);
+  const again = await callH('POST', `/driver/trips/${trip.id}/arrive`, 'd1', { client_at: ago(18) }, { 'idempotency-key': 'arrive-key-0001' });
+  assert.equal(again.status, 200, 'replay is not a conflict');
+  assert.equal(again.trip.status, 'arrived');
+  assert.equal((await call('POST', `/driver/trips/${trip.id}/arrive`, 'd1')).error, 'bad_state', 'a plain second tap is still refused');
+  assert.equal((await one(`SELECT count(*)::int n FROM trip_events WHERE trip_id = $1 AND type = 'arrived'`, [trip.id])).n, 1);
+
+  // Wrong PIN queued offline: refused on replay, so the app can put the driver back on the PIN screen.
+  const wrong = trip.verify_pin === '0000' ? '1111' : '0000';
+  assert.equal((await callH('POST', `/driver/trips/${trip.id}/start`, 'd1', { pin: wrong, client_at: ago(1) }, { 'idempotency-key': 'start-key-wrong' })).error, 'pin_mismatch');
+  const future = new Date(Date.now() + 10 * 60_000).toISOString();
+  const s1 = await callH('POST', `/driver/trips/${trip.id}/start`, 'd1', { pin: trip.verify_pin, client_at: future }, { 'idempotency-key': 'start-key-0001' });
+  assert.equal(s1.trip.status, 'in_progress');
+  assert.ok((await one(`SELECT started_at <= now() AS ok FROM trips WHERE id = $1`, [trip.id])).ok, 'never in the future');
+  assert.equal((await callH('POST', `/driver/trips/${trip.id}/start`, 'd1', { pin: trip.verify_pin }, { 'idempotency-key': 'start-key-0001' })).trip.status, 'in_progress');
+
+  // GPS saved on the phone during the dead zone.
+  const pts = [
+    { lat: -23.7001, lng: 133.8811, at: ago(2) }, { lat: -23.7030, lng: 133.8790, heading: 200, at: ago(1) },
+    { lat: -23.69, lng: 133.88, at: ago(180) }, { lat: -23.69, lng: 133.88, at: new Date(Date.now() + 600_000).toISOString() },
+  ];
+  const before = (await one(`SELECT count(*)::int n FROM trip_track WHERE trip_id = $1`, [trip.id])).n;
+  const lb = await call('POST', '/driver/location/batch', 'd1', { points: pts });
+  assert.equal(lb.status, 200, JSON.stringify(lb));
+  assert.equal(lb.stored, 2, 'too old and future points are dropped');
+  assert.equal((await one(`SELECT count(*)::int n FROM trip_track WHERE trip_id = $1`, [trip.id])).n, before + 2);
+  const pos = await one(`SELECT lat, lng, heading FROM drivers WHERE user_id = $1`, [await driverId('+61400000011')]);
+  assert.deepEqual([pos.lat, pos.lng, pos.heading], [-23.7030, 133.8790, 200], 'live position is the newest point');
+  assert.equal((await call('POST', '/driver/location/batch', 'd1', { points: [] })).status, 400);
+
+  const ledgerBefore = (await one(`SELECT count(*)::int n FROM driver_ledger WHERE trip_id = $1`, [trip.id])).n;
+  const c1 = await callH('POST', `/driver/trips/${trip.id}/complete`, 'd1', { client_at: ago(0.5) }, { 'idempotency-key': 'done-key-00001' });
+  assert.equal(c1.trip.status, 'completed', JSON.stringify(c1));
+  const ledger = (await one(`SELECT count(*)::int n FROM driver_ledger WHERE trip_id = $1`, [trip.id])).n;
+  assert.ok(ledger > ledgerBefore);
+  const c2 = await callH('POST', `/driver/trips/${trip.id}/complete`, 'd1', { client_at: ago(0.5) }, { 'idempotency-key': 'done-key-00001' });
+  assert.equal(c2.status, 200);
+  assert.equal(c2.trip.final_cents, c1.trip.final_cents);
+  assert.equal((await one(`SELECT count(*)::int n FROM driver_ledger WHERE trip_id = $1`, [trip.id])).n, ledger, 'settled once');
+  assert.equal((await one(`SELECT count(*)::int n FROM payments WHERE trip_id = $1 AND kind = 'capture'`, [trip.id])).n, 1, 'captured once');
+  assert.equal((await one(`SELECT count(*)::int n FROM trip_events WHERE trip_id = $1 AND type = 'completed'`, [trip.id])).n, 1);
+  // Someone else's trip stays forbidden, key or not.
+  assert.equal((await callH('POST', `/driver/trips/${trip.id}/complete`, 'd2', {}, { 'idempotency-key': 'done-key-00001' })).status, 403);
+});
+
+test('document expiry: driver sees what runs out within 30 days; reminders at 30/14/3 days, once each, not when a new copy is waiting', async () => {
+  const { reminderPoint, sendDocExpiryReminders } = await import('../src/services/docExpiry.js');
+  assert.deepEqual([45, 30, 20, 14, 10, 3, 1, 0, -1].map(reminderPoint), [null, 30, 30, 14, 14, 3, 3, 3, null]);
+
+  const id = await driverId('+61400000012');
+  const orig = await one(`SELECT d.licence_expiry, d.vehicle_id, v.insurance_expiry, v.rego_expiry FROM drivers d JOIN vehicles v ON v.id = d.vehicle_id WHERE d.user_id = $1`, [id]);
+  const day = async (n: number) => (await one(`SELECT ((now() AT TIME ZONE 'Australia/Darwin')::date + $1::int)::text AS d`, [n])).d as string;
+  let added: string[] = [];
+  try {
+    await q(`UPDATE drivers SET licence_expiry = $2 WHERE user_id = $1`, [id, await day(10)]);
+    await q(`UPDATE vehicles SET insurance_expiry = $2, rego_expiry = $3 WHERE id = $1`, [orig.vehicle_id, await day(3), await day(40)]);
+    added = (await q(`INSERT INTO driver_documents (driver_id, type, expires_at, status) VALUES ($1, 'police_check', $2, 'approved'), ($1, 'licence', $3, 'pending') RETURNING id`,
+      [id, await day(25), await day(1500)])).map((r: any) => r.id);
+    const me = await call('GET', '/driver/me', 'd2');
+    const by = Object.fromEntries(me.expiring.map((e: any) => [e.key, e]));
+    assert.equal(by.licence.days_left, 10);
+    assert.equal(by.licence.level, 'soon');
+    assert.equal(by.licence.replacement_pending, true, 'new licence sent, waiting for checking');
+    assert.equal(by[`vehicle:${orig.vehicle_id}:insurance`].level, 'urgent');
+    assert.match(by[`vehicle:${orig.vehicle_id}:insurance`].label, /insurance/);
+    assert.equal(by.police_check.level, 'upcoming');
+    assert.equal(by[`vehicle:${orig.vehicle_id}:vehicle_rego`], undefined, '40 days out is not listed');
+    assert.equal(me.expiring[0].days_left, 3, 'soonest first');
+
+    const mine = async () => (await q(`SELECT data->>'reminder' AS r, title FROM notifications WHERE user_id = $1 AND category = 'documents' ORDER BY id`, [id]));
+    await sendDocExpiryReminders({ force: true });
+    let rows = await mine();
+    const keys = rows.map((r: any) => r.r);
+    const [d3, d25] = [await day(3), await day(25)];
+    assert.ok(keys.includes(`vehicle:${orig.vehicle_id}:insurance:${d3}:3`), JSON.stringify(keys));
+    assert.ok(keys.includes(`police_check:${d25}:30`));
+    assert.ok(!keys.some((k: string) => k.startsWith('licence:')), 'no nag while the new licence waits for checking');
+    const n = rows.length;
+    await sendDocExpiryReminders({ force: true });
+    assert.equal((await mine()).length, n, 'once per reminder point');
+    // Outside 8 am–8 pm Darwin: nothing is sent by the tick.
+    assert.deepEqual(await sendDocExpiryReminders({ now: new Date('2026-11-19T13:00:00Z') }), { sent: 0 }); // 10:30 pm Darwin
+    // Insurance renewed but the new date is again close: a new reminder for the new date.
+    await q(`UPDATE vehicles SET insurance_expiry = $2 WHERE id = $1`, [orig.vehicle_id, await day(13)]);
+    await sendDocExpiryReminders({ force: true });
+    rows = await mine();
+    const d13 = await day(13);
+    assert.ok(rows.some((r: any) => r.r === `vehicle:${orig.vehicle_id}:insurance:${d13}:14`));
+    assert.match(rows[rows.length - 1].title, /expires in 13 days/);
+  } finally {
+    await q(`UPDATE drivers SET licence_expiry = $2 WHERE user_id = $1`, [id, orig.licence_expiry]);
+    await q(`UPDATE vehicles SET insurance_expiry = $2, rego_expiry = $3 WHERE id = $1`, [orig.vehicle_id, orig.insurance_expiry, orig.rego_expiry]);
+    await q(`DELETE FROM driver_documents WHERE id = ANY($1::uuid[])`, [added]);
+  }
+});

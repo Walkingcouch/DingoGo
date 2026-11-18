@@ -3,6 +3,8 @@ import { ApiError, Icon, money, post } from '@dingogo/shared';
 import { DgMap, type MapMarker } from '@dingogo/shared/map';
 import { PLACES, rangeKm, useDriver } from '../state';
 import { FuelChip, isEv } from '../vehicle';
+import { Sheet } from '../Sheet';
+import { ExpiryBanner } from './Expiry';
 
 export function Drive() {
   const { me, online, setOnline, battery, setBattery, pos, simulated, setSimulated, geoDenied, reloadMe } = useDriver();
@@ -51,6 +53,7 @@ export function Drive() {
             <button className="link-btn" onClick={() => setPickPlace(true)}>Set location</button>
           </div>
         )}
+        <ExpiryBanner />
         {online
           ? <button className="online-toggle stop" onClick={goOffline} disabled={busy}><Icon name="power" size={24} />Go offline</button>
           : <button className="online-toggle go" onClick={() => { setErrors(null); if (ev) setAskBattery(true); else void goOnline(); }} disabled={busy}><Icon name="power" size={24} />{busy ? 'Going online…' : 'Go online'}</button>}
@@ -78,8 +81,7 @@ export function Drive() {
       </section>
 
       {askBattery && (
-        <div className="overlay" onClick={(e) => e.target === e.currentTarget && setAskBattery(false)}>
-          <div className="sheet" role="dialog" aria-modal="true" aria-labelledby="bat-h">
+        <Sheet onClose={() => setAskBattery(false)} labelledBy="bat-h">
             {ev ? (<>
               <h2 id="bat-h">How much charge?</h2>
               <p className="dg-muted" style={{ marginTop: 0 }}>Check the dash. We use it so you're never sent on a trip you can't finish.</p>
@@ -99,13 +101,11 @@ export function Drive() {
               <button className="dg-btn dg-btn--ghost btn-xl" onClick={() => setAskBattery(false)}>Not now</button>
               <button className="dg-btn btn-xl" onClick={goOnline} disabled={busy || (ev && battery < 15)}>{busy ? 'Going online…' : errors && !ev ? 'Try again' : 'Go online'}</button>
             </div>
-          </div>
-        </div>
+        </Sheet>
       )}
 
       {pickPlace && (
-        <div className="overlay" onClick={(e) => e.target === e.currentTarget && setPickPlace(false)}>
-          <div className="sheet" role="dialog" aria-modal="true" aria-labelledby="loc-h">
+        <Sheet onClose={() => setPickPlace(false)} labelledBy="loc-h">
             <h2 id="loc-h">Where are you?</h2>
             <p className="dg-muted" style={{ marginTop: 0 }}>{geoDenied ? 'GPS is unavailable, so pick the nearest place.' : 'Using GPS. You can override it for testing.'}</p>
             <ul className="place-list">
@@ -117,8 +117,7 @@ export function Drive() {
                 </li>
               ))}
             </ul>
-          </div>
-        </div>
+        </Sheet>
       )}
     </div>
   );

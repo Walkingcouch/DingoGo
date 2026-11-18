@@ -12,6 +12,18 @@ import { ownUpload } from '../lib/uploads.js';
 import * as trips from '../services/trips.js';
 import { loadDriverPay, serviceFeeFor, TRIP_PAY_KINDS } from '../lib/driverPay.js';
 import { myFloorWeek } from '../services/earningsFloor.js';
+import { expiringDocs } from '../services/docExpiry.js';
+import type { FastifyRequest } from 'fastify';
+
+/** A tap the driver app may send more than once (queued with no signal, or the reply was lost): the Idempotency-Key header
+ *  names the tap, `client_at` says when it happened. */
+function replayOf(req: FastifyRequest, body: { client_at?: string }) {
+  const raw = req.headers['idempotency-key'];
+  const key = typeof raw === 'string' && /^[A-Za-z0-9_-]{8,80}$/.test(raw) ? raw : null;
+  if (raw !== undefined && !key) throw bad('bad_idempotency_key', 'Idempotency-Key must be 8–80 letters, digits, - or _');
+  return { key, clientAt: body.client_at ?? null };
+}
+const clientAt = z.string().datetime({ offset: true }).optional();
 
 /** Credentials that must be current before a driver can go online. Rules come from the driver's state (jurisdictions table):
  *  NT CPV rules / SA point-to-point rules + DingoGo policy. */
@@ -81,7 +93,7 @@ export default async function driverRoutes(app: FastifyInstance) {
     // Cancelling after accepting (for the driver's own reasons) this many times in 7 days is reviewed by DingoGo.
     acceptance!.cancel_review_at = config.dispatch.driverCancelFlagCount;
     if (d) { delete d.bank_account; }
-    return { driver: d, documents: docs, today, acceptance, compliance_issues: await complianceIssues(me.id) };
+    return { driver: d, documents: docs, today, acceptance, compliance_issues: await complianceIssues(me.id), expiring: await expiringDocs(me.id) };
   });
 
   app.patch('/driver/me', async (req) => {
@@ -303,6 +315,31 @@ export default async function driverRoutes(app: FastifyInstance) {
     return { ok: true, online: !!d?.online };
   });
 
+  /** Location pings saved on the phone while there was no signal, sent together when it comes back. Each point keeps the time
+   *  it was taken, so the trip's GPS track (distance checks, disputes) has no gap; the car's live position is the newest point. */
+  app.post('/driver/location/batch', async (req) => {
+    const me = await requireUser(req, 'driver');
+    const b = parse(z.object({
+      points: z.array(latLng.extend({ heading: z.number().min(0).max(360).nullish(), at: z.string().datetime({ offset: true }) })).min(1).max(720),
+      battery_pct: z.number().int().min(0).max(100).optional(),
+    }), req.body);
+    const now = Date.now();
+    // Up to 2 h old (a long dead zone on the Stuart Highway), nothing from the future (1 min of clock drift allowed).
+    const pts = b.points.map((p) => ({ ...p, t: Date.parse(p.at) }))
+      .filter((p) => p.t > now - 2 * 3600_000 && p.t < now + 60_000).sort((x, y) => x.t - y.t);
+    if (!pts.length) return { ok: true, stored: 0, online: !!(await one('SELECT online FROM drivers WHERE user_id = $1', [me.id]))?.online };
+    const last = pts[pts.length - 1];
+    const d = await one(
+      `UPDATE drivers SET lat = $2, lng = $3, heading = $4, last_seen_at = now() WHERE user_id = $1 RETURNING vehicle_id, online`,
+      [me.id, last.lat, last.lng, last.heading ?? null]);
+    if (b.battery_pct != null && d?.vehicle_id) await q(`UPDATE vehicles SET battery_pct = $2 WHERE id = $1 AND fuel_type IN ('electric','plug_in_hybrid')`, [d.vehicle_id, b.battery_pct]);
+    const stored = await trips.storeTrack(me.id, pts.map((p) => ({ lat: p.lat, lng: p.lng, at: new Date(p.t).toISOString() })));
+    // Live position, route-deviation check and ops map use the newest point only.
+    await trips.onDriverLocation(me.id, { lat: last.lat, lng: last.lng, heading: last.heading ?? undefined }, { track: false });
+    toOps('driver.location', { driver_id: me.id, lat: last.lat, lng: last.lng, heading: last.heading, battery_pct: b.battery_pct, online: d?.online });
+    return { ok: true, stored, online: !!d?.online };
+  });
+
   app.get('/driver/offers', async (req) => {
     const me = await requireUser(req, 'driver');
     const offers = await q(
@@ -349,25 +386,30 @@ export default async function driverRoutes(app: FastifyInstance) {
        FROM trips t WHERE t.driver_id = $1 ORDER BY t.requested_at DESC LIMIT 100`, [me.id, [...TRIP_PAY_KINDS]]) };
   });
 
+  // Arrive / start / complete may be replayed by the app after a signal drop (Idempotency-Key + client_at): a repeat of a tap
+  // that already went through returns the trip as it is now instead of a 409.
   app.post('/driver/trips/:id/arrive', async (req) => {
     const me = await requireUser(req, 'driver');
-    return { trip: trips.viewFor(await trips.markArrived(me.id, (req.params as any).id), me) };
+    const b = parse(z.object({ client_at: clientAt }), req.body ?? {});
+    return { trip: trips.viewFor(await trips.markArrived(me.id, (req.params as any).id, replayOf(req, b)), me) };
   });
   app.post('/driver/trips/:id/start', async (req) => {
     const me = await requireUser(req, 'driver');
-    const b = parse(z.object({ pin: z.string().max(10).optional() }), req.body);
-    return { trip: trips.viewFor(await trips.startTrip(me.id, (req.params as any).id, b.pin), me) };
+    const b = parse(z.object({ pin: z.string().max(10).optional(), client_at: clientAt }), req.body ?? {});
+    return { trip: trips.viewFor(await trips.startTrip(me.id, (req.params as any).id, b.pin, replayOf(req, b)), me) };
   });
   app.post('/driver/trips/:id/complete', async (req) => {
     const me = await requireUser(req, 'driver');
     const b = parse(z.object({
       actual_distance_m: z.number().int().min(0).max(2_000_000).optional(), delivery_pin: z.string().max(10).optional(), pod_photo_url: z.string().max(500).optional(),
       pod_signature: z.string().max(200000).optional(), pod_received_by: z.string().max(80).optional(),
-      lat: z.number().optional(), lng: z.number().optional(),
-    }), req.body);
+      lat: z.number().optional(), lng: z.number().optional(), client_at: clientAt,
+    }), req.body ?? {});
+    const replay = replayOf(req, b);
+    delete b.client_at;
     // Delivery photo must be one this driver took for a delivery.
     if (b.pod_photo_url) b.pod_photo_url = await ownUpload(b.pod_photo_url, me.id, 'pod');
-    return { trip: trips.viewFor(await trips.completeTrip(me.id, (req.params as any).id, b), me) };
+    return { trip: trips.viewFor(await trips.completeTrip(me.id, (req.params as any).id, b, replay), me) };
   });
   app.post('/driver/trips/:id/cancel', async (req) => {
     const me = await requireUser(req, 'driver');

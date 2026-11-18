@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type RefObject } from 'react';
 import { ApiError, isOnline, onNetworkChange } from './api';
 
 /** Load data with loading/error state and a reload function. */
@@ -54,4 +54,38 @@ export function useOnline() {
   const [on, setOn] = useState(isOnline());
   useEffect(() => onNetworkChange(setOn), []);
   return on;
+}
+
+const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+/** Modal behaviour for a dialog rendered outside #root (in a portal): the app behind is made inert, focus moves into the
+ *  dialog (and back in if the button that had it disappears), Tab wraps inside it, Escape calls onClose (if given), and focus
+ *  returns to whatever opened it. */
+export function useModal(box: RefObject<HTMLElement>, onClose?: () => void) {
+  const closeRef = useRef(onClose); closeRef.current = onClose;
+  useEffect(() => {
+    const opener = document.activeElement as HTMLElement | null;
+    const root = document.getElementById('root');
+    root?.setAttribute('inert', ''); root?.setAttribute('aria-hidden', 'true');
+    const k = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && closeRef.current) { e.preventDefault(); closeRef.current(); return; }
+      if (e.key !== 'Tab' || !box.current) return;
+      const els = Array.from(box.current.querySelectorAll<HTMLElement>(FOCUSABLE));
+      if (!els.length) { e.preventDefault(); box.current.focus(); return; }
+      const first = els[0], last = els[els.length - 1];
+      if (e.shiftKey && (document.activeElement === first || document.activeElement === box.current)) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    };
+    window.addEventListener('keydown', k);
+    return () => {
+      window.removeEventListener('keydown', k);
+      // Another modal may still be open (e.g. a sheet over the offer): only release the app when none is left.
+      if (!document.querySelector('[data-modal-open]')) { root?.removeAttribute('inert'); root?.removeAttribute('aria-hidden'); }
+      if (opener && document.contains(opener)) opener.focus();
+    };
+  }, []); // eslint-disable-line
+  useEffect(() => {
+    if (!box.current || box.current.contains(document.activeElement)) return;
+    (box.current.querySelector<HTMLElement>('[autofocus], [data-autofocus]') ?? box.current.querySelector<HTMLElement>(FOCUSABLE) ?? box.current).focus();
+  });
 }

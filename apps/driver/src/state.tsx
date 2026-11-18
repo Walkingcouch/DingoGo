@@ -1,5 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
-import { ApiError, connectRealtime, get, post, useGeolocation } from '@dingogo/shared';
+import { ApiError, connectRealtime, get, onNetworkChange, post, useGeolocation, useOnline } from '@dingogo/shared';
+import { flushGps, flushTaps, isNoSignal, onOutboxChange, pendingGps, pendingTaps, queueGps, sendTap, tapsFor, type Step } from './lib/outbox';
+import { applyTheme, resolvedTheme, usePrefs } from './lib/prefs';
 import { hasPlug, minYearFallback } from './vehicle';
 import { findJ, jurisdictionList, type Jurisdiction } from './rules';
 
@@ -31,6 +33,12 @@ interface Ctx {
   offer: any | null; clearOffer: () => void;
   trip: any | null; reloadTrip: () => Promise<void>; setTrip: (t: any) => void;
   toast: string | null; showToast: (s: string) => void;
+  /** Arrived / start / complete: sent now, or kept on the phone with no signal (the screen moves on, marked "waiting to send"). */
+  tripAction: (step: Step, body?: Record<string, unknown>) => Promise<{ trip?: any; queued?: boolean }>;
+  /** False while DingoGo can't be reached. */
+  connected: boolean;
+  /** Trip taps and GPS points kept on the phone, waiting for signal. */
+  waiting: { taps: number; gps: number };
 }
 const C = createContext<Ctx>(null as any);
 export const useDriver = () => useContext(C);
@@ -50,6 +58,10 @@ export function DriverProvider({ children }: { children: React.ReactNode }) {
   const [toast, setToast] = useState<string | null>(null);
   const [statePick, setStatePick] = useState<string | null>(null);
   const geo = useGeolocation(true);
+  const connected = useOnline();
+  const [waiting, setWaiting] = useState({ taps: pendingTaps().length, gps: pendingGps() });
+  useEffect(() => onOutboxChange(() => setWaiting({ taps: pendingTaps().length, gps: pendingGps() })), []);
+  const [prefs] = usePrefs();
   const pos: Pos | null = simulated ?? (geo.pos ? { lat: geo.pos.lat, lng: geo.pos.lng, heading: geo.pos.heading } : null);
   const posRef = useRef(pos); posRef.current = pos;
   const batteryRef = useRef(battery); batteryRef.current = battery;
@@ -73,8 +85,11 @@ export function DriverProvider({ children }: { children: React.ReactNode }) {
   const reloadTrip = useCallback(async () => {
     try {
       const r = await get('/driver/trips/active');
+      if (r.trip && tapsFor(r.trip.id).length) return;
       if (r.trip) return setTrip(r.trip);
       const cur = tripRef.current;
+      // Taps for this trip are still waiting to send: the phone's version is ahead of DingoGo's, keep it.
+      if (cur && tapsFor(cur.id).length) return;
       // The trip we were on is no longer live: show how it ended instead of silently dropping it.
       if (cur && !cur.released && ['accepted', 'arrived', 'in_progress'].includes(cur.status)) {
         try { const t = await get(`/trips/${cur.id}`); return setTrip(t.trip); }
@@ -127,23 +142,86 @@ export function DriverProvider({ children }: { children: React.ReactNode }) {
     return () => clearInterval(t);
   }, [online, trip]);
 
-  // Location heartbeat every 5 s while online or on a trip
+  // Location heartbeat every 5 s while online or on a trip. With no signal the points are kept and sent together later,
+  // so the trip's GPS track has no gap.
   useEffect(() => {
     if (!online && !trip) return;
     const send = async () => {
       const p = posRef.current;
       if (!p) return;
+      const battery_pct = plugRef.current ? batteryRef.current : undefined;
       try {
-        const r = await post('/driver/location', { lat: p.lat, lng: p.lng, heading: p.heading ?? undefined, battery_pct: plugRef.current ? batteryRef.current : undefined });
+        if (pendingGps()) await flushGps(battery_pct).catch((e) => { if (isNoSignal(e)) throw e; });
+        const r = await post('/driver/location', { lat: p.lat, lng: p.lng, heading: p.heading ?? undefined, battery_pct }, { timeoutMs: 10000 });
         // DingoGo sets drivers offline after a long time without signal: keep the switch honest.
         if (r?.online === false && onlineRef.current) { setOnlineState(false); showToast('You are offline. Go online again when you are ready.'); }
       }
-      catch (e) { if (e instanceof ApiError && e.status === 401) location.reload(); }
+      catch (e) {
+        if (e instanceof ApiError && e.status === 401) location.reload();
+        else if (isNoSignal(e) && tripRef.current) queueGps({ lat: p.lat, lng: p.lng, heading: p.heading, at: new Date().toISOString() });
+      }
     };
     void send();
     const t = setInterval(send, 5000);
     return () => clearInterval(t);
   }, [online, !!trip]);
+
+  // Send kept taps as soon as signal returns (and every 10 s while any are waiting, as phones don't always say).
+  const flushAll = useCallback(async () => {
+    if (!pendingTaps().length) return;
+    const r = await flushTaps();
+    const cur = tripRef.current;
+    if (r.refused) {
+      const e = r.refused.error;
+      const what = { arrive: 'arrived', start: 'start the trip', complete: 'trip complete' }[r.refused.tap.step];
+      showToast(e.code === 'pin_mismatch' && r.refused.tap.step === 'start' ? 'The PIN you entered didn’t match. Ask the passenger again.' : `Your “${what}” tap couldn’t be saved: ${e.message}`);
+      void reloadTrip();
+    } else if (r.trip && cur?.id === r.trip.id) { setTrip(r.trip); }
+    if (r.sent && !r.refused && !pendingTaps().length) showToast('Back online. Your trip updates are saved.');
+  }, [reloadTrip, showToast]);
+  useEffect(() => {
+    const off = onNetworkChange((on) => { if (on) void flushAll(); });
+    const t = setInterval(() => { if (pendingTaps().length) void flushAll(); }, 10000);
+    void flushAll();
+    return () => { off(); clearInterval(t); };
+  }, [flushAll]);
+
+  const tripAction = useCallback(async (step: Step, body: Record<string, unknown> = {}) => {
+    const cur = tripRef.current;
+    if (!cur) return {};
+    const r = await sendTap(cur.id, step, body);
+    if (r.trip) setTrip(r.trip);
+    else if (r.queued) {
+      // Move the screen on now; it says the update is waiting to send.
+      const now = new Date().toISOString();
+      const next = step === 'arrive' ? { status: 'arrived', arrived_at: now }
+        : step === 'start' ? { status: 'in_progress', started_at: now }
+        : { status: 'completed', completed_at: now, final_cents: cur.quote_cents };
+      setTrip({ ...cur, ...next, pending_sync: true });
+    }
+    return r;
+  }, []);
+
+  // Keep the screen on while online or on a trip (the phone sits in a cradle). Released when offline or set off in Profile.
+  useEffect(() => {
+    const nav = navigator as any;
+    if (!prefs.awake || (!online && !trip) || !nav.wakeLock) return;
+    let lock: any = null; let gone = false;
+    const take = async () => { try { if (document.visibilityState === 'visible') lock = await nav.wakeLock.request('screen'); } catch { /* battery saver or not allowed */ } };
+    const vis = () => { if (!gone && document.visibilityState === 'visible') void take(); };
+    void take();
+    document.addEventListener('visibilitychange', vis);
+    return () => { gone = true; document.removeEventListener('visibilitychange', vis); lock?.release?.().catch?.(() => undefined); };
+  }, [prefs.awake, online, !!trip]);
+
+  // Theme: phone setting, day, night, or night from sunset to sunrise where the driver is (checked every minute).
+  useEffect(() => {
+    const set = () => applyTheme(resolvedTheme(prefs.theme, new Date(), posRef.current));
+    set();
+    if (prefs.theme !== 'sun') return;
+    const t = setInterval(set, 60000);
+    return () => clearInterval(t);
+  }, [prefs.theme]);
 
   const setOnline = (v: boolean) => setOnlineState(v);
   const rawStates = cars?.jurisdictions ?? me?.jurisdictions ?? [];
@@ -152,7 +230,7 @@ export function DriverProvider({ children }: { children: React.ReactNode }) {
   const clearOffer = () => setOffer(null);
 
   return <C.Provider value={{ me, reloadMe, cars, states, myState, setStatePick, online, setOnline, battery, setBattery, pos, simulated, setSimulated, geoDenied: geo.denied || !geo.pos,
-    offer, clearOffer, trip, reloadTrip, setTrip, toast, showToast }}>{children}</C.Provider>;
+    offer, clearOffer, trip, reloadTrip, setTrip, toast, showToast, tripAction, connected, waiting }}>{children}</C.Provider>;
 }
 
 /** What the driver earns from an offer. The API sends `driver_pay` (fare less the DingoGo fee for this car, plus pickup pay and

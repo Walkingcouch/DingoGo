@@ -1,13 +1,12 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ApiError, Icon, assetUrl, get, km, money, post, uploadFile } from '@dingogo/shared';
 import { DgMap, type MapMarker } from '@dingogo/shared/map';
 import { needFlags, useDriver } from '../state';
 import { SignaturePad } from './SignaturePad';
-
-const mapsLinks = (lat: number, lng: number) => ({
-  google: `https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}&travelmode=driving`,
-  apple: `https://maps.apple.com/?daddr=${lat},${lng}&dirflg=d`,
-});
+import { Sheet } from '../Sheet';
+import { NAV_APPS, navLabel, navUrl } from '../lib/nav';
+import { usePrefs } from '../lib/prefs';
+import type { Step } from '../lib/outbox';
 
 /** Reasons about the passenger or parcel end the trip. The driver's own reasons pass it to another driver and count as a cancellation. */
 const RIDER_SIDE: [string, string][] = [
@@ -23,7 +22,8 @@ const DRIVER_SIDE: [string, string][] = [
 const DONE = ['completed', 'cancelled_rider', 'cancelled_driver', 'cancelled_admin', 'no_drivers'];
 
 export function ActiveTrip() {
-  const { trip, setTrip, reloadTrip, pos, reloadMe, showToast } = useDriver();
+  const { trip, setTrip, reloadTrip, pos, reloadMe, showToast, tripAction } = useDriver();
+  const [prefs] = usePrefs();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pin, setPin] = useState('');
@@ -37,29 +37,38 @@ export function ActiveTrip() {
   useEffect(() => { get('/public/config').then((c) => setSupport(c.support?.phone ?? null)).catch(() => undefined); }, []);
   useEffect(() => { setError(null); setPin(''); }, [t.status]);
 
+  /** Arrived / start / complete: works with no signal too (kept on the phone and sent when signal returns). */
+  async function step(s: Step, body?: Record<string, unknown>) {
+    setBusy(true); setError(null);
+    try { return await tripAction(s, body); }
+    catch (e) { setError(e instanceof ApiError ? e.message : 'Something went wrong. Try again.'); }
+    finally { setBusy(false); }
+  }
+  /** Cancelling needs DingoGo there and then (the trip may go to another driver). */
   async function act(path: string, body?: unknown) {
     setBusy(true); setError(null);
     try { const r = await post(`/driver/trips/${t.id}/${path}`, body); setTrip(r.trip); return r; }
-    catch (e) { setError(e instanceof ApiError ? e.message : 'No connection. Try again.'); }
+    catch (e) { setError(e instanceof ApiError && e.code !== 'offline' ? e.message : 'No signal, so the trip can’t be cancelled yet. Try again, or call DingoGo support.'); }
     finally { setBusy(false); }
   }
 
   const done = t.released || DONE.includes(t.status);
+  const firstName = t.rider?.name?.split(' ')[0] ?? 'passenger';
+  const stageTitle = {
+    accepted: isCourier ? 'Head to pickup' : `Pick up ${firstName}`,
+    arrived: isCourier ? 'Collect the parcel' : 'Check the PIN',
+    in_progress: isCourier ? 'Deliver the parcel' : 'Drive to drop-off',
+  }[t.status as 'accepted' | 'arrived' | 'in_progress'] ?? t.status;
+  useStageAnnouncement(done ? null : `${stageTitle}. ${t.status === 'in_progress' ? t.dropoff_address : t.pickup_address}`, stageTitle);
   if (done) return <TripDone onClose={() => { setTrip(null); void reloadMe(); void reloadTrip(); }} />;
 
   const target = t.status === 'in_progress' ? { lat: t.dropoff_lat, lng: t.dropoff_lng, address: t.dropoff_address } : { lat: t.pickup_lat, lng: t.pickup_lng, address: t.pickup_address };
-  const links = mapsLinks(target.lat, target.lng);
+  const toWhere = t.status === 'in_progress' ? (isCourier ? 'delivery' : 'drop-off') : 'pickup';
   const markers: MapMarker[] = [
     ...(pos ? [{ id: 'me', kind: 'car' as const, lat: pos.lat, lng: pos.lng, heading: pos.heading }] : []),
     ...(t.status !== 'in_progress' ? [{ id: 'p', kind: 'pickup' as const, lat: t.pickup_lat, lng: t.pickup_lng }] : []),
     { id: 'd', kind: 'dropoff' as const, lat: t.dropoff_lat, lng: t.dropoff_lng },
   ];
-
-  const stageTitle = {
-    accepted: isCourier ? 'Head to pickup' : `Pick up ${t.rider?.name?.split(' ')[0] ?? 'passenger'}`,
-    arrived: isCourier ? 'Collect the parcel' : 'Check the PIN',
-    in_progress: isCourier ? 'Deliver the parcel' : 'Drive to drop-off',
-  }[t.status as 'accepted' | 'arrived' | 'in_progress'] ?? t.status;
 
   return (
     <div className="trip">
@@ -67,26 +76,32 @@ export function ActiveTrip() {
         <DgMap markers={markers} padding={50} />
         <button className="sos" onClick={() => setSosOpen(true)} aria-label="SOS, emergency help"><Icon name="sos" size={22} />SOS</button>
       </div>
-      <section className="trip-sheet" aria-live="polite">
+      <section className="trip-sheet">
         <div className="trip-meta"><span className="dg-muted">{t.ref}</span>{t.payment_method === 'cash' && <span className="dg-chip dg-chip--ochre"><Icon name="cash" size={16} />Cash {money(t.quote_cents)}</span>}</div>
         <h1 className="stage">{stageTitle}</h1>
         <p className="addr">{target.address}</p>
+        {t.pending_sync && <p className="sync-note"><Icon name="info" size={18} />No signal. Saved on your phone, sends when signal returns.</p>}
 
         {t.status !== 'arrived' && (
-          <div className="btn-row" style={{ margin: '14px 0' }}>
-            <a className="dg-btn dg-btn--dark" href={links.google} target="_blank" rel="noreferrer"><Icon name="navigation" size={18} />Google Maps</a>
-            <a className="dg-btn dg-btn--ghost" href={links.apple} target="_blank" rel="noreferrer"><Icon name="map" size={18} />Apple Maps</a>
+          <div className="nav-go">
+            <a className="dg-btn dg-btn--dark btn-xl" href={navUrl(prefs.nav, target.lat, target.lng)} target="_blank" rel="noreferrer">
+              <Icon name="navigation" size={24} />Navigate to {toWhere}<span className="sr-only"> in {navLabel(prefs.nav)} (opens the app)</span>
+            </a>
+            <p className="nav-other">
+              <span className="dg-muted">{navLabel(prefs.nav)}. Or:</span>
+              {NAV_APPS.filter((a) => a.key !== prefs.nav).map((a) => <a key={a.key} href={navUrl(a.key, target.lat, target.lng)} target="_blank" rel="noreferrer">{a.label}</a>)}
+            </p>
           </div>
         )}
 
         <TripFlags t={t} />
 
         {t.status === 'accepted' && (
-          <button className="dg-btn dg-btn--block btn-xl" onClick={() => act('arrive')} disabled={busy}>{busy ? 'Updating…' : 'I’ve arrived'}</button>
+          <button className="dg-btn dg-btn--block btn-xl" onClick={() => step('arrive')} disabled={busy}>{busy ? 'Updating…' : 'I’ve arrived'}</button>
         )}
 
         {t.status === 'arrived' && !isCourier && (
-          <form onSubmit={(e) => { e.preventDefault(); void act('start', { pin }); }}>
+          <form onSubmit={(e) => { e.preventDefault(); void step('start', { pin }); }}>
             <label className="dg-field"><span>Ask the passenger for their 4-digit PIN</span>
               <input className="dg-input pin-input" inputMode="numeric" maxLength={4} value={pin} onChange={(e) => setPin(e.target.value.replace(/\D/g, ''))} autoComplete="off" aria-describedby="pin-help" />
             </label>
@@ -99,15 +114,15 @@ export function ActiveTrip() {
           <>
             {parcel && <ParcelInfo p={parcel} />}
             <p className="dg-note">Check the parcel. Refuse alcohol, weapons, drugs or dangerous goods. Cancel with "Parcel looks prohibited".</p>
-            <button className="dg-btn dg-btn--block btn-xl" onClick={() => act('start')} disabled={busy}>{busy ? 'Updating…' : 'Parcel collected'}</button>
+            <button className="dg-btn dg-btn--block btn-xl" onClick={() => step('start')} disabled={busy}>{busy ? 'Updating…' : 'Parcel collected'}</button>
           </>
         )}
 
         {t.status === 'in_progress' && !isCourier && (
-          <button className="dg-btn dg-btn--green dg-btn--block btn-xl" onClick={() => act('complete', { lat: pos?.lat, lng: pos?.lng })} disabled={busy}>{busy ? 'Finishing…' : 'Complete trip'}</button>
+          <button className="dg-btn dg-btn--green dg-btn--block btn-xl" onClick={() => step('complete', { lat: pos?.lat, lng: pos?.lng })} disabled={busy}>{busy ? 'Finishing…' : 'Complete trip'}</button>
         )}
 
-        {t.status === 'in_progress' && isCourier && <ProofOfDelivery parcel={parcel} busy={busy} onSubmit={(b) => act('complete', { ...b, lat: pos?.lat, lng: pos?.lng })} />}
+        {t.status === 'in_progress' && isCourier && <ProofOfDelivery parcel={parcel} busy={busy} onSubmit={(b) => step('complete', { ...b, lat: pos?.lat, lng: pos?.lng })} />}
 
         {error && <p className="dg-error" role="alert" style={{ marginTop: 12 }}>{error}</p>}
 
@@ -210,8 +225,7 @@ function CancelSheet({ onClose, onCancel, busy, isCourier }: { onClose: () => vo
   const btn = (k: string, l: string) => <button key={k} className="dg-btn dg-btn--ghost dg-btn--block" style={{ justifyContent: 'flex-start', minHeight: 56 }} disabled={busy} onClick={() => onCancel(k)}>{l}</button>;
   const reasons = RIDER_SIDE.filter(([k]) => isCourier || k !== 'parcel_prohibited');
   return (
-    <div className="overlay" onClick={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="sheet" role="dialog" aria-modal="true" aria-labelledby="cx-h">
+    <Sheet onClose={onClose} labelledBy="cx-h">
         <h2 id="cx-h">Why are you cancelling?</h2>
         <h3 className="dg-note" style={{ margin: '0 0 6px' }}>{isCourier ? 'About the pickup or parcel' : 'About the passenger'}: the trip ends</h3>
         <div style={{ display: 'grid', gap: 8 }}>{reasons.map(([k, l]) => btn(k, l))}</div>
@@ -219,8 +233,7 @@ function CancelSheet({ onClose, onCancel, busy, isCourier }: { onClose: () => vo
         <div style={{ display: 'grid', gap: 8 }}>{DRIVER_SIDE.map(([k, l]) => btn(k, l))}</div>
         <p className="dg-note">These count as a cancellation on your record{n > 0 ? ` (${n} in the last 7 days)` : ''}. DingoGo reviews drivers who cancel {review} or more trips in a week.</p>
         <button className="dg-btn dg-btn--dark dg-btn--block" style={{ marginTop: 12 }} onClick={onClose}>Keep the trip</button>
-      </div>
-    </div>
+    </Sheet>
   );
 }
 
@@ -233,16 +246,14 @@ function SosSheet({ onClose }: { onClose: () => void }) {
     catch { setErr('Alert not sent. Call 000 directly.'); }
   }
   return (
-    <div className="overlay" onClick={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="sheet" role="dialog" aria-modal="true" aria-labelledby="sos-h">
+    <Sheet onClose={onClose} labelledBy="sos-h">
         <h2 id="sos-h">Emergency help</h2>
         <a className="dg-btn dg-btn--danger dg-btn--block btn-xl" href="tel:000" onClick={() => void alertOps()}><Icon name="phone" size={22} />Call 000</a>
         <button className="dg-btn dg-btn--dark dg-btn--block btn-xl" style={{ marginTop: 10 }} onClick={alertOps} disabled={sent}><Icon name={sent ? 'check' : 'pin'} size={22} />{sent ? 'DingoGo has been alerted' : 'Alert DingoGo with my location'}</button>
-        {sent && <p className="dg-note">The operations team can see your location and will call you.</p>}
-        {err && <p className="dg-error">{err}</p>}
+        {sent && <p className="dg-note" role="status">The operations team can see your location and will call you.</p>}
+        {err && <p className="dg-error" role="alert">{err}</p>}
         <button className="dg-btn dg-btn--ghost dg-btn--block" style={{ marginTop: 10 }} onClick={onClose}>Close</button>
-      </div>
-    </div>
+    </Sheet>
   );
 }
 
@@ -253,7 +264,8 @@ function TripDone({ onClose }: { onClose: () => void }) {
   const completed = t.status === 'completed';
   async function rate(n: number) {
     setRating(n);
-    try { await post(`/trips/${t.id}/rate`, { rating: n }); setRated(true); } catch { /* already rated */ setRated(true); }
+    try { await post(`/trips/${t.id}/rate`, { rating: n }); setRated(true); }
+    catch (e) { if (!(e instanceof ApiError) || e.code !== 'offline') setRated(true); /* already rated; with no signal they can tap again */ }
   }
   return (
     <div className="screen" style={{ display: 'grid', alignContent: 'center', minHeight: '100%' }}>
@@ -261,15 +273,16 @@ function TripDone({ onClose }: { onClose: () => void }) {
         <>
           <p className="dg-muted" style={{ margin: 0 }}>{t.ref}</p>
           <h1>{t.kind === 'courier' ? 'Delivered' : 'Trip complete'}</h1>
+          {t.pending_sync && <p className="sync-note" role="status"><Icon name="info" size={18} />No signal. Saved on your phone and sent to DingoGo when signal returns. The fare shown is the quoted fare.</p>}
           <div className="big-num">{money(t.final_cents)}</div>
           <p className="dg-muted" style={{ marginTop: 0 }}>Fare incl. GST{t.actual_distance_m || t.est_distance_m ? `, ${km(t.actual_distance_m ?? t.est_distance_m)}` : ''}.{t.payment_method === 'cash' ? ' Collect this amount in cash.' : ' Paid in the app.'}</p>
           {t.kind === 'ride' && (
             <div className="panel" style={{ textAlign: 'center' }}>
               <p style={{ margin: 0, fontWeight: 700 }}>How was {t.rider?.name?.split(' ')[0] ?? 'your passenger'}?</p>
-              <div className="stars" role="group" aria-label="Rate passenger">
-                {[1, 2, 3, 4, 5].map((n) => <button key={n} className={n <= rating ? 'on' : ''} aria-label={`${n} star${n > 1 ? 's' : ''}`} aria-pressed={n === rating} onClick={() => !rated && rate(n)}><Icon name="star" size={36} style={n <= rating ? { fill: 'currentColor' } : undefined} /></button>)}
+              <div className="stars" role="radiogroup" aria-label={`Rate ${t.rider?.name?.split(' ')[0] ?? 'your passenger'}`}>
+                {[1, 2, 3, 4, 5].map((n) => <button key={n} role="radio" className={n <= rating ? 'on' : ''} aria-label={`${n} star${n > 1 ? 's' : ''}`} aria-checked={n === rating} aria-disabled={rated || undefined} onClick={() => !rated && rate(n)}><Icon name="star" size={36} style={n <= rating ? { fill: 'currentColor' } : undefined} /></button>)}
               </div>
-              {rated && <p className="dg-muted" style={{ margin: 0 }}>Thanks</p>}
+              <p className="dg-muted" role="status" style={{ margin: 0, minHeight: '1.5em' }}>{rated ? 'Thanks' : ''}</p>
             </div>
           )}
         </>
@@ -290,4 +303,17 @@ function TripDone({ onClose }: { onClose: () => void }) {
       <button className="dg-btn dg-btn--block btn-xl" style={{ marginTop: 16 }} onClick={onClose}>Back to driving</button>
     </div>
   );
+}
+
+/** Says each new step once to screen readers (polite) and shows it in the app switcher title. */
+function useStageAnnouncement(text: string | null, title: string) {
+  const last = useRef<string | null>(null);
+  useEffect(() => {
+    if (!text || text === last.current) return;
+    last.current = text;
+    document.title = `${title} | DingoGo Driver`;
+    const el = document.getElementById('announce');
+    if (el) { el.textContent = ''; setTimeout(() => { el.textContent = text; }, 50); }
+  }, [text, title]);
+  useEffect(() => () => { document.title = 'DingoGo Driver'; }, []);
 }
