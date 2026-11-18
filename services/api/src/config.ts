@@ -65,6 +65,21 @@ export const config = {
     tickMs: Number(env.DISPATCH_TICK_MS ?? 2000),
     /** Green cars (electric, plug-in hybrid, hybrid) get trips first: ranked as if this many metres closer to the pickup. */
     greenBonusM: Number(env.DISPATCH_GREEN_BONUS_M ?? 1500),
+    /** Accept taps that reach the server up to this many seconds after the offer ran out (while it is still the latest offer). */
+    offerGraceS: Number(env.OFFER_GRACE_S ?? 3),
+    /** A trip whose driver cancels before pickup (car trouble etc.) goes back to the search at most this many times. */
+    maxReoffers: Number(env.DISPATCH_MAX_REOFFERS ?? 2),
+    /** Cancellations after accepting (driver's own reasons) within 7 days that raise a compliance flag. */
+    driverCancelFlagCount: Number(env.DRIVER_CANCEL_FLAG_COUNT ?? 3),
+    /** No location from the driver of a live trip for this long: ops are alerted. */
+    driverSilentAlertMin: Number(env.DRIVER_SILENT_ALERT_MIN ?? 4),
+    /** No location for this long on an accepted trip (not yet at pickup): give it to another driver. 0 = off (default):
+     *  phones pause the app while the driver navigates in Google/Apple Maps, so silence alone isn't proof they've gone. */
+    driverSilentReassignMin: Number(env.DRIVER_SILENT_REASSIGN_MIN ?? 0),
+    /** Online drivers with no signal for this long (and no live trip) are set offline. */
+    driverStaleOfflineMin: Number(env.DRIVER_STALE_OFFLINE_MIN ?? 30),
+    /** A scheduled booking released this late (nobody was using the apps to run the dispatcher) is not sent to drivers. */
+    scheduledMissedMin: Number(env.SCHEDULED_MISSED_MIN ?? 30),
   },
   loyalty: {
     pointsPerDollar: 10,         // 10 pts per $1 spent

@@ -8,6 +8,9 @@ import { pool, one, q } from '../src/db.js';
 import { signToken } from '../src/auth.js';
 import { checkSignature, signedUploadPath } from '../src/lib/uploads.js';
 import { quoteFare } from '../src/lib/fares.js';
+import { dispatchTick, searchOver } from '../src/services/trips.js';
+import { bg, flushBackground, pendingBackground } from '../src/lib/background.js';
+import { config } from '../src/config.js';
 
 process.env.LOG_SMS = 'false';
 let app: Awaited<ReturnType<typeof buildServer>>;
@@ -921,4 +924,227 @@ test('security headers and input limits', async () => {
   assert.equal((await call('GET', '/me', 'rider')).headers['cache-control'], 'no-store');
   assert.equal((await call('POST', '/me/push-token', 'rider', { token: 'x'.repeat(5000), platform: 'web' })).error, 'validation_error');
   assert.equal((await call('PATCH', '/me', 'rider', { accessibility: { note: 'x'.repeat(3000) } })).error, 'validation_error');
+});
+
+// ───────────── Round 3: trip lifecycle & dispatch reliability ─────────────
+const NEAR = { d1: TODD_MALL, d3: { lat: -23.7000, lng: 133.8840 }, d2: { lat: -23.7040, lng: 133.8790 } } as Record<string, { lat: number; lng: number }>;
+/** Close out trips other tests left open, so the dispatcher only sees ours. */
+async function clearOpenTrips() {
+  await q(`UPDATE trips SET status = 'cancelled_admin', cancelled_at = now() WHERE status IN ('scheduled','requested','accepted','arrived','in_progress')`);
+  await q(`UPDATE trip_offers SET status = 'expired' WHERE status = 'offered'`);
+}
+async function onlyOnline(who: string[]) {
+  for (const w of ['d1', 'd2', 'd3', 'pd', 'sa']) if (tokens[w] && !who.includes(w)) await call('POST', '/driver/online', w, { online: false });
+  for (const w of who) {
+    const r = await call('POST', '/driver/online', w, { online: true, ...NEAR[w], battery_pct: 90 });
+    assert.equal(r.status, 200, `${w} online: ${JSON.stringify(r)}`);
+  }
+}
+async function offeredTo(tripId: string, who: string[]) {
+  for (let i = 0; i < 30; i++) {
+    for (const w of who) if ((await call('GET', '/driver/offers', w)).offers?.some((o: any) => o.trip_id === tripId)) return w;
+    await wait(100);
+  }
+  throw new Error('no offer for ' + tripId);
+}
+const driverId = async (phone: string) => (await one('SELECT id FROM users WHERE phone = $1', [phone])).id as string;
+const book = async () => {
+  const t = await call('POST', '/trips', 'rider', { kind: 'ride', service: 'ride', pickup: TODD_MALL, dropoff: HOSPITAL, payment_method: 'card' });
+  assert.equal(t.status, 201, JSON.stringify(t));
+  return t.trip;
+};
+
+test('driver cancels after accepting: next driver is offered the trip, rider keeps the booking; rider-side reasons end it; re-offer limit', async () => {
+  await clearOpenTrips();
+  await onlyOnline(['d1', 'd2', 'd3']);
+  const trip = await book();
+  const first = await offeredTo(trip.id, ['d1', 'd2', 'd3']);
+  assert.equal((await call('POST', `/driver/offers/${trip.id}/accept`, first)).trip.status, 'accepted');
+
+  const c1 = await call('POST', `/driver/trips/${trip.id}/cancel`, first, { reason: 'vehicle_issue', note: 'flat tyre' });
+  assert.equal(c1.status, 200, JSON.stringify(c1));
+  assert.equal(c1.trip.released, true);
+  assert.equal(c1.trip.status, 'requested');
+  assert.equal(c1.trip.pickup_address, undefined, 'released driver no longer gets the trip details');
+  const row = await one('SELECT status, driver_id, payment_status FROM trips WHERE id = $1', [trip.id]);
+  assert.deepEqual([row.status, row.driver_id, row.payment_status], ['requested', null, 'authorised'], 'card hold kept');
+  assert.equal((await call('GET', `/trips/${trip.id}`, first)).status, 404, 'released driver cannot view the trip');
+  const rv = await call('GET', `/trips/${trip.id}`, 'rider');
+  assert.equal(rv.trip.driver_releases, 1);
+  assert.ok((await one(`SELECT 1 FROM notifications n JOIN users u ON u.id = n.user_id WHERE u.phone = '+61400000100' AND n.title = 'Finding you another driver' AND n.data->>'trip_id' = $1`, [trip.id])));
+
+  // Second driver (never the one who cancelled) accepts, then pulls out too.
+  const second = await offeredTo(trip.id, ['d1', 'd2', 'd3'].filter((w) => w !== first));
+  assert.equal((await call('POST', `/driver/offers/${trip.id}/accept`, second)).trip.status, 'accepted');
+  assert.equal((await call('POST', `/driver/trips/${trip.id}/cancel`, second, { reason: 'other' })).trip.released, true);
+  const third = await offeredTo(trip.id, ['d1', 'd2', 'd3'].filter((w) => w !== first && w !== second));
+  assert.equal((await call('POST', `/driver/offers/${trip.id}/accept`, third)).trip.status, 'accepted');
+  // Re-offer limit (2) reached: this time the trip ends, rider not charged.
+  const c3 = await call('POST', `/driver/trips/${trip.id}/cancel`, third, { reason: 'vehicle_issue' });
+  assert.equal(c3.trip.status, 'cancelled_driver');
+  const end = await one('SELECT status, payment_status, cancel_fee_cents FROM trips WHERE id = $1', [trip.id]);
+  assert.deepEqual([end.status, end.payment_status, end.cancel_fee_cents], ['cancelled_driver', 'none', 0]);
+  assert.equal((await one(`SELECT count(*)::int n FROM trip_offers WHERE trip_id = $1 AND status = 'cancelled'`, [trip.id])).n, 3);
+
+  // Rider-side reason: the trip ends straight away (no re-offer).
+  const t2 = await book();
+  const w = await offeredTo(t2.id, ['d1', 'd2', 'd3']);
+  await call('POST', `/driver/offers/${t2.id}/accept`, w);
+  await call('POST', `/driver/trips/${t2.id}/arrive`, w);
+  const nb = await call('POST', `/driver/trips/${t2.id}/cancel`, w, { reason: 'rider_no_show' });
+  assert.equal(nb.trip.status, 'cancelled_driver');
+  assert.equal(nb.trip.released, undefined);
+  assert.equal((await one(`SELECT status FROM trip_offers WHERE trip_id = $1 AND status <> 'expired' AND status <> 'declined'`, [t2.id])).status, 'accepted', 'no-show is not counted against the driver');
+});
+
+test('repeat cancellers: 3 driver cancellations in 7 days raise one compliance flag; driver sees the count', async () => {
+  await clearOpenTrips();
+  await onlyOnline(['d1']);
+  const d1 = await driverId('+61400000011');
+  await q(`DELETE FROM compliance_flags WHERE driver_id = $1 AND kind = 'repeat_cancellation'`, [d1]);
+  await q(`UPDATE trip_offers SET status = 'accepted' WHERE driver_id = $1 AND status = 'cancelled'`, [d1]);
+  // Two earlier cancellations this week.
+  await q(`UPDATE trip_offers SET status = 'cancelled', offered_at = now() - interval '1 day'
+           WHERE (trip_id, driver_id) IN (SELECT trip_id, driver_id FROM trip_offers WHERE driver_id = $1 AND status = 'accepted' LIMIT 2)`, [d1]);
+  for (let i = 0; i < 2; i++) {
+    const t = await book();
+    await offeredTo(t.id, ['d1']);
+    await call('POST', `/driver/offers/${t.id}/accept`, 'd1');
+    assert.equal((await call('POST', `/driver/trips/${t.id}/cancel`, 'd1', { reason: 'vehicle_issue' })).trip.released, true);
+    await call('POST', `/trips/${t.id}/cancel`, 'rider', {});
+  }
+  const flags = await q(`SELECT * FROM compliance_flags WHERE driver_id = $1 AND kind = 'repeat_cancellation'`, [d1]);
+  assert.equal(flags.length, 1, 'one open flag at a time');
+  assert.match(flags[0].detail, /cancelled after accepting/);
+  const me = await call('GET', '/driver/me', 'd1');
+  assert.equal(me.acceptance.cancelled_7d, 4);
+  assert.equal(me.acceptance.cancel_review_at, config.dispatch.driverCancelFlagCount);
+});
+
+test('offer races: last-second accept within the grace counts; late, offline or busy accepts are refused; accept vs cancel never errors', async () => {
+  await clearOpenTrips();
+  await onlyOnline(['d1']);
+  const t1 = await book();
+  await offeredTo(t1.id, ['d1']);
+  await q(`UPDATE trip_offers SET expires_at = now() - interval '1 second' WHERE trip_id = $1`, [t1.id]);
+  assert.equal((await call('GET', '/driver/offers', 'd1')).offers.length, 0, 'not shown once it has run out');
+  assert.equal((await call('POST', `/driver/offers/${t1.id}/accept`, 'd1')).trip?.status, 'accepted', 'tap inside the grace');
+  // Busy driver can't take a second trip even if an offer slipped through.
+  await login('rider2', '0400 000 891');
+  const other = await call('POST', '/trips', 'rider2', { kind: 'ride', service: 'ride', pickup: TODD_MALL, dropoff: AIRPORT, payment_method: 'card' });
+  const d1 = await driverId('+61400000011');
+  await q(`INSERT INTO trip_offers (trip_id, driver_id, expires_at) VALUES ($1, $2, now() + interval '20 seconds') ON CONFLICT DO NOTHING`, [other.trip.id, d1]);
+  assert.equal((await call('POST', `/driver/offers/${other.trip.id}/accept`, 'd1')).error, 'on_trip');
+  await call('POST', `/trips/${other.trip.id}/cancel`, 'rider2', {});
+  await call('POST', `/trips/${t1.id}/cancel`, 'rider', {});
+
+  const t2 = await book();
+  await offeredTo(t2.id, ['d1']);
+  await q(`UPDATE trip_offers SET expires_at = now() - interval '10 seconds' WHERE trip_id = $1`, [t2.id]);
+  assert.equal((await call('POST', `/driver/offers/${t2.id}/accept`, 'd1')).error, 'offer_expired');
+  await call('POST', `/trips/${t2.id}/cancel`, 'rider', {});
+
+  // Rider cancels at the same moment the driver accepts: one wins cleanly, no server error.
+  for (let i = 0; i < 3; i++) {
+    const t = await book();
+    await offeredTo(t.id, ['d1']);
+    const [a, c] = await Promise.all([call('POST', `/driver/offers/${t.id}/accept`, 'd1'), call('POST', `/trips/${t.id}/cancel`, 'rider', {})]);
+    assert.ok([200, 409].includes(a.status), `accept ${a.status} ${a.error}`);
+    assert.equal(c.status, 200, JSON.stringify(c));
+    assert.equal((await one('SELECT status FROM trips WHERE id = $1', [t.id])).status, 'cancelled_rider');
+  }
+});
+
+test('driver goes offline with an offer on screen: the next driver is offered straight away', async () => {
+  await clearOpenTrips();
+  await onlyOnline(['d1', 'd3']);
+  const t = await book();
+  const first = await offeredTo(t.id, ['d1', 'd3']);
+  const next = first === 'd1' ? 'd3' : 'd1';
+  await call('POST', '/driver/online', first, { online: false });
+  // No timeout wait and no tick: the withdraw re-dispatches at once.
+  assert.ok((await call('GET', '/driver/offers', next)).offers.some((o: any) => o.trip_id === t.id));
+  assert.equal((await call('POST', `/driver/offers/${t.id}/accept`, first)).error, 'offer_expired');
+  assert.ok(await one(`SELECT 1 FROM trip_events WHERE trip_id = $1 AND type = 'offer_withdrawn'`, [t.id]));
+  await call('POST', `/trips/${t.id}/cancel`, 'rider', {});
+});
+
+test('silent driver: ops alerted once; ops give the trip to another driver (not counted against them); stale online drivers set offline', async () => {
+  await clearOpenTrips();
+  await onlyOnline(['d1', 'd3']);
+  const d1 = await driverId('+61400000011');
+  const t = await book();
+  const first = await offeredTo(t.id, ['d1', 'd3']);
+  const firstId = first === 'd1' ? d1 : await driverId('+61400000013');
+  await call('POST', `/driver/offers/${t.id}/accept`, first);
+  await q(`UPDATE drivers SET last_seen_at = now() - interval '6 minutes' WHERE user_id = $1`, [firstId]);
+  await q(`UPDATE trips SET accepted_at = now() - interval '6 minutes' WHERE id = $1`, [t.id]);
+  await dispatchTick();
+  await dispatchTick();
+  assert.equal((await one(`SELECT count(*)::int n FROM trip_events WHERE trip_id = $1 AND type = 'driver_silent'`, [t.id])).n, 1, 'alerted once per silence');
+  const live = await call('GET', '/admin/live', 'admin');
+  const lt = live.trips.find((x: any) => x.id === t.id);
+  assert.ok(lt.driver_last_seen_at, 'live map shows last signal');
+
+  const before = (await one(`SELECT count(*)::int n FROM trip_offers WHERE driver_id = $1 AND status = 'cancelled'`, [firstId])).n;
+  const r = await call('POST', `/admin/trips/${t.id}/reassign`, 'admin', { reason: 'No answer on the phone' });
+  assert.equal(r.status, 200, JSON.stringify(r));
+  assert.equal(r.trip.driver_id, null);
+  assert.equal((await one(`SELECT status FROM trip_offers WHERE trip_id = $1 AND driver_id = $2`, [t.id, firstId])).status, 'released');
+  assert.equal((await one(`SELECT count(*)::int n FROM trip_offers WHERE driver_id = $1 AND status = 'cancelled'`, [firstId])).n, before, 'not counted against the driver');
+  assert.ok(await one(`SELECT 1 FROM notifications WHERE user_id = $1 AND title = 'Trip given to another driver'`, [firstId]));
+  const next = first === 'd1' ? 'd3' : 'd1';
+  assert.ok((await call('GET', '/driver/offers', next)).offers.some((o: any) => o.trip_id === t.id), 'offered to the next driver');
+  assert.equal((await call('POST', `/admin/trips/${t.id}/reassign`, 'admin', {})).error, 'bad_state', 'only accepted/arrived trips');
+  await call('POST', `/trips/${t.id}/cancel`, 'rider', {});
+
+  // Online but no signal for 30+ min and no trip: set offline; the app learns it from its next location ping.
+  await q(`UPDATE drivers SET last_seen_at = now() - interval '31 minutes' WHERE user_id = $1`, [d1]);
+  await dispatchTick();
+  assert.equal((await one('SELECT online FROM drivers WHERE user_id = $1', [d1])).online, false);
+  assert.equal((await call('POST', '/driver/location', 'd1', TODD_MALL)).online, false);
+  await call('POST', '/driver/online', 'd3', { online: false });
+});
+
+test('booked trips: search runs until the booked time; a booking released far too late is not sent to drivers', async () => {
+  const now = Date.now();
+  const min = 60000;
+  assert.equal(searchOver({ requested_at: new Date(now - 6 * min), scheduled_for: null, dispatch_attempts: 0 }, now), true);
+  assert.equal(searchOver({ requested_at: new Date(now - 6 * min), scheduled_for: new Date(now + 5 * min), dispatch_attempts: 0 }, now), false, 'keeps looking until pickup time');
+  assert.equal(searchOver({ requested_at: new Date(now - 20 * min), scheduled_for: new Date(now - 6 * min), dispatch_attempts: 0 }, now), true);
+  assert.equal(searchOver({ requested_at: new Date(now), scheduled_for: new Date(now + 5 * min), dispatch_attempts: config.dispatch.maxAttempts }, now), false, 'more offers for bookings');
+  assert.equal(searchOver({ requested_at: new Date(now), scheduled_for: new Date(now + 5 * min), dispatch_attempts: config.dispatch.maxAttempts * 2 }, now), true);
+
+  await clearOpenTrips();
+  await onlyOnline([]);
+  const at = new Date(Date.now() + 25 * min).toISOString();
+  const b = await call('POST', '/trips', 'rider', { kind: 'ride', service: 'ride', pickup: TODD_MALL, dropoff: HOSPITAL, payment_method: 'card', scheduled_for: at });
+  assert.equal(b.status, 201, JSON.stringify(b));
+  assert.equal(b.trip.status, 'scheduled');
+  // Released early, nobody free: still searching 6 minutes in because the pickup time hasn't come.
+  await q(`UPDATE trips SET status = 'requested', requested_at = now() - interval '6 minutes', scheduled_for = now() + interval '5 minutes' WHERE id = $1`, [b.trip.id]);
+  await dispatchTick();
+  assert.equal((await one('SELECT status FROM trips WHERE id = $1', [b.trip.id])).status, 'requested');
+  await call('POST', `/trips/${b.trip.id}/cancel`, 'rider', {});
+
+  const m = await call('POST', '/trips', 'rider', { kind: 'ride', service: 'ride', pickup: TODD_MALL, dropoff: HOSPITAL, payment_method: 'card', scheduled_for: at });
+  await q(`UPDATE trips SET scheduled_for = now() - interval '40 minutes' WHERE id = $1`, [m.trip.id]);
+  await dispatchTick();
+  const row = await one('SELECT status, payment_status FROM trips WHERE id = $1', [m.trip.id]);
+  assert.deepEqual([row.status, row.payment_status], ['no_drivers', 'none'], 'missed booking ended, hold released');
+});
+
+test('background work (notifications, SMS) is tracked and can be awaited before responding', async () => {
+  let done = false;
+  void bg(new Promise((r) => setTimeout(r, 50)).then(() => { done = true; }));
+  setImmediate(() => void bg(Promise.resolve()));   // registered after the commit, on the next turn
+  assert.ok(pendingBackground() >= 1);
+  await flushBackground(2000);
+  assert.equal(done, true);
+  assert.equal(pendingBackground(), 0);
+  void bg(Promise.reject(new Error('push failed')));  // logged, never thrown
+  const t0 = Date.now();
+  void bg(new Promise((r) => setTimeout(r, 5000)));
+  await flushBackground(100);
+  assert.ok(Date.now() - t0 < 1000, 'bounded wait');
 });

@@ -4,7 +4,11 @@ import { get, post, time, ago, STATUS_LABEL, statusTone, useInterval, useLoad } 
 import { DgMap, type MapMarker } from '@dingogo/shared/map';
 import { Page, useOps } from '../ctx';
 import { Chip, useRun } from '../ui';
-import { DOC_TYPE, ROLE, SOS_STATUS, label } from '../labels';
+import { DOC_TYPE, FLAG_KIND, ROLE, SOS_STATUS, label } from '../labels';
+
+/** Minutes since a driver's last location; drivers send one every 5 s while online or on a trip. */
+const silentMin = (at?: string | null) => (at ? Math.floor((Date.now() - new Date(at).getTime()) / 60000) : null);
+const SILENT_AFTER_MIN = 2;
 
 const EVENT_TEXT: Record<string, (d: any) => string> = {
   'trip.created': (d) => `New ${d.status === 'scheduled' ? 'scheduled booking' : 'request'} ${d.ref ?? ''}`,
@@ -12,7 +16,8 @@ const EVENT_TEXT: Record<string, (d: any) => string> = {
   'sos.new': (d) => `EMERGENCY from ${d.user_name ?? 'user'}${d.trip_ref ? ` on ${d.trip_ref}` : ''}`,
   'sos.updated': (d) => `Emergency alert ${label(SOS_STATUS, d.status).toLowerCase()}`,
   'driver.status': (d) => `Driver went ${d.online ? 'online' : 'offline'}`,
-  'compliance.flag': () => 'Compliance flag: assistance animal refusal',
+  'compliance.flag': (d) => `Compliance flag: ${label(FLAG_KIND, d.kind ?? 'assistance_animal_refusal').toLowerCase()}`,
+  'dispatch.driver_silent': (d) => `No signal from the driver on ${d.ref ?? 'a trip'}`,
   'safety.deviation': (d) => `Route deviation on ${d.ref} (${d.off_m} m off route)`,
   'support.new': (d) => `Support ticket: ${d.subject}`,
   'application.new': () => 'New driver application',
@@ -71,12 +76,15 @@ export default function Live() {
                 <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
                   <strong>{t.ref}</strong><Chip tone={statusTone(t.status)}>{STATUS_LABEL[t.status]}</Chip>
                   {t.channel === 'phone' && <Chip>Phone booking</Chip>}
+                  {t.driver_releases > 0 && <Chip tone="ochre">{t.status === 'requested' ? 'Driver pulled out, searching again' : `Re-offered ${t.driver_releases}×`}</Chip>}
+                  {t.driver_id && (silentMin(t.driver_last_seen_at) ?? 0) >= SILENT_AFTER_MIN && <Chip tone="red">No signal {silentMin(t.driver_last_seen_at)} min</Chip>}
                   <span className="dg-muted" style={{ marginLeft: 'auto', fontSize: '.85rem' }}>{time(t.requested_at)}</span>
                 </div>
                 <div style={{ fontSize: '.88rem' }}>{t.pickup_address} to {t.dropoff_address}</div>
-                <div className="dg-muted" style={{ fontSize: '.85rem' }}>{t.rider_name}{t.driver_name ? ` with ${t.driver_name}` : `, dispatch attempt ${t.dispatch_attempts}`}</div>
+                <div className="dg-muted" style={{ fontSize: '.85rem' }}>{t.rider_name}{t.driver_name ? ` with ${t.driver_name}` : `, dispatch attempt ${t.dispatch_attempts}`}{t.scheduled_for ? `, booked for ${time(t.scheduled_for)}` : ''}</div>
                 <div className="actions">
                   {t.status === 'requested' && <button className="dg-btn dg-btn--sm dg-btn--ghost" onClick={async () => { await run(() => post(`/admin/trips/${t.id}/redispatch`), 'Re-dispatching'); void reload(); }}>Re-dispatch</button>}
+                  {['accepted', 'arrived'].includes(t.status) && <button className="dg-btn dg-btn--sm dg-btn--ghost" onClick={async () => { if (confirm(`Give ${t.ref} to another driver? ${t.driver_name ?? 'The driver'} is told it has gone to someone else. It doesn't count against them.`)) { await run(() => post(`/admin/trips/${t.id}/reassign`, { reason: 'Reassigned by dispatch' }), 'Offered to the next driver'); void reload(); } }}>Give to another driver</button>}
                   <button className="dg-btn dg-btn--sm dg-btn--ghost" onClick={async () => { if (confirm(`Cancel ${t.ref}? The rider is not charged.`)) { await run(() => post(`/admin/trips/${t.id}/cancel`, { reason: 'Cancelled by dispatch' }), 'Trip cancelled'); void reload(); } }}>Cancel</button>
                 </div>
               </div>
@@ -87,7 +95,8 @@ export default function Live() {
             <table className="tbl"><tbody>
               {drivers.map((d: any) => (
                 <tr key={d.id}><td>{d.name}<br /><span className="dg-muted" style={{ fontSize: '.82rem' }}>{d.rego ?? 'No vehicle'}</span></td>
-                  <td><Chip tone={!d.online ? '' : d.trip_status ? 'ochre' : 'green'}>{!d.online ? 'Offline' : d.trip_status ? 'On trip' : 'Available'}</Chip></td>
+                  <td><Chip tone={!d.online ? '' : d.trip_status ? 'ochre' : 'green'}>{!d.online ? 'Offline' : d.trip_status ? 'On trip' : 'Available'}</Chip>
+                    {(d.online || d.trip_status) && (silentMin(d.last_seen_at) ?? 0) >= SILENT_AFTER_MIN && <><br /><span className="dg-muted" style={{ fontSize: '.82rem', color: 'var(--earth)' }}>No signal {silentMin(d.last_seen_at)} min</span></>}</td>
                   <td className="num" title="Battery">{d.battery_pct != null ? <span style={{ color: d.battery_pct < 25 ? 'var(--earth)' : undefined }}>{d.battery_pct}%</span> : '—'}</td></tr>
               ))}
             </tbody></table>

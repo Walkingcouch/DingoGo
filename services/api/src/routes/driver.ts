@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify';
+import { config } from '../config.js';
 import { one, q } from '../db.js';
 import { requireUser } from '../auth.js';
 import { bad, conflict, forbidden, notFound } from '../lib/errors.js';
@@ -71,8 +72,12 @@ export default async function driverRoutes(app: FastifyInstance) {
               coalesce(sum(final_cents) FILTER (WHERE status = 'completed'), 0)::int gross_cents
        FROM trips WHERE driver_id = $1 AND completed_at >= date_trunc('day', now() AT TIME ZONE 'Australia/Darwin') AT TIME ZONE 'Australia/Darwin'`, [me.id]);
     const acceptance = await one(
-      `SELECT count(*) FILTER (WHERE status = 'accepted')::int accepted, count(*)::int offered
+      `SELECT count(*) FILTER (WHERE status = 'accepted')::int accepted, count(*)::int offered,
+              count(*) FILTER (WHERE status = 'cancelled')::int cancelled,
+              count(*) FILTER (WHERE status = 'cancelled' AND offered_at > now() - interval '7 days')::int cancelled_7d
        FROM trip_offers WHERE driver_id = $1 AND offered_at > now() - interval '30 days'`, [me.id]);
+    // Cancelling after accepting (for the driver's own reasons) this many times in 7 days is reviewed by DingoGo.
+    acceptance!.cancel_review_at = config.dispatch.driverCancelFlagCount;
     if (d) { delete d.bank_account; }
     return { driver: d, documents: docs, today, acceptance, compliance_issues: await complianceIssues(me.id) };
   });
@@ -240,7 +245,7 @@ export default async function driverRoutes(app: FastifyInstance) {
     const row = await one(
       `UPDATE vehicles SET ${keys.map((k, i) => `${k} = $${i + 2}`).join(', ')}, status = 'pending', review_note = NULL, reviewed_at = NULL
        WHERE id = $1 RETURNING *`, [id, ...keys.map((k) => fields[k])]);
-    if (isCurrent) await q('UPDATE drivers SET online = false WHERE user_id = $1', [me.id]);
+    if (isCurrent) { await q('UPDATE drivers SET online = false WHERE user_id = $1', [me.id]); await trips.withdrawOffers(me.id); }
     toOps('vehicle.updated', { id, rego: row.rego, driver_id: me.id, status: 'pending' });
     return { vehicle: vehicleOut(row), checks: checksFor(row) };
   });
@@ -277,6 +282,8 @@ export default async function driverRoutes(app: FastifyInstance) {
       await q('UPDATE vehicles SET battery_pct = $2 WHERE id = $1', [d.vehicle_id, b.battery_pct]);
       await q('INSERT INTO battery_logs (vehicle_id, driver_id, pct) VALUES ($1,$2,$3)', [d.vehicle_id, me.id, b.battery_pct]);
     }
+    // Going offline with a request on screen: it goes to the next driver now, not after the timeout.
+    if (!b.online) await trips.withdrawOffers(me.id);
     toOps('driver.status', { driver_id: me.id, online: b.online, lat: b.lat, lng: b.lng });
     return { online: d.online };
   });
@@ -290,7 +297,8 @@ export default async function driverRoutes(app: FastifyInstance) {
     if (b.battery_pct != null && d?.vehicle_id) await q(`UPDATE vehicles SET battery_pct = $2 WHERE id = $1 AND fuel_type IN ('electric','plug_in_hybrid')`, [d.vehicle_id, b.battery_pct]);
     await trips.onDriverLocation(me.id, b);
     toOps('driver.location', { driver_id: me.id, lat: b.lat, lng: b.lng, heading: b.heading, battery_pct: b.battery_pct, online: d?.online });
-    return { ok: true };
+    // The app keeps its online switch in step (e.g. DingoGo set the driver offline after a long time without signal).
+    return { ok: true, online: !!d?.online };
   });
 
   app.get('/driver/offers', async (req) => {
@@ -349,7 +357,9 @@ export default async function driverRoutes(app: FastifyInstance) {
   app.post('/driver/trips/:id/cancel', async (req) => {
     const me = await requireUser(req, 'driver');
     const b = parse(z.object({ reason: z.enum(['rider_no_show', 'unsafe', 'rider_requested', 'vehicle_issue', 'parcel_prohibited', 'other']), note: z.string().max(200).optional() }), req.body);
-    return { trip: trips.viewFor(await trips.cancelTrip(me, (req.params as any).id, b.reason + (b.note ? `: ${b.note}` : '')), me) };
+    // Rider-side reasons end the trip; the driver's own reasons (car trouble, something else) pass it to the next driver.
+    const trip = await trips.cancelTrip(me, (req.params as any).id, b.reason + (b.note ? `: ${b.note}` : ''), { reasonCode: b.reason, note: b.note });
+    return { trip: trips.viewFor(trip, me) };
   });
 
   /** Earnings: ledger summary for a period, with lease and charging shown so drivers see true take-home. */

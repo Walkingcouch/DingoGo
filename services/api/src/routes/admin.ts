@@ -159,8 +159,10 @@ export default async function adminRoutes(app: FastifyInstance) {
        WHERE d.status = 'approved'`);
     const active = await q(
       `SELECT t.id, t.ref, t.kind, t.service, t.status, t.pickup_lat, t.pickup_lng, t.pickup_address, t.dropoff_lat, t.dropoff_lng, t.dropoff_address,
-              t.requested_at, t.driver_id, ru.name AS rider_name, du.name AS driver_name, t.dispatch_attempts, t.channel
-       FROM trips t JOIN users ru ON ru.id = t.rider_id LEFT JOIN users du ON du.id = t.driver_id
+              t.requested_at, t.scheduled_for, t.driver_id, ru.name AS rider_name, du.name AS driver_name, t.dispatch_attempts, t.channel,
+              dd.last_seen_at AS driver_last_seen_at,
+              (SELECT count(*)::int FROM trip_offers o WHERE o.trip_id = t.id AND o.status IN ('cancelled','released')) AS driver_releases
+       FROM trips t JOIN users ru ON ru.id = t.rider_id LEFT JOIN users du ON du.id = t.driver_id LEFT JOIN drivers dd ON dd.user_id = t.driver_id
        WHERE t.status IN ('requested','accepted','arrived','in_progress') ORDER BY t.requested_at`);
     const sos = await q(`SELECT s.*, u.name AS user_name, t.ref AS trip_ref FROM sos_alerts s JOIN users u ON u.id = s.user_id LEFT JOIN trips t ON t.id = s.trip_id WHERE s.status <> 'resolved' ORDER BY s.created_at DESC`);
     const zones = await q('SELECT * FROM zones ORDER BY active DESC, name');
@@ -206,6 +208,16 @@ export default async function adminRoutes(app: FastifyInstance) {
     const result = await trips.redispatchTrip(id, me.id);
     await audit(me.id, 'redispatch', 'trip', id);
     return { result };
+  });
+
+  /** Take an accepted trip off its driver (e.g. no signal, broken down) and offer it to the next driver. Not counted against the driver. */
+  app.post('/admin/trips/:id/reassign', async (req) => {
+    const me = await ops(req);
+    const id = (req.params as any).id;
+    const b = parse(z.object({ reason: z.string().max(200).optional() }), req.body ?? {});
+    const trip = await trips.reassignTrip(id, { by: 'ops', actorId: me.id, reason: 'ops_reassigned', note: b.reason });
+    await audit(me.id, 'reassign', 'trip', id, b);
+    return { trip: trips.viewFor(trip, me) };
   });
 
   app.post('/admin/trips/:id/refund', async (req) => {
@@ -288,7 +300,7 @@ export default async function adminRoutes(app: FastifyInstance) {
     if (add_wallet_cents) await q('UPDATE users SET wallet_cents = greatest(wallet_cents + $2, 0) WHERE id = $1', [id, add_wallet_cents]);
     if (b.role === 'driver') await q('INSERT INTO drivers (user_id) VALUES ($1) ON CONFLICT DO NOTHING', [id]);
     // Blocked or role changed: drop their live connections now (they reconnect and are checked again).
-    if (b.blocked) await q('UPDATE drivers SET online = false WHERE user_id = $1', [id]);
+    if (b.blocked) { await q('UPDATE drivers SET online = false WHERE user_id = $1', [id]); await trips.withdrawOffers(id); }
     if (b.blocked || b.role) disconnectUser(id, b.blocked ? 'blocked' : 'role changed');
     await audit(me.id, 'update', 'user', id, b);
     return { user: await one('SELECT id, name, phone, role, blocked, loyalty_points, wallet_cents, partner_id FROM users WHERE id = $1', [id]) };
@@ -387,7 +399,7 @@ export default async function adminRoutes(app: FastifyInstance) {
     const keys = Object.keys(b);
     if (!keys.length) throw bad('empty');
     await q(`UPDATE drivers SET ${keys.map((k, i) => `${k} = $${i + 2}`).join(', ')} WHERE user_id = $1`, [id, ...keys.map((k) => (b as any)[k])]);
-    if (b.status === 'suspended' || b.state) await q('UPDATE drivers SET online = false WHERE user_id = $1', [id]);
+    if (b.status === 'suspended' || b.state) { await q('UPDATE drivers SET online = false WHERE user_id = $1', [id]); await trips.withdrawOffers(id); }
     if (b.status === 'approved') void notify(id, 'You’re approved', 'Welcome to DingoGo. You can now go online and accept trips.', {}, 'account');
     await audit(me.id, 'update', 'driver', id, b);
     return { ok: true, compliance_issues: await complianceIssues(id) };
@@ -553,7 +565,10 @@ export default async function adminRoutes(app: FastifyInstance) {
     if (code === 'NT' && b.vehicle_max_age_years != null) {
       await q(`INSERT INTO settings (key, value) VALUES ('vehicle_max_age_years', $1) ON CONFLICT (key) DO UPDATE SET value = $1`, [JSON.stringify(b.vehicle_max_age_years)]);
     }
-    if (b.active === false) await q(`UPDATE drivers SET online = false WHERE state = $1`, [code]);
+    if (b.active === false) {
+      const off = await q(`UPDATE drivers SET online = false WHERE state = $1 RETURNING user_id`, [code]);
+      for (const d of off) await trips.withdrawOffers(d.user_id);
+    }
     await audit(me.id, 'update', 'jurisdictions', code, b);
     return { item: (await listJurisdictions()).find((j) => j.code === code) };
   });

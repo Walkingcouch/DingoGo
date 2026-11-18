@@ -103,6 +103,7 @@ Base URL: `http://localhost:4000` in development. Auth: `Authorization: Bearer <
 | GET | `/admin/trips/:id` |
 | POST | `/admin/trips/:id/cancel` |
 | POST | `/admin/trips/:id/redispatch` |
+| POST | `/admin/trips/:id/reassign` |
 | POST | `/admin/trips/:id/refund` |
 | POST | `/admin/bookings` |
 | GET | `/admin/users` |
@@ -285,7 +286,7 @@ ppsr_checked_at, ppsr_clear, lookup, lookup_at` and computed `compliance_year` (
 
 `GET /ws?token=<JWT>` — auto-subscribes `user:<id>` (and `ops` for admin/dispatcher). Send `{"type":"subscribe","channel":"trip:<id>"}` to watch a trip you're part of. `GET /ws?share=<share_token>` gives read-only trip tracking for share links.
 
-Events: `offer.new`, `offer.expired`, `trip.updated`, `driver.location`, `notification`, and on `ops`: `trip.created`, `trip.updated`, `driver.status`, `driver.location`, `sos.new`, `sos.updated`, `support.new`, `compliance.flag`, `safety.deviation`, `application.new`, `hire.new`.
+Events: `offer.new`, `offer.expired`, `trip.updated`, `driver.location`, `notification`, and on `ops`: `trip.created`, `trip.updated`, `driver.status`, `driver.location`, `sos.new`, `sos.updated`, `support.new`, `compliance.flag`, `safety.deviation`, `dispatch.driver_silent`, `application.new`, `hire.new`. A driver whose trip is taken off them gets `trip.updated` with `released: true`.
 
 ## Money and safety rules (Round 1, Nov 2026)
 
@@ -337,3 +338,31 @@ Website and apps (Vercel and Caddy): nosniff, `Referrer-Policy: strict-origin-wh
 **Other.** JWTs verified as HS256 only. Blocked or deleted drivers get no offers; blocking or deleting takes them offline. `POST /driver/offers/:tripId/decline` for a trip
 you were not offered is a no-op. New length caps: `delivery_pin`/`pin` ≤ 10, `pod_photo_url` ≤ 500, push token ≤ 4096, card `provider_ref` ≤ 255, `plan_code` ≤ 40,
 quote `service` ≤ 40, voucher-sell code 4–30, place search ≤ 100 chars, `accessibility` ≤ 2,000 chars of JSON; `PATCH /admin/drivers/:id` `abn` must be 11 digits.
+
+## Trip lifecycle & dispatch (Round 3)
+
+**Driver cancels after accepting.** `POST /driver/trips/:id/cancel` `{ reason, note? }`:
+- `rider_no_show`, `rider_requested`, `unsafe`, `parcel_prohibited` (about the rider or load) end the trip as before (`cancelled_driver`).
+- `vehicle_issue`, `other` (the driver's side) put the trip back to `requested` with no driver: card hold, wallet, points and promo stay; the search
+  window and offer count restart; the driver who pulled out is never offered it again. Response: `{ trip: { id, ref, kind, service, status: 'requested', released: true, released_by: 'driver' } }`
+  (the driver can no longer view the trip). Rider is notified "Finding you another driver". Event `driver_released` (`data: { driver_id, by, reason }`).
+- At most `DISPATCH_MAX_REOFFERS` (2) re-offers per trip; after that the trip ends as `cancelled_driver` (rider not charged).
+- Counted on the driver's offer (`trip_offers.status = 'cancelled'`). `DRIVER_CANCEL_FLAG_COUNT` (3) in 7 days → compliance flag `repeat_cancellation`
+  (one open at a time). `GET /driver/me` `acceptance` adds `cancelled` (30 days), `cancelled_7d`, `cancel_review_at`.
+- `GET /trips/:id` adds `driver_releases` (times the trip went back to the search).
+
+**Ops reassign.** `POST /admin/trips/:id/reassign` (ops) `{ reason? }` → `{ trip }`: an `accepted`/`arrived` trip goes back to the search and is offered to the next
+driver; not counted against the driver (offer status `released`), who is notified. Other states: 409 `bad_state`. Audited.
+
+**Silent drivers.** No location for `DRIVER_SILENT_ALERT_MIN` (4) on a live trip → event `driver_silent` + ops `dispatch.driver_silent`, once per silence.
+`DRIVER_SILENT_REASSIGN_MIN` (0 = off) reassigns accepted trips automatically. `GET /admin/live` trips add `driver_last_seen_at`, `driver_releases`, `scheduled_for`.
+Online drivers with no signal for `DRIVER_STALE_OFFLINE_MIN` (30) and no live trip are set offline (notified); `POST /driver/location` now returns `{ ok, online }`.
+
+**Offers.** Accept checks expiry on the DB clock with `OFFER_GRACE_S` (3) grace while the offer is still the latest (no one else is offered the trip during the
+grace); refuses with 409 `driver_offline` / `on_trip`. Going offline, being blocked/suspended/deleted, or changing the current car withdraws an open offer
+(event `offer_withdrawn`) and offers the trip to the next driver at once.
+
+**Booked trips.** Released `SCHEDULED_LEAD_MIN` (15) ahead; the search runs until the booked time + `DISPATCH_SEARCH_WINDOW_MIN` with 2 × `DISPATCH_MAX_ATTEMPTS` offers.
+A booking not released until more than `SCHEDULED_MISSED_MIN` (30) after its time is ended as `no_drivers` (holds released, rider told) instead of dispatched.
+
+**Serverless.** Notifications, push and SMS started by a request are awaited (≤ 3 s) before the response is sent on Vercel, so a frozen function can't drop them.

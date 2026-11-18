@@ -69,8 +69,11 @@ function LiveTrip({ trip, carPos, reload, onClose }: { trip: any; carPos: any; r
   ];
   const v = trip.vehicle;
   const d = trip.driver;
+  const again = trip.status === 'requested' && trip.driver_releases > 0;
   const sub = trip.status === 'requested'
-    ? `We're asking the nearest driver. This usually takes under a minute.`
+    ? (again ? `Your driver couldn't make it, so we're finding you another one. Same price, no extra charge.`
+      : trip.scheduled_for ? `Finding a driver for your ${time(trip.scheduled_for)} booking. We keep looking until your pickup time.`
+      : `We're asking the nearest driver. This usually takes under a minute.`)
     : trip.status === 'accepted' ? (trip.kind === 'courier' ? 'Heading to collect your parcel.' : 'Heading to your pickup.')
     : trip.status === 'arrived' ? (trip.kind === 'courier' ? 'Driver is at the pickup.' : `Look for ${v?.colour ?? ''} ${v?.make ?? ''} ${v?.model ?? ''}, rego ${v?.rego ?? ''}.`)
     : trip.kind === 'courier' ? `On its way to ${trip.dropoff_address}.` : `On the way to ${trip.dropoff_address}.`;
@@ -87,7 +90,7 @@ function LiveTrip({ trip, carPos, reload, onClose }: { trip: any; carPos: any; r
       <div className="sheet sheet--live">
         <div className="sheet__grab" aria-hidden="true" />
         <p className="live__ref dg-muted">{trip.ref}</p>
-        <h1 className="live__status" aria-live="polite">{labels[trip.status]}</h1>
+        <h1 className="live__status" aria-live="polite">{again ? 'Finding you another driver' : labels[trip.status]}</h1>
         <p className="live__sub">{sub}</p>
 
         <ol className="steps" aria-label="Trip progress">
@@ -256,12 +259,13 @@ function TripDetail({ trip, reload }: { trip: any; reload: () => Promise<void> }
 
       {trip.status === 'scheduled' && (
         <>
-          <div className="callout callout--green">We'll start finding your driver 15 minutes before {time(trip.scheduled_for)} on {date(trip.scheduled_for)} and send you a notification.</div>
+          <div className="callout callout--green">We'll start finding your driver 15 minutes before {time(trip.scheduled_for)} on {date(trip.scheduled_for)}, keep looking until your pickup time, and send you a notification.</div>
           <button className="dg-btn dg-btn--ghost dg-btn--block" style={{ marginTop: 12 }} onClick={() => setCancelOpen(true)}>Cancel booking</button>
           <CancelDialog open={cancelOpen} onClose={() => setCancelOpen(false)} trip={trip} onDone={reload} />
         </>
       )}
       {trip.status === 'no_drivers' && <div className="callout callout--earth">No car was free for this trip, so you haven't been charged. Try again in a few minutes, or call us to book ahead.</div>}
+      {trip.status === 'cancelled_driver' && <div className="callout callout--earth">Your driver had to cancel, so you haven't been charged. Book again and we'll find you another car.</div>}
       {done && <AfterTrip trip={trip} reload={reload} />}
       {(done || trip.cancel_fee_cents > 0) && <Receipt tripId={trip.id} vehicle={trip.vehicle} />}
       <Link className="dg-btn dg-btn--ghost dg-btn--block" style={{ marginTop: 16 }} to={`/account/help?trip=${trip.id}`}>Get help with this trip</Link>

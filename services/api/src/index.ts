@@ -9,6 +9,7 @@ import { subscribe, trackUser, unsubscribe } from './realtime.js';
 import { one } from './db.js';
 import { signUploadUrls } from './lib/uploads.js';
 import { dispatchTick, shareLinkExpired } from './services/trips.js';
+import { flushBackground } from './lib/background.js';
 import authRoutes from './routes/auth.js';
 import riderRoutes from './routes/rider.js';
 import driverRoutes from './routes/driver.js';
@@ -62,6 +63,8 @@ export async function buildServer() {
       last = Date.now();
       await dispatchTick().catch((e) => console.error('tick', e));
     });
+    // The function may be frozen once the response is sent: finish notifications/SMS started by this request first.
+    app.addHook('onSend', async (_req, _reply, payload) => { await flushBackground(3000); return payload; });
   }
 
   // Realtime: /ws?token=JWT  (or ?share=<trip share token> for read-only public tracking)

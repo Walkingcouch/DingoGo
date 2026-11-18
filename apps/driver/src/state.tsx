@@ -35,6 +35,7 @@ interface Ctx {
 const C = createContext<Ctx>(null as any);
 export const useDriver = () => useContext(C);
 
+const DONE = ['completed', 'cancelled_rider', 'cancelled_admin', 'cancelled_driver', 'no_drivers'];
 const LS = (k: string) => { try { return localStorage.getItem('dingogo.driver.' + k); } catch { return null; } };
 const LSset = (k: string, v: string | null) => { try { v == null ? localStorage.removeItem('dingogo.driver.' + k) : localStorage.setItem('dingogo.driver.' + k, v); } catch { /* ignore */ } };
 
@@ -52,6 +53,7 @@ export function DriverProvider({ children }: { children: React.ReactNode }) {
   const pos: Pos | null = simulated ?? (geo.pos ? { lat: geo.pos.lat, lng: geo.pos.lng, heading: geo.pos.heading } : null);
   const posRef = useRef(pos); posRef.current = pos;
   const batteryRef = useRef(battery); batteryRef.current = battery;
+  const onlineRef = useRef(online); onlineRef.current = online;
   const plugRef = useRef(false); plugRef.current = hasPlug(me?.driver?.vehicle);
 
   const showToast = useCallback((s: string) => { setToast(s); setTimeout(() => setToast((t) => (t === s ? null : t)), 4000); }, []);
@@ -67,9 +69,23 @@ export function DriverProvider({ children }: { children: React.ReactNode }) {
     setOnlineState(!!r.driver?.online);
     if (v?.battery_pct != null && LS('battery') == null) setBatteryState(v.battery_pct);
   }, []);
+  const tripRef = useRef<any>(null); tripRef.current = trip;
   const reloadTrip = useCallback(async () => {
-    try { const r = await get('/driver/trips/active'); setTrip((cur: any) => (r.trip ? r.trip : cur && ['completed', 'cancelled_rider', 'cancelled_admin', 'cancelled_driver'].includes(cur.status) ? cur : null)); }
-    catch { /* offline — keep last known */ }
+    try {
+      const r = await get('/driver/trips/active');
+      if (r.trip) return setTrip(r.trip);
+      const cur = tripRef.current;
+      // The trip we were on is no longer live: show how it ended instead of silently dropping it.
+      if (cur && !cur.released && ['accepted', 'arrived', 'in_progress'].includes(cur.status)) {
+        try { const t = await get(`/trips/${cur.id}`); return setTrip(t.trip); }
+        catch (e) {
+          // No longer ours to view: DingoGo gave it to another driver (e.g. lost signal).
+          if (e instanceof ApiError && (e.status === 404 || e.status === 403)) return setTrip({ id: cur.id, ref: cur.ref, kind: cur.kind, status: 'requested', released: true, released_by: 'ops' });
+          return; // offline: keep last known
+        }
+      }
+      setTrip((c: any) => (c && (c.released || DONE.includes(c.status)) ? c : null));
+    } catch { /* offline — keep last known */ }
   }, []);
 
   useEffect(() => { void reloadMe(); void reloadTrip(); }, [reloadMe, reloadTrip]);
@@ -116,7 +132,11 @@ export function DriverProvider({ children }: { children: React.ReactNode }) {
     const send = async () => {
       const p = posRef.current;
       if (!p) return;
-      try { await post('/driver/location', { lat: p.lat, lng: p.lng, heading: p.heading ?? undefined, battery_pct: plugRef.current ? batteryRef.current : undefined }); }
+      try {
+        const r = await post('/driver/location', { lat: p.lat, lng: p.lng, heading: p.heading ?? undefined, battery_pct: plugRef.current ? batteryRef.current : undefined });
+        // DingoGo sets drivers offline after a long time without signal: keep the switch honest.
+        if (r?.online === false && onlineRef.current) { setOnlineState(false); showToast('You are offline. Go online again when you are ready.'); }
+      }
       catch (e) { if (e instanceof ApiError && e.status === 401) location.reload(); }
     };
     void send();

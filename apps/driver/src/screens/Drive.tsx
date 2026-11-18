@@ -72,7 +72,7 @@ export function Drive() {
         {(v || acc != null) && (
           <div className="vehicle-line">
             {v && <span><Icon name="car" size={18} />{v.colour} {v.make} {v.model}, <strong>{v.rego}</strong>{!ev && <FuelChip v={v} />}</span>}
-            {acc != null && <span className="dg-muted">{acc}% accepted (30 days)</span>}
+            {acc != null && <span className="dg-muted">{acc}% accepted (30 days){me?.acceptance?.cancelled_7d ? `, ${me.acceptance.cancelled_7d} cancelled after accepting this week` : ''}</span>}
           </div>
         )}
       </section>

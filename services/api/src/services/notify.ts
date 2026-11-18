@@ -2,8 +2,14 @@
 import { config } from '../config.js';
 import { q } from '../db.js';
 import { toUser } from '../realtime.js';
+import { bg } from '../lib/background.js';
 
-export async function sendSms(to: string, body: string): Promise<{ sent: boolean; provider: string }> {
+/** Send a text. Tracked as background work, so callers may fire and forget (it still completes on serverless). */
+export function sendSms(to: string, body: string): Promise<{ sent: boolean; provider: string }> {
+  return bg(sendSmsNow(to, body)).then((r) => r ?? { sent: false, provider: 'error' });
+}
+
+async function sendSmsNow(to: string, body: string): Promise<{ sent: boolean; provider: string }> {
   const { sid, token, from } = config.twilio;
   if (!sid || !token || !from) {
     if (process.env.LOG_SMS !== 'false') console.log(`[sms:dev] → ${to}: ${body}`);
@@ -31,11 +37,16 @@ async function sendPush(userId: string, title: string, body: string, data?: unkn
   }).catch(() => undefined);
 }
 
-export async function notify(userId: string, title: string, body: string, data?: Record<string, unknown>, category = 'trip') {
+/** In-app inbox + realtime + push. Tracked as background work, so `void notify(...)` still completes on serverless. */
+export function notify(userId: string, title: string, body: string, data?: Record<string, unknown>, category = 'trip') {
+  return bg(notifyNow(userId, title, body, data, category));
+}
+
+async function notifyNow(userId: string, title: string, body: string, data: Record<string, unknown> | undefined, category: string) {
   const [row] = await q(
     'INSERT INTO notifications (user_id, title, body, data, category) VALUES ($1,$2,$3,$4,$5) RETURNING *',
     [userId, title, body, data ?? null, category]);
   toUser(userId, 'notification', row);
-  void sendPush(userId, title, body, data);
+  await sendPush(userId, title, body, data);
   return row;
 }

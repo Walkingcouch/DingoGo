@@ -36,7 +36,7 @@ npm install
 npm run db:setup                                   # migrations + demo data
 npm run dev:api                                    # http://localhost:4000
 npm run dev:web    # and/or dev:rider, dev:driver, dev:admin, dev:partner, dev:roof
-npm test                                           # 48 API tests (needs a throwaway DB: they reset it)
+npm test                                           # 55 API tests (needs a throwaway DB: they reset it)
 ```
 
 Demo sign-ins (development only — any SMS code is shown on screen, and `000000` always works):
@@ -61,7 +61,7 @@ All partner businesses, advertisers and people in the demo data are fictional.
 
 **Drivers:** onboarding against NT accreditation requirements with document upload; can't go online until licence, H endorsement, ABN, GST, vehicle CVL, rego and insurance are current; offers with countdown and earnings; PIN-verified pickups; courier proof of delivery (recipient PIN, signature or photo); SOS; earnings with fee, tips, lease and charging; GST-on-fares figure for the BAS; charging and battery logs.
 
-**Dispatch:** nearest eligible driver, 20-second offers, automatic re-offer. EV-aware: skips cars whose battery (rated range × charge × 0.7 heat derate) can't cover pickup + trip + 40 km reserve. Scheduled trips released 15 minutes ahead. Route-deviation safety alerts.
+**Dispatch:** nearest eligible driver, 20-second offers, automatic re-offer; if a driver pulls out before pickup the trip goes to the next driver (repeat cancellers flagged), and ops are alerted when a driver on a trip goes silent. EV-aware: skips cars whose battery (rated range × charge × 0.7 heat derate) can't cover pickup + trip + 40 km reserve. Scheduled trips released 15 minutes ahead. Route-deviation safety alerts.
 
 **Admin:** live map, dashboard, trips with timeline/refunds, phone bookings for customers without smartphones, drivers & document review, fleet & expiries, charging reimbursement, payouts & weekly lease deductions, pricing/zones/promos/plans/holidays/tours, loyalty partners & settlement, vouchers, roof ad campaigns & billing, business/NDIS accounts with monthly statements, SOS & compliance flags, support, inbound enquiries, NT levy and GST reports, broadcast (opt-in only), settings, audit log.
 

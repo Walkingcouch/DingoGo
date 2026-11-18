@@ -9,6 +9,7 @@ import { parse, phone, z } from '../lib/validate.js';
 import { limit, record, tooMany } from '../lib/rateLimit.js';
 import { disconnectUser } from '../realtime.js';
 import { sendSms } from '../services/notify.js';
+import { withdrawOffers } from '../services/trips.js';
 
 /** Compare two hex hashes in constant time. */
 function sameHash(a: string, b: string) {
@@ -151,6 +152,7 @@ export default async function authRoutes(app: FastifyInstance) {
              accessibility = '{}'::jsonb, marketing_opt_in = false, deleted_at = now() WHERE id = $1`, [me.id]);
     await q('DELETE FROM push_tokens WHERE user_id = $1', [me.id]);
     await q('UPDATE drivers SET online = false WHERE user_id = $1', [me.id]);
+    await withdrawOffers(me.id);
     await q(`INSERT INTO audit_log (actor_id, action, entity, entity_id) VALUES ($1, 'account_deleted', 'user', $1)`, [me.id]);
     disconnectUser(me.id, 'account deleted');
     return { ok: true };

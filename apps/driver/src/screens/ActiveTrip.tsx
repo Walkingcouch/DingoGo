@@ -9,14 +9,18 @@ const mapsLinks = (lat: number, lng: number) => ({
   apple: `https://maps.apple.com/?daddr=${lat},${lng}&dirflg=d`,
 });
 
-const CANCEL_REASONS: [string, string][] = [
+/** Reasons about the passenger or parcel end the trip. The driver's own reasons pass it to another driver and count as a cancellation. */
+const RIDER_SIDE: [string, string][] = [
   ['rider_no_show', 'Passenger didn’t show'],
+  ['rider_requested', 'Passenger asked to cancel'],
   ['unsafe', 'I feel unsafe'],
   ['parcel_prohibited', 'Parcel looks prohibited (alcohol, weapons…)'],
-  ['vehicle_issue', 'Problem with the car'],
-  ['rider_requested', 'Passenger asked to cancel'],
-  ['other', 'Something else'],
 ];
+const DRIVER_SIDE: [string, string][] = [
+  ['vehicle_issue', 'Problem with the car'],
+  ['other', 'I can’t make it (something else)'],
+];
+const DONE = ['completed', 'cancelled_rider', 'cancelled_driver', 'cancelled_admin', 'no_drivers'];
 
 export function ActiveTrip() {
   const { trip, setTrip, reloadTrip, pos, reloadMe, showToast } = useDriver();
@@ -40,7 +44,7 @@ export function ActiveTrip() {
     finally { setBusy(false); }
   }
 
-  const done = ['completed', 'cancelled_rider', 'cancelled_driver', 'cancelled_admin', 'no_drivers'].includes(t.status);
+  const done = t.released || DONE.includes(t.status);
   if (done) return <TripDone onClose={() => { setTrip(null); void reloadMe(); void reloadTrip(); }} />;
 
   const target = t.status === 'in_progress' ? { lat: t.dropoff_lat, lng: t.dropoff_lng, address: t.dropoff_address } : { lat: t.pickup_lat, lng: t.pickup_lng, address: t.pickup_address };
@@ -115,8 +119,8 @@ export function ActiveTrip() {
 
       {cancelOpen && <CancelSheet onClose={() => setCancelOpen(false)} onCancel={async (reason) => {
         const r = await act('cancel', { reason });
-        if (r) { setCancelOpen(false); showToast('Trip cancelled'); }
-      }} busy={busy} />}
+        if (r) { setCancelOpen(false); showToast(r.trip?.released ? 'Trip passed to another driver' : 'Trip cancelled'); }
+      }} busy={busy} isCourier={isCourier} />}
       {sosOpen && <SosSheet onClose={() => setSosOpen(false)} />}
     </div>
   );
@@ -198,14 +202,21 @@ function ProofOfDelivery({ parcel, busy, onSubmit }: { parcel: any; busy: boolea
   );
 }
 
-function CancelSheet({ onClose, onCancel, busy }: { onClose: () => void; onCancel: (r: string) => void; busy: boolean }) {
+function CancelSheet({ onClose, onCancel, busy, isCourier }: { onClose: () => void; onCancel: (r: string) => void; busy: boolean; isCourier: boolean }) {
+  const { me } = useDriver();
+  const n = me?.acceptance?.cancelled_7d ?? 0;
+  const review = me?.acceptance?.cancel_review_at ?? 3;
+  const btn = (k: string, l: string) => <button key={k} className="dg-btn dg-btn--ghost dg-btn--block" style={{ justifyContent: 'flex-start', minHeight: 56 }} disabled={busy} onClick={() => onCancel(k)}>{l}</button>;
+  const reasons = RIDER_SIDE.filter(([k]) => isCourier || k !== 'parcel_prohibited');
   return (
     <div className="overlay" onClick={(e) => e.target === e.currentTarget && onClose()}>
       <div className="sheet" role="dialog" aria-modal="true" aria-labelledby="cx-h">
         <h2 id="cx-h">Why are you cancelling?</h2>
-        <div style={{ display: 'grid', gap: 8 }}>
-          {CANCEL_REASONS.map(([k, l]) => <button key={k} className="dg-btn dg-btn--ghost dg-btn--block" style={{ justifyContent: 'flex-start', minHeight: 56 }} disabled={busy} onClick={() => onCancel(k)}>{l}</button>)}
-        </div>
+        <h3 className="dg-note" style={{ margin: '0 0 6px' }}>{isCourier ? 'About the pickup or parcel' : 'About the passenger'}: the trip ends</h3>
+        <div style={{ display: 'grid', gap: 8 }}>{reasons.map(([k, l]) => btn(k, l))}</div>
+        <h3 className="dg-note" style={{ margin: '14px 0 6px' }}>You can’t do it: we offer it to another driver</h3>
+        <div style={{ display: 'grid', gap: 8 }}>{DRIVER_SIDE.map(([k, l]) => btn(k, l))}</div>
+        <p className="dg-note">These count as a cancellation on your record{n > 0 ? ` (${n} in the last 7 days)` : ''}. DingoGo reviews drivers who cancel {review} or more trips in a week.</p>
         <button className="dg-btn dg-btn--dark dg-btn--block" style={{ marginTop: 12 }} onClick={onClose}>Keep the trip</button>
       </div>
     </div>
@@ -260,6 +271,14 @@ function TripDone({ onClose }: { onClose: () => void }) {
               {rated && <p className="dg-muted" style={{ margin: 0 }}>Thanks</p>}
             </div>
           )}
+        </>
+      ) : t.released ? (
+        <>
+          <p className="dg-muted" style={{ margin: 0 }}>{t.ref}</p>
+          <h1>Passed to another driver</h1>
+          {t.released_by === 'driver'
+            ? <p className="dg-muted">We're offering the trip to the next driver, so the {t.kind === 'courier' ? 'sender' : 'passenger'} still gets picked up. This counts as a cancellation on your record.</p>
+            : <p className="dg-muted">This trip has gone to another driver because we couldn't reach you. It doesn't count against you. Call DingoGo if you were still on your way.</p>}
         </>
       ) : (
         <>

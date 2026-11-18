@@ -251,7 +251,8 @@ export async function getTrip(id: string, c: Q = pool) {
          'lat', d.lat, 'lng', d.lng, 'heading', d.heading, 'languages', d.languages) END AS driver,
        CASE WHEN v.id IS NOT NULL THEN json_build_object('rego', v.rego, 'make', v.make, 'model', v.model, 'colour', v.colour, 'battery_pct', v.battery_pct,
          'fuel_type', v.fuel_type, 'green', v.fuel_type IN ('electric','plug_in_hybrid','hybrid'), 'is_ev', v.fuel_type = 'electric') END AS vehicle,
-       json_build_object('id', ru.id, 'name', ru.name, 'phone', ru.phone, 'rating', ru.rating_avg) AS rider
+       json_build_object('id', ru.id, 'name', ru.name, 'phone', ru.phone, 'rating', ru.rating_avg) AS rider,
+       (SELECT count(*)::int FROM trip_offers o WHERE o.trip_id = t.id AND o.status IN ('cancelled','released')) AS driver_releases
      FROM trips t
      JOIN users ru ON ru.id = t.rider_id
      LEFT JOIN users du ON du.id = t.driver_id
@@ -298,12 +299,13 @@ export async function dispatchTrip(tripId: string): Promise<'offered' | 'waiting
   return tx(async (c) => {
     const t = await one('SELECT * FROM trips WHERE id = $1 FOR UPDATE SKIP LOCKED', [tripId], c);
     if (!t || t.status !== 'requested') return 'skip';
-    const pending = await one(`SELECT 1 FROM trip_offers WHERE trip_id = $1 AND status = 'offered' AND expires_at > now()`, [tripId], c);
+    // An offer stays "live" through the accept grace period, so nobody else is offered the trip while a late tap is in flight.
+    const pending = await one(`SELECT 1 FROM trip_offers WHERE trip_id = $1 AND status = 'offered' AND expires_at > now() - make_interval(secs => $2)`,
+      [tripId, config.dispatch.offerGraceS], c);
     if (pending) return 'waiting';
 
     // Give up only after maxAttempts real offers, or after the search window (small fleet: cars free up within minutes).
-    const searching = Date.now() - new Date(t.requested_at).getTime();
-    if (t.dispatch_attempts >= config.dispatch.maxAttempts || searching > config.dispatch.searchWindowMin * 60000) {
+    if (searchOver(t)) {
       await failNoDrivers(c, t);
       return 'no_drivers';
     }
@@ -320,11 +322,12 @@ export async function dispatchTrip(tripId: string): Promise<'offered' | 'waiting
          AND v.seats >= $5
          AND ($6::boolean = false OR d.female_driver)
          AND NOT EXISTS (SELECT 1 FROM trips x WHERE x.driver_id = d.user_id AND x.status IN ('accepted','arrived','in_progress'))
-         AND NOT EXISTS (SELECT 1 FROM trip_offers o WHERE o.driver_id = d.user_id AND o.status = 'offered' AND o.expires_at > now())
+         AND NOT EXISTS (SELECT 1 FROM trip_offers o WHERE o.driver_id = d.user_id AND o.status = 'offered' AND o.expires_at > now() - make_interval(secs => $8))
+         -- Never the same driver twice for a trip (includes a driver who cancelled it or had it taken off them).
          AND NOT EXISTS (SELECT 1 FROM trip_offers o WHERE o.driver_id = d.user_id AND o.trip_id = $1)
          -- Drivers only get trips in their own state (accreditation is per state).
          AND d.state = coalesce((SELECT z.state FROM zones z WHERE z.id = $7), 'NT')`,
-      [tripId, t.kind === 'courier', t.has_pet, t.needs_wheelchair, t.passengers, t.women_driver_pref, t.zone_id], c);
+      [tripId, t.kind === 'courier', t.has_pet, t.needs_wheelchair, t.passengers, t.women_driver_pref, t.zone_id, config.dispatch.offerGraceS], c);
 
     const pickup = { lat: t.pickup_lat, lng: t.pickup_lng };
     const ranked = candidates
@@ -368,15 +371,29 @@ export async function dispatchTrip(tripId: string): Promise<'offered' | 'waiting
   });
 }
 
-async function failNoDrivers(c: pg.PoolClient, t: any) {
+/** Has the search for a driver run its course? Booked (scheduled) trips keep looking until the booked time plus the
+ *  search window (they are released early, so a plain window would give up before the pickup time) with twice the offers. */
+export function searchOver(t: { requested_at: Date | string; scheduled_for?: Date | string | null; dispatch_attempts: number }, now = Date.now()) {
+  const windowMs = config.dispatch.searchWindowMin * 60000;
+  const booked = t.scheduled_for ? new Date(t.scheduled_for).getTime() : null;
+  const until = Math.max(new Date(t.requested_at).getTime() + windowMs, booked != null ? booked + windowMs : 0);
+  const maxAttempts = config.dispatch.maxAttempts * (booked != null ? 2 : 1);
+  return t.dispatch_attempts >= maxAttempts || now > until;
+}
+
+async function failNoDrivers(c: pg.PoolClient, t: any, why: 'search' | 'missed' = 'search') {
   await c.query(`UPDATE trips SET status = 'no_drivers', cancelled_at = now() WHERE id = $1`, [t.id]);
+  await c.query(`UPDATE trip_offers SET status = 'expired' WHERE trip_id = $1 AND status = 'offered'`, [t.id]);
   if (t.promo_code) await c.query('UPDATE promo_codes SET uses = greatest(uses - 1, 0) WHERE code = $1', [t.promo_code]);
   await releaseHoldsAndPoints(c, t);
-  await event(c, t.id, 'no_drivers', null);
+  await event(c, t.id, 'no_drivers', null, why === 'missed' ? { reason: 'Booking was not sent to drivers in time' } : undefined);
   setImmediate(() => {
     toTrip(t.id, 'trip.updated', { id: t.id, status: 'no_drivers' });
-    toOps('trip.updated', { id: t.id, status: 'no_drivers' });
-    void notify(t.rider_id, 'No drivers available', `Sorry — no DingoGo cars are free right now for ${t.ref}. You have not been charged.`, { trip_id: t.id });
+    toUser(t.rider_id, 'trip.updated', { id: t.id, ref: t.ref, status: 'no_drivers' });
+    toOps('trip.updated', { id: t.id, ref: t.ref, status: 'no_drivers' });
+    void notify(t.rider_id, 'No drivers available', why === 'missed'
+      ? `Sorry, we couldn't get a driver to you in time for your booking ${t.ref}. You have not been charged. Call us and we'll help.`
+      : `Sorry, no DingoGo cars are free right now for ${t.ref}. You have not been charged.`, { trip_id: t.id });
   });
 }
 
@@ -414,28 +431,103 @@ async function releaseHoldsAndPoints(c: Q, t: any, feeCents = 0) {
 }
 
 let ticking = false;
-/** Background loop: expire offers, re-dispatch, release scheduled trips. */
+/** Background loop: expire offers, release scheduled trips, watch silent drivers, re-dispatch.
+ *  Runs on a timer on a server, and on incoming requests on serverless (several instances may tick at once:
+ *  every step is a conditional update or takes its trip with SKIP LOCKED, so running twice is harmless). */
 export async function dispatchTick() {
   if (ticking) return;
   ticking = true;
   try {
     const expired = await q(
-      `UPDATE trip_offers SET status = 'expired' WHERE status = 'offered' AND expires_at <= now() RETURNING trip_id, driver_id`);
+      `UPDATE trip_offers SET status = 'expired' WHERE status = 'offered' AND expires_at <= now() - make_interval(secs => $1) RETURNING trip_id, driver_id`,
+      [config.dispatch.offerGraceS]);
     for (const e of expired) toUser(e.driver_id, 'offer.expired', { trip_id: e.trip_id });
+
+    // Bookings released very late (nobody used the apps to run the dispatcher): don't send a driver to a pickup long gone.
+    const missed = await q(`SELECT id FROM trips WHERE status = 'scheduled' AND scheduled_for < now() - make_interval(mins => $1)`,
+      [config.dispatch.scheduledMissedMin]);
+    for (const m of missed) {
+      await tx(async (c) => {
+        const t = await one(`SELECT * FROM trips WHERE id = $1 FOR UPDATE SKIP LOCKED`, [m.id], c);
+        if (t?.status === 'scheduled') await failNoDrivers(c, t, 'missed');
+      }).catch((e) => console.error('missed booking', e));
+    }
 
     const due = await q(
       `UPDATE trips SET status = 'requested', requested_at = now()
-       WHERE status = 'scheduled' AND scheduled_for <= now() + ($1 || ' minutes')::interval RETURNING id, rider_id, ref`,
-      [String(config.dispatch.scheduledLeadMin)]);
+       WHERE status = 'scheduled' AND scheduled_for <= now() + make_interval(mins => $1)
+         AND scheduled_for >= now() - make_interval(mins => $2) RETURNING id, rider_id, ref`,
+      [config.dispatch.scheduledLeadMin, config.dispatch.scheduledMissedMin]);
     for (const t of due) {
-      void notify(t.rider_id, 'Finding your driver', `We're now matching a driver for your scheduled trip ${t.ref}.`, { trip_id: t.id });
+      void notify(t.rider_id, 'Finding your driver', `We're now matching a driver for your booked trip ${t.ref}.`, { trip_id: t.id });
     }
+
+    await watchDrivers().catch((e) => console.error('watch drivers', e));
 
     const open = await q(`SELECT id FROM trips WHERE status = 'requested' ORDER BY requested_at LIMIT 50`);
     for (const t of open) await dispatchTrip(t.id).catch((e) => console.error('dispatch', e));
   } finally {
     ticking = false;
   }
+}
+
+/** Drivers who have gone quiet. A live trip whose driver has sent nothing for a while is flagged to ops once per silence
+ *  (and, if switched on, an accepted trip is given to another driver). Online drivers with no signal for a long time and
+ *  no trip are set offline so the live map and driver counts stay true. */
+async function watchDrivers() {
+  const alertMin = config.dispatch.driverSilentAlertMin;
+  if (alertMin > 0) {
+    const silent = await q(
+      `INSERT INTO trip_events (trip_id, type, actor_id, data)
+       SELECT t.id, 'driver_silent', NULL, json_build_object('driver_id', t.driver_id, 'last_seen_at', d.last_seen_at)
+       FROM trips t JOIN drivers d ON d.user_id = t.driver_id
+       WHERE t.status IN ('accepted','arrived','in_progress')
+         AND greatest(d.last_seen_at, t.accepted_at) < now() - make_interval(mins => $1)
+         AND NOT EXISTS (SELECT 1 FROM trip_events e WHERE e.trip_id = t.id AND e.type = 'driver_silent'
+                           AND e.at > greatest(d.last_seen_at, t.accepted_at))
+       RETURNING trip_id, data`, [alertMin]);
+    for (const e of silent) {
+      const t = await one('SELECT ref, status FROM trips WHERE id = $1', [e.trip_id]);
+      toOps('dispatch.driver_silent', { trip_id: e.trip_id, ref: t?.ref, status: t?.status, driver_id: e.data.driver_id, last_seen_at: e.data.last_seen_at });
+    }
+  }
+
+  const reassignMin = config.dispatch.driverSilentReassignMin;
+  if (reassignMin > 0) {
+    const gone = await q(
+      `SELECT t.id FROM trips t JOIN drivers d ON d.user_id = t.driver_id
+       WHERE t.status = 'accepted' AND greatest(d.last_seen_at, t.accepted_at) < now() - make_interval(mins => $1)`, [reassignMin]);
+    for (const g of gone) {
+      await reassignTrip(g.id, { by: 'auto', actorId: null, reason: 'lost_contact', note: 'No signal from the driver' })
+        .catch((e) => { if (!(e instanceof ApiError)) console.error('auto reassign', e); });
+    }
+  }
+
+  const staleMin = config.dispatch.driverStaleOfflineMin;
+  if (staleMin > 0) {
+    const stale = await q(
+      `UPDATE drivers d SET online = false
+       WHERE d.online AND d.last_seen_at < now() - make_interval(mins => $1)
+         AND NOT EXISTS (SELECT 1 FROM trips x WHERE x.driver_id = d.user_id AND x.status IN ('accepted','arrived','in_progress'))
+       RETURNING user_id`, [staleMin]);
+    for (const d of stale) {
+      await withdrawOffers(d.user_id);
+      toOps('driver.status', { driver_id: d.user_id, online: false, reason: 'no_signal' });
+      void notify(d.user_id, 'You are offline', `We hadn't heard from your phone for ${staleMin} minutes, so we set you offline. Go online again when you're ready.`, {}, 'account');
+    }
+  }
+}
+
+/** A driver who can no longer take offers (went offline, blocked, suspended): withdraw their open offer and
+ *  offer the trip to the next driver straight away instead of waiting for it to time out. */
+export async function withdrawOffers(driverId: string) {
+  const r = await q(`UPDATE trip_offers SET status = 'expired' WHERE driver_id = $1 AND status = 'offered' RETURNING trip_id`, [driverId]);
+  for (const o of r) {
+    await event(pool, o.trip_id, 'offer_withdrawn', driverId, { driver_id: driverId });
+    toUser(driverId, 'offer.expired', { trip_id: o.trip_id });
+    await dispatchTrip(o.trip_id).catch((e) => console.error('dispatch', e));
+  }
+  return r.length;
 }
 
 /** Ops "search again": restart the search for a trip still looking, or bring back one that found no driver.
@@ -480,14 +572,20 @@ export async function redispatchTrip(tripId: string, actorId: string) {
 
 export async function acceptOffer(driverId: string, tripId: string) {
   const out = await tx(async (c) => {
+    // Lock the trip first, then the offer: the same order as dispatch and cancel, so they can't deadlock each other.
+    const t = await one('SELECT * FROM trips WHERE id = $1 FOR UPDATE', [tripId], c);
+    // Expiry on the database clock (the API and DB clocks can differ), with a short grace for a tap at the last second.
     const offer = await one(
-      `SELECT * FROM trip_offers WHERE trip_id = $1 AND driver_id = $2 FOR UPDATE`, [tripId, driverId], c);
-    if (!offer || offer.status !== 'offered' || new Date(offer.expires_at) < new Date()) {
+      `SELECT *, expires_at > now() - make_interval(secs => $3) AS live FROM trip_offers WHERE trip_id = $1 AND driver_id = $2 FOR UPDATE`,
+      [tripId, driverId, config.dispatch.offerGraceS], c);
+    if (!t || !offer || offer.status !== 'offered' || !offer.live) {
       throw conflict('offer_expired', 'This request is no longer available');
     }
-    const t = await one('SELECT * FROM trips WHERE id = $1 FOR UPDATE', [tripId], c);
     if (t.status !== 'requested') throw conflict('trip_unavailable', 'Trip is no longer available');
-    const d = await one('SELECT vehicle_id FROM drivers WHERE user_id = $1', [driverId], c);
+    const d = await one('SELECT vehicle_id, online FROM drivers WHERE user_id = $1', [driverId], c);
+    if (!d?.online) throw conflict('driver_offline', 'Go online to accept trips');
+    const busy = await one(`SELECT 1 FROM trips WHERE driver_id = $1 AND status IN ('accepted','arrived','in_progress')`, [driverId], c);
+    if (busy) throw conflict('on_trip', 'Finish your current trip first');
     await c.query(`UPDATE trip_offers SET status = 'accepted' WHERE trip_id = $1 AND driver_id = $2`, [tripId, driverId]);
     await c.query(`UPDATE trips SET status = 'accepted', driver_id = $2, vehicle_id = $3, accepted_at = now() WHERE id = $1`,
       [tripId, driverId, d.vehicle_id]);
@@ -496,10 +594,88 @@ export async function acceptOffer(driverId: string, tripId: string) {
   });
   const trip = await getTrip(tripId);
   broadcast(trip);
-  void notify(trip.rider_id, 'Driver on the way 🐕',
+  void notify(trip.rider_id, trip.driver_releases > 0 ? 'New driver on the way' : 'Driver on the way',
     `${trip.driver.name} is coming in a ${trip.vehicle.colour} ${trip.vehicle.make} ${trip.vehicle.model} (${trip.vehicle.rego}). ETA ${Math.ceil(out.eta / 60)} min.`,
     { trip_id: tripId });
   return trip;
+}
+
+/** Driver cancel reasons that are about the rider or the load: the trip ends. Any other reason (car trouble, something
+ *  else) is the driver's side, so the rider keeps their booking and the trip goes to the next driver. */
+export const RIDER_SIDE_CANCEL_REASONS = ['rider_no_show', 'rider_requested', 'unsafe', 'parcel_prohibited'] as const;
+
+type ReleaseBy = { by: 'driver' | 'ops' | 'auto'; actorId: string | null; reason: string; note?: string };
+
+/** Take an accepted (not yet started) trip off its driver and put it back into the search. Caller holds the trip lock.
+ *  Returns false when the trip has already been re-offered the maximum number of times (driver or automatic releases). */
+async function releaseTrip(c: pg.PoolClient, t: any, r: ReleaseBy) {
+  const driverId = t.driver_id;
+  const prior = (await one<{ n: number }>(
+    `SELECT count(*)::int n FROM trip_offers WHERE trip_id = $1 AND status IN ('cancelled','released')`, [t.id], c))!.n;
+  if (r.by !== 'ops' && prior >= config.dispatch.maxReoffers) return false;
+  // The driver's own cancellation counts against them; ops taking a trip off a driver (e.g. lost signal) does not.
+  const fault = r.by === 'driver';
+  await c.query(`UPDATE trip_offers SET status = $3 WHERE trip_id = $1 AND driver_id = $2`, [t.id, driverId, fault ? 'cancelled' : 'released']);
+  await c.query(
+    `UPDATE trips SET status = 'requested', driver_id = NULL, vehicle_id = NULL, accepted_at = NULL, arrived_at = NULL,
+       requested_at = now(), dispatch_attempts = 0 WHERE id = $1`, [t.id]);
+  await event(c, t.id, 'driver_released', r.actorId, { driver_id: driverId, by: r.by, reason: r.note ? `${r.reason}: ${r.note}` : r.reason });
+  if (fault) {
+    await recordDriverCancel(c, t, driverId, r.reason);
+    if (t.assistance_animal) {
+      await c.query(`INSERT INTO compliance_flags (kind, driver_id, trip_id, detail) VALUES ('assistance_animal_refusal', $1, $2, $3)`,
+        [driverId, t.id, `Driver cancelled a trip with an assistance animal. Reason: ${r.reason}`]);
+    }
+  }
+  return true;
+}
+
+/** A driver cancelled an accepted trip for their own reasons: marked on their offer (acceptance record) and,
+ *  at DRIVER_CANCEL_FLAG_COUNT in 7 days, a compliance flag for ops to review (one open flag at a time). */
+async function recordDriverCancel(c: pg.PoolClient, t: any, driverId: string, reason: string) {
+  await c.query(`UPDATE trip_offers SET status = 'cancelled' WHERE trip_id = $1 AND driver_id = $2`, [t.id, driverId]);
+  const n = (await one<{ n: number }>(
+    `SELECT count(*)::int n FROM trip_offers WHERE driver_id = $1 AND status = 'cancelled' AND offered_at > now() - interval '7 days'`, [driverId], c))!.n;
+  if (n < config.dispatch.driverCancelFlagCount) return;
+  const flagged = await one(
+    `INSERT INTO compliance_flags (kind, driver_id, trip_id, detail)
+     SELECT 'repeat_cancellation', $1::uuid, $2::uuid, $3
+     WHERE NOT EXISTS (SELECT 1 FROM compliance_flags WHERE driver_id = $1 AND kind = 'repeat_cancellation' AND status = 'open')
+     RETURNING id`,
+    [driverId, t.id, `${n} trips cancelled after accepting in the last 7 days (latest ${t.ref}: ${reason})`], c);
+  if (flagged) setImmediate(() => toOps('compliance.flag', { kind: 'repeat_cancellation', trip_id: t.id, driver_id: driverId }));
+}
+
+/** After a release has committed: tell everyone and find the next driver. */
+async function afterRelease(t: any, driverId: string, r: ReleaseBy) {
+  const slim = { id: t.id, ref: t.ref, status: 'requested' };
+  toTrip(t.id, 'trip.updated', slim);
+  toUser(t.rider_id, 'trip.updated', slim);
+  toUser(driverId, 'trip.updated', { ...slim, released: true });
+  toOps('trip.updated', slim);
+  void notify(t.rider_id, 'Finding you another driver',
+    `Your driver couldn't make it to ${t.ref}, so we're finding you another one. Your booking and price stay the same, with no extra charge.`,
+    { trip_id: t.id });
+  if (r.by !== 'driver') {
+    void notify(driverId, 'Trip given to another driver',
+      `${t.ref} has gone to another driver because we couldn't reach you. Call DingoGo if you were still on your way.`, { trip_id: t.id });
+  }
+  await dispatchTrip(t.id).catch((e) => console.error('dispatch', e));
+}
+
+/** Ops "give to another driver" (or the automatic lost-signal check): the trip goes back to the search. */
+export async function reassignTrip(tripId: string, r: ReleaseBy) {
+  const out = await tx(async (c) => {
+    const t = await one('SELECT * FROM trips WHERE id = $1 FOR UPDATE', [tripId], c);
+    if (!t) throw notFound('Trip');
+    if (!['accepted', 'arrived'].includes(t.status) || !t.driver_id) {
+      throw conflict('bad_state', t.status === 'in_progress' ? 'The trip has started — it can only be finished or handled by support' : `Trip is ${t.status}`);
+    }
+    if (!(await releaseTrip(c, t, r))) throw conflict('reoffer_limit', 'This trip has already been re-offered the maximum number of times');
+    return t;
+  });
+  await afterRelease(out, out.driver_id, r);
+  return getTrip(tripId);
 }
 
 export async function declineOffer(driverId: string, tripId: string) {
@@ -719,7 +895,7 @@ export async function addTip(riderId: string, tripId: string, cents: number) {
 }
 
 /** Cancellation. Riders get a free window (2 min after acceptance); after that, or once the driver has arrived, a fee applies. */
-export async function cancelTrip(actor: { id: string; role: string }, tripId: string, reason?: string) {
+export async function cancelTrip(actor: { id: string; role: string }, tripId: string, reason?: string, opts: { reasonCode?: string; note?: string } = {}) {
   const out = await tx(async (c) => {
     const t = await one('SELECT * FROM trips WHERE id = $1 FOR UPDATE', [tripId], c);
     if (!t) throw notFound('Trip');
@@ -729,6 +905,11 @@ export async function cancelTrip(actor: { id: string; role: string }, tripId: st
     if (!isRider && !isDriver && !isOps) throw forbidden();
     if (!['scheduled', 'requested', 'accepted', 'arrived'].includes(t.status)) {
       throw conflict('bad_state', t.status === 'in_progress' ? 'Trip already started — use SOS or contact support' : `Trip is ${t.status}`);
+    }
+    // Driver pulls out before pickup for their own reasons: the rider keeps the booking and the next driver is offered it.
+    if (isDriver && !isRider && opts.reasonCode && !(RIDER_SIDE_CANCEL_REASONS as readonly string[]).includes(opts.reasonCode)
+        && await releaseTrip(c, t, { by: 'driver', actorId: actor.id, reason: opts.reasonCode, note: opts.note })) {
+      return { t, status: 'released', fee: 0, isDriver: true, released: true };
     }
     let fee = 0;
     const policy = (await one(`SELECT value FROM settings WHERE key = 'cancellation_policy'`, [], c))?.value
@@ -762,16 +943,26 @@ export async function cancelTrip(actor: { id: string; role: string }, tripId: st
         [t.driver_id, tripId, Math.round((fee * (100 - pct)) / 100), `Rider late cancellation (after ${pct}% service fee)`]);
     }
     await event(c, tripId, status, actor.id, { reason, fee, ...(feeWaived ? { fee_waived: feeWaived } : {}) });
+    // Re-offer limit reached: the trip ends, but it still counts as the driver's cancellation.
+    if (isDriver && !isRider && opts.reasonCode && !(RIDER_SIDE_CANCEL_REASONS as readonly string[]).includes(opts.reasonCode)) {
+      await recordDriverCancel(c, t, actor.id, opts.reasonCode);
+    }
     if (isDriver && t.assistance_animal) {
       await c.query(`INSERT INTO compliance_flags (kind, driver_id, trip_id, detail) VALUES ('assistance_animal_refusal', $1, $2, $3)`,
         [actor.id, tripId, `Driver cancelled a trip with an assistance animal. Reason: ${reason ?? 'none given'}`]);
     }
-    return { t, status, fee, isDriver };
+    return { t, status, fee, isDriver, released: false };
   });
+  if (out.released) {
+    await afterRelease(out.t, actor.id, { by: 'driver', actorId: actor.id, reason: opts.reasonCode! });
+    // The driver no longer sees the trip's details: just enough for the "passed to another driver" screen.
+    const t = out.t;
+    return { id: t.id, ref: t.ref, kind: t.kind, service: t.service, status: 'requested', released: true, released_by: 'driver', cancel_fee_cents: 0 };
+  }
   const trip = await getTrip(tripId);
   broadcast(trip);
   if (out.isDriver) {
-    void notify(trip.rider_id, 'Driver cancelled', `Your driver had to cancel ${trip.ref}. You have not been charged.`, { trip_id: tripId });
+    void notify(trip.rider_id, 'Driver cancelled', `Your driver had to cancel ${trip.ref}. You have not been charged. Book again and we'll find you another car.`, { trip_id: tripId });
   } else if (trip.driver_id) {
     void notify(trip.driver_id, 'Trip cancelled', `${trip.ref} was cancelled.`, { trip_id: tripId });
   }
