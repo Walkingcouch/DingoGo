@@ -88,6 +88,12 @@ export default async function driverRoutes(app: FastifyInstance) {
       accepts_courier: z.boolean().optional(), accepts_pets: z.boolean().optional(), female_driver: z.boolean().optional(),
       state: z.enum(STATES).optional(),
     }), req.body);
+    // Women-preferred matching is a safety promise to riders, so DingoGo sets it after checking ID (admin → Drivers).
+    if (b.female_driver !== undefined) {
+      const cur = await one(`SELECT female_driver FROM drivers WHERE user_id = $1`, [me.id]);
+      if (!!cur?.female_driver !== b.female_driver) throw forbidden('DingoGo sets women-driver matching after checking your ID. Contact support to change it.');
+      delete b.female_driver;
+    }
     if (b.state) {
       const cur = await one(`SELECT status, state FROM drivers WHERE user_id = $1`, [me.id]);
       if (cur && cur.state !== b.state && !['applied', 'pending_documents'].includes(cur.status)) {

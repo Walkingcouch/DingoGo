@@ -201,30 +201,43 @@ export default async function adminRoutes(app: FastifyInstance) {
   });
 
   app.post('/admin/trips/:id/redispatch', async (req) => {
-    await ops(req);
+    const me = await ops(req);
     const id = (req.params as any).id;
-    await q(`UPDATE trips SET status = 'requested', dispatch_attempts = 0 WHERE id = $1 AND status IN ('no_drivers','requested')`, [id]);
-    return { result: await trips.dispatchTrip(id) };
+    const result = await trips.redispatchTrip(id, me.id);
+    await audit(me.id, 'redispatch', 'trip', id);
+    return { result };
   });
 
   app.post('/admin/trips/:id/refund', async (req) => {
     const me = await admin(req);
-    const b = parse(z.object({ cents: z.number().int().min(1), reason: z.string().max(200) }), req.body);
-    const t = await trips.getTrip((req.params as any).id);
-    const paid = (t.final_cents ?? t.cancel_fee_cents ?? 0) + t.tip_cents;
-    if (b.cents > paid) throw bad('refund_too_large', 'Refund exceeds amount paid');
-    if (t.payment_method === 'card' && t.payment_ref) {
-      const r = await pay.refund(t.payment_ref, b.cents);
-      if (!r.ok) throw bad('refund_failed', r.error);
-    } else if (t.payment_method === 'wallet' || t.payment_method === 'cash') {
-      await q('UPDATE users SET wallet_cents = wallet_cents + $2 WHERE id = $1', [t.rider_id, b.cents]);
-    }
-    await q(`INSERT INTO payments (trip_id, user_id, provider, provider_ref, kind, amount_cents, gst_cents, status) VALUES ($1,$2,$3,$4,'refund',$5,$6,'succeeded')`,
-      [t.id, t.rider_id, t.payment_method, t.payment_ref, -b.cents, -Math.round(b.cents / 11)]);
-    await trips.event(await import('../db.js').then((m) => m.pool), t.id, 'refund', me.id, b);
-    await audit(me.id, 'refund', 'trip', t.id, b);
-    void notify(t.rider_id, 'Refund issued', `We've refunded $${(b.cents / 100).toFixed(2)} on ${t.ref}. ${b.reason}`, { trip_id: t.id }, 'account');
-    return { ok: true };
+    const b = parse(z.object({ cents: z.number().int().min(1), reason: z.string().min(1).max(200) }), req.body);
+    const id = (req.params as any).id;
+    // One refund at a time per trip (row lock), and the running total can never exceed what the rider paid.
+    const out = await tx(async (c) => {
+      const t = await one('SELECT * FROM trips WHERE id = $1 FOR UPDATE', [id], c);
+      if (!t) throw notFound('Trip');
+      const paid = (t.final_cents ?? t.cancel_fee_cents ?? 0) + (t.tip_cents ?? 0);
+      const prior = await one<{ cents: number }>(`SELECT coalesce(-sum(amount_cents),0)::int cents FROM payments WHERE trip_id = $1 AND kind = 'refund' AND status = 'succeeded'`, [id], c);
+      const left = paid - prior!.cents;
+      if (b.cents > left) throw bad('refund_too_large', left > 0 ? `Only $${(left / 100).toFixed(2)} is left to refund on this trip` : 'This trip has already been fully refunded', { refundable_cents: Math.max(left, 0) });
+      let provider = t.payment_method;
+      if (t.payment_method === 'card' && t.payment_ref) {
+        const r = await pay.refund(t.payment_ref, b.cents);
+        if (!r.ok) throw bad('refund_failed', r.error);
+      } else if (t.payment_method === 'wallet' || t.payment_method === 'cash') {
+        // Cash fares are refunded as DingoGo credit.
+        await c.query('UPDATE users SET wallet_cents = wallet_cents + $2 WHERE id = $1', [t.rider_id, b.cents]);
+        provider = 'wallet';
+      }
+      await c.query(`INSERT INTO payments (trip_id, user_id, provider, provider_ref, kind, amount_cents, gst_cents, status) VALUES ($1,$2,$3,$4,'refund',$5,$6,'succeeded')`,
+        [t.id, t.rider_id, provider, t.payment_ref, -b.cents, -Math.round(b.cents / 11)]);
+      if (b.cents === left) await c.query(`UPDATE trips SET payment_status = 'refunded' WHERE id = $1`, [t.id]);
+      await trips.event(c, t.id, 'refund', me.id, b);
+      await c.query('INSERT INTO audit_log (actor_id, action, entity, entity_id, data) VALUES ($1,$2,$3,$4,$5)', [me.id, 'refund', 'trip', t.id, b]);
+      return { t, refundable_cents: left - b.cents };
+    });
+    void notify(out.t.rider_id, 'Refund issued', `We've refunded $${(b.cents / 100).toFixed(2)} on ${out.t.ref}. ${b.reason}`, { trip_id: out.t.id }, 'account');
+    return { ok: true, refundable_cents: out.refundable_cents };
   });
 
   /** Phone / walk-in booking for customers without a smartphone (critical for community access). */
@@ -676,12 +689,18 @@ export default async function adminRoutes(app: FastifyInstance) {
   app.post('/admin/payouts/:driverId', async (req) => {
     const me = await admin(req);
     const id = (req.params as any).driverId;
-    const bal = await one('SELECT coalesce(sum(amount_cents),0)::int cents FROM driver_ledger WHERE driver_id = $1', [id]);
-    if (bal!.cents <= 0) throw bad('nothing_to_pay', 'Driver balance is zero or negative');
-    await q(`INSERT INTO driver_ledger (driver_id, kind, amount_cents, note) VALUES ($1,'payout',$2,'Bank transfer (ABA batch)')`, [id, -bal!.cents]);
-    await audit(me.id, 'payout', 'driver', id, { cents: bal!.cents });
-    void notify(id, 'Payout sent 💸', `$${(bal!.cents / 100).toFixed(2)} is on its way to your bank account.`, {}, 'account');
-    return { paid_cents: bal!.cents };
+    // Serialised per driver: two clicks (or two admins) can't both pay the same balance.
+    const cents = await tx(async (c) => {
+      const d = await one('SELECT user_id FROM drivers WHERE user_id = $1 FOR UPDATE', [id], c);
+      if (!d) throw notFound('Driver');
+      const bal = await one('SELECT coalesce(sum(amount_cents),0)::int cents FROM driver_ledger WHERE driver_id = $1', [id], c);
+      if (bal!.cents <= 0) throw bad('nothing_to_pay', 'Driver balance is zero or negative');
+      await c.query(`INSERT INTO driver_ledger (driver_id, kind, amount_cents, note) VALUES ($1,'payout',$2,'Bank transfer (ABA batch)')`, [id, -bal!.cents]);
+      await c.query('INSERT INTO audit_log (actor_id, action, entity, entity_id, data) VALUES ($1,$2,$3,$4,$5)', [me.id, 'payout', 'driver', id, { cents: bal!.cents }]);
+      return bal!.cents;
+    });
+    void notify(id, 'Payout sent', `$${(cents / 100).toFixed(2)} is on its way to your bank account.`, {}, 'account');
+    return { paid_cents: cents };
   });
 
   // ───────────── Safety, support, compliance ─────────────
@@ -785,9 +804,13 @@ export default async function adminRoutes(app: FastifyInstance) {
     const acct = await one('SELECT * FROM corporate_accounts WHERE id = $1', [(req.params as any).id]);
     if (!acct) throw notFound('Account');
     const lines = await q(
-      `SELECT t.ref, t.completed_at, u.name AS rider, t.pickup_address, t.dropoff_address, t.final_cents, t.ndis_number
+      `SELECT t.ref, coalesce(t.completed_at, t.cancelled_at) AS completed_at, u.name AS rider, t.pickup_address, t.dropoff_address,
+              coalesce(t.final_cents, t.cancel_fee_cents)::int AS final_cents, t.ndis_number, (t.status <> 'completed') AS cancellation_fee
        FROM trips t JOIN users u ON u.id = t.rider_id
-       WHERE t.corporate_account_id = $1 AND t.status = 'completed' AND to_char(t.completed_at AT TIME ZONE 'Australia/Darwin', 'YYYY-MM') = $2 ORDER BY t.completed_at`, [acct.id, m]);
+       WHERE t.corporate_account_id = $1 AND t.payment_method = 'corporate'
+         AND (t.status = 'completed' OR (t.status::text LIKE 'cancelled%' AND t.cancel_fee_cents > 0))
+         AND to_char(coalesce(t.completed_at, t.cancelled_at) AT TIME ZONE 'Australia/Darwin', 'YYYY-MM') = $2
+       ORDER BY coalesce(t.completed_at, t.cancelled_at)`, [acct.id, m]);
     const total = lines.reduce((s, l) => s + l.final_cents, 0);
     return { account: acct, month: m, lines, total_cents: total, gst_cents: Math.round(total / 11),
       members: await q('SELECT u.id, u.name, u.phone, m.role FROM corporate_members m JOIN users u ON u.id = m.user_id WHERE m.account_id = $1', [acct.id]) };

@@ -114,6 +114,13 @@ function TripDrawer({ id, onClose }: { id: string; onClose: () => void }) {
           <h3 style={{ marginTop: 18 }}>Payments</h3>
           <table className="tbl"><tbody>{data.payments.map((p: any) => <tr key={p.id}><td>{label(PAYMENT_KIND, p.kind)}</td><td>{label({ stripe: 'Stripe', mock: 'Test payment', cash: 'Cash', wallet: 'DingoGo credit', corporate: 'Business account' }, p.provider)}</td><td>{label(PAYMENT_STATUS, p.status)}</td><td className="num">{money(p.amount_cents)}</td></tr>)}</tbody></table>
         </>)}
+        {t.status === 'no_drivers' && (
+          <div className="panel" style={{ marginTop: 18 }}>
+            <h3>No driver found</h3>
+            <p className="dg-muted">Search again takes the payment again (card hold, credit or points) and looks for a driver for another few minutes.</p>
+            <button className="dg-btn dg-btn--sm dg-btn--dark" onClick={async () => { const r = await run(() => post(`/admin/trips/${id}/redispatch`), 'Searching again'); if (r) void reload(); }}>Search again</button>
+          </div>
+        )}
         {(t.final_cents || t.cancel_fee_cents) > 0 && (
           <form className="panel" style={{ marginTop: 18 }} onSubmit={async (e) => {
             e.preventDefault();
@@ -121,6 +128,11 @@ function TripDrawer({ id, onClose }: { id: string; onClose: () => void }) {
             if (r) { setRefund({ amount: '', reason: '' }); void reload(); }
           }}>
             <h3>Refund</h3>
+            {(() => {
+              const paid = (t.final_cents ?? t.cancel_fee_cents ?? 0) + (t.tip_cents ?? 0);
+              const refunded = -data.payments.filter((p: any) => p.kind === 'refund' && p.status === 'succeeded').reduce((s: number, p: any) => s + p.amount_cents, 0);
+              return <p className="dg-muted">Paid {money(paid)}{refunded > 0 ? ` · refunded ${money(refunded)}` : ''} · up to {money(Math.max(paid - refunded, 0))} can be refunded</p>;
+            })()}
             <div className="form-grid">
               <label className="dg-field"><span>Amount ($)</span><input className="dg-input" type="number" step="0.01" min="0.01" required value={refund.amount} onChange={(e) => setRefund({ ...refund, amount: e.target.value })} /></label>
               <label className="dg-field"><span>Reason (sent to rider)</span><input className="dg-input" required value={refund.reason} onChange={(e) => setRefund({ ...refund, reason: e.target.value })} /></label>

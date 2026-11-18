@@ -363,6 +363,7 @@ export async function dispatchTrip(tripId: string): Promise<'offered' | 'waiting
 
 async function failNoDrivers(c: pg.PoolClient, t: any) {
   await c.query(`UPDATE trips SET status = 'no_drivers', cancelled_at = now() WHERE id = $1`, [t.id]);
+  if (t.promo_code) await c.query('UPDATE promo_codes SET uses = greatest(uses - 1, 0) WHERE code = $1', [t.promo_code]);
   await releaseHoldsAndPoints(c, t);
   await event(c, t.id, 'no_drivers', null);
   setImmediate(() => {
@@ -375,10 +376,10 @@ async function failNoDrivers(c: pg.PoolClient, t: any) {
 async function releaseHoldsAndPoints(c: Q, t: any, feeCents = 0) {
   if (t.payment_method === 'card' && t.payment_ref && t.payment_status === 'authorised') {
     if (feeCents > 0) {
-      await pay.capture(t.payment_ref, feeCents);
-      await c.query(`UPDATE trips SET payment_status = 'captured' WHERE id = $1`, [t.id]);
+      const cap = await pay.capture(t.payment_ref, feeCents);
+      await c.query(`UPDATE trips SET payment_status = $2 WHERE id = $1`, [t.id, cap.ok ? 'captured' : 'failed']);
       await c.query(`INSERT INTO payments (trip_id, user_id, provider, provider_ref, kind, amount_cents, gst_cents, status)
-                     VALUES ($1,$2,'card',$3,'capture',$4,$5,'succeeded')`, [t.id, t.rider_id, t.payment_ref, feeCents, Math.round(feeCents / 11)]);
+                     VALUES ($1,$2,'card',$3,'capture',$4,$5,$6)`, [t.id, t.rider_id, t.payment_ref, feeCents, Math.round(feeCents / 11), cap.ok ? 'succeeded' : 'failed']);
     } else {
       await pay.cancelHold(t.payment_ref);
       await c.query(`UPDATE trips SET payment_status = 'none' WHERE id = $1`, [t.id]);
@@ -387,6 +388,16 @@ async function releaseHoldsAndPoints(c: Q, t: any, feeCents = 0) {
   if (t.payment_method === 'wallet' && t.payment_status === 'authorised') {
     await c.query('UPDATE users SET wallet_cents = wallet_cents + $2 WHERE id = $1', [t.rider_id, t.quote_cents - feeCents]);
     await c.query(`UPDATE trips SET payment_status = $2 WHERE id = $1`, [t.id, feeCents ? 'captured' : 'none']);
+    if (feeCents > 0) {
+      await c.query(`INSERT INTO payments (trip_id, user_id, provider, provider_ref, kind, amount_cents, gst_cents, status)
+                     VALUES ($1,$2,'wallet','wallet','capture',$3,$4,'succeeded')`, [t.id, t.rider_id, feeCents, Math.round(feeCents / 11)]);
+    }
+  }
+  if (t.payment_method === 'corporate' && feeCents > 0) {
+    // Business / NDIS accounts: the late-cancellation fee goes on the monthly statement.
+    await c.query(`UPDATE trips SET payment_status = 'invoiced' WHERE id = $1`, [t.id]);
+    await c.query(`INSERT INTO payments (trip_id, user_id, provider, kind, amount_cents, gst_cents, status)
+                   VALUES ($1,$2,'corporate','invoice',$3,$4,'pending')`, [t.id, t.rider_id, feeCents, Math.round(feeCents / 11)]);
   }
   if (t.points_redeemed > 0) {
     await c.query('UPDATE users SET loyalty_points = loyalty_points + $2 WHERE id = $1', [t.rider_id, t.points_redeemed]);
@@ -418,6 +429,44 @@ export async function dispatchTick() {
   } finally {
     ticking = false;
   }
+}
+
+/** Ops "search again": restart the search for a trip still looking, or bring back one that found no driver.
+ *  A "no drivers" trip had its card hold, wallet credit, points and promo released, so they are taken again first
+ *  (otherwise the trip would be free). The search window restarts from now. */
+export async function redispatchTrip(tripId: string, actorId: string) {
+  await tx(async (c) => {
+    const t = await one('SELECT * FROM trips WHERE id = $1 FOR UPDATE', [tripId], c);
+    if (!t) throw notFound('Trip');
+    if (t.status === 'requested') {
+      await c.query(`UPDATE trips SET dispatch_attempts = 0, requested_at = now() WHERE id = $1`, [tripId]);
+      await event(c, tripId, 'redispatched', actorId);
+      return;
+    }
+    if (t.status !== 'no_drivers') throw conflict('bad_state', `Can't search again for a trip that is ${t.status}`);
+    if (t.points_redeemed > 0) {
+      const u = await one('UPDATE users SET loyalty_points = loyalty_points - $2 WHERE id = $1 AND loyalty_points >= $2 RETURNING id', [t.rider_id, t.points_redeemed], c);
+      if (!u) throw conflict('points_spent', 'The rider has since used the Dingo Points on this trip. Book it again instead.');
+      await c.query(`INSERT INTO loyalty_ledger (user_id, points, reason, trip_id) VALUES ($1, $2, 'redeemed_on_trip', $3)`, [t.rider_id, -t.points_redeemed, t.id]);
+    }
+    if (t.payment_method === 'wallet') {
+      const u = await one('UPDATE users SET wallet_cents = wallet_cents - $2 WHERE id = $1 AND wallet_cents >= $2 RETURNING id', [t.rider_id, t.quote_cents], c);
+      if (!u) throw conflict('wallet_insufficient', 'The rider no longer has enough DingoGo credit for this trip');
+      await c.query(`UPDATE trips SET payment_status = 'authorised', payment_ref = 'wallet' WHERE id = $1`, [t.id]);
+    }
+    if (t.payment_method === 'card' && t.quote_cents > 0) {
+      const auth = await pay.authorise(t.quote_cents, { description: `DingoGo ${t.ref}` });
+      if (!auth.ok) throw new ApiError(402, 'payment_failed', auth.error ?? 'Card could not be authorised');
+      await c.query(`UPDATE trips SET payment_status = 'authorised', payment_ref = $2 WHERE id = $1`, [t.id, auth.ref]);
+      await c.query(`INSERT INTO payments (trip_id, user_id, provider, provider_ref, kind, amount_cents, status)
+                     VALUES ($1,$2,$3,$4,'authorise',$5,'succeeded')`, [t.id, t.rider_id, auth.provider, auth.ref, Math.round(t.quote_cents * 1.2)]);
+    }
+    if (t.promo_code) await c.query('UPDATE promo_codes SET uses = uses + 1 WHERE code = $1', [t.promo_code]);
+    await c.query(`UPDATE trips SET status = 'requested', dispatch_attempts = 0, requested_at = now(), cancelled_at = NULL WHERE id = $1`, [tripId]);
+    await event(c, tripId, 'redispatched', actorId);
+  });
+  toOps('trip.updated', { id: tripId, status: 'requested' });
+  return dispatchTrip(tripId);
 }
 
 // ───────────────────────── Driver actions ─────────────────────────
@@ -508,18 +557,26 @@ export interface CompleteInput {
   lat?: number; lng?: number;
 }
 
+/** Wrong delivery PINs allowed per parcel before the PIN stops working (stops a driver guessing 0000–9999). */
+export const DELIVERY_PIN_MAX_TRIES = 5;
+
 export async function completeTrip(driverId: string, tripId: string, input: CompleteInput) {
+  const fails = input.delivery_pin
+    ? (await one<{ n: number }>(`SELECT count(*)::int n FROM trip_events WHERE trip_id = $1 AND type = 'pod_pin_failed'`, [tripId]))!.n : 0;
+  const pinLocked = fails >= DELIVERY_PIN_MAX_TRIES;
   const result = await tx(async (c) => {
     const t = await driverTrip(c, driverId, tripId);
     if (t.status !== 'in_progress') throw conflict('bad_state', `Cannot complete from ${t.status}`);
 
     if (t.kind === 'courier') {
       const p = await one('SELECT * FROM parcels WHERE trip_id = $1', [tripId], c);
-      const pinOk = input.delivery_pin && input.delivery_pin === p.delivery_pin;
+      const pinOk = !pinLocked && !!input.delivery_pin && input.delivery_pin === p.delivery_pin;
       const unattendedOk = p.leave_unattended && input.pod_photo_url;
       const signatureOk = input.pod_signature && input.pod_received_by;
       if (p.requires_signature && !signatureOk) throw bad('signature_required', 'This parcel needs a signature and the receiver’s name');
       if (!pinOk && !unattendedOk && !signatureOk) {
+        if (input.delivery_pin && pinLocked) throw new ApiError(429, 'pin_locked', 'Too many wrong PINs. Get a signature and the receiver’s name, or call DingoGo.');
+        if (input.delivery_pin) throw bad('pin_mismatch', 'That delivery PIN is wrong. Check it with the receiver.');
         throw bad('pod_required', 'Enter the recipient’s delivery PIN, capture a signature, or (if allowed) a photo');
       }
       await c.query(
@@ -546,6 +603,10 @@ export async function completeTrip(driverId: string, tripId: string, input: Comp
     await event(c, tripId, 'completed', driverId, { final_cents: final });
     await settle(c, { ...t, final_cents: final });
     return t;
+  }).catch(async (e) => {
+    // Recorded outside the (rolled-back) transaction so the try limit holds.
+    if (e instanceof ApiError && e.code === 'pin_mismatch') await event(pool, tripId, 'pod_pin_failed', driverId);
+    throw e;
   });
   const trip = await getTrip(tripId);
   broadcast(trip);
@@ -626,11 +687,21 @@ export async function addTip(riderId: string, tripId: string, cents: number) {
     if (!t || t.rider_id !== riderId) throw notFound('Trip');
     if (t.status !== 'completed') throw conflict('bad_state', 'You can tip after the trip');
     if (t.tip_cents > 0) throw conflict('already_tipped');
-    const auth = await pay.authorise(cents, { description: `DingoGo tip ${t.ref}` });
-    const cap = auth.ok ? await pay.capture(auth.ref, cents) : { ok: false, error: auth.error };
-    if (!cap.ok) throw new ApiError(402, 'payment_failed', cap.error ?? 'Your card could not be charged for the tip');
+    if (!t.driver_id) throw conflict('bad_state', 'No driver to tip');
+    let provider: string, ref: string;
+    if (t.payment_method === 'wallet') {
+      // Paid with DingoGo credit (e.g. prepaid vouchers, no bank card): the tip comes from credit too.
+      const u = await one('UPDATE users SET wallet_cents = wallet_cents - $2 WHERE id = $1 AND wallet_cents >= $2 RETURNING wallet_cents', [riderId, cents], c);
+      if (!u) throw new ApiError(402, 'wallet_insufficient', 'Not enough DingoGo credit for this tip');
+      provider = 'wallet'; ref = 'wallet';
+    } else {
+      const auth = await pay.authorise(cents, { description: `DingoGo tip ${t.ref}` });
+      const cap = auth.ok ? await pay.capture(auth.ref, cents) : { ok: false, error: auth.error };
+      if (!cap.ok) throw new ApiError(402, 'payment_failed', cap.error ?? 'Your card could not be charged for the tip');
+      provider = auth.provider; ref = auth.ref;
+    }
     await c.query('UPDATE trips SET tip_cents = $2 WHERE id = $1', [tripId, cents]);
-    await c.query(`INSERT INTO payments (trip_id, user_id, provider, provider_ref, kind, amount_cents, status) VALUES ($1,$2,$3,$4,'tip',$5,'succeeded')`, [tripId, riderId, auth.provider, auth.ref, cents]);
+    await c.query(`INSERT INTO payments (trip_id, user_id, provider, provider_ref, kind, amount_cents, status) VALUES ($1,$2,$3,$4,'tip',$5,'succeeded')`, [tripId, riderId, provider, ref, cents]);
     // 100% of tips go to the driver.
     await c.query(`INSERT INTO driver_ledger (driver_id, trip_id, kind, amount_cents, note) VALUES ($1,$2,'tip',$3,'Tip — 100% to driver')`, [t.driver_id, tripId, cents]);
     setImmediate(() => void notify(t.driver_id, 'You got a tip! 💛', `$${(cents / 100).toFixed(2)} on ${t.ref}`));
@@ -665,6 +736,9 @@ export async function cancelTrip(actor: { id: string; role: string }, tripId: st
       if (t.status === 'arrived' && waited >= (rule.free_wait_min ?? 3)) fee = rule.cancel_fee_cents ?? 0;
       else if (sinceAccept > (policy.free_window_s ?? 120)) fee = rule.cancel_fee_cents ?? 0;
     }
+    // Cash trips: DingoGo can't collect a fee after the fact, so none is charged (and none is credited to the driver).
+    let feeWaived: string | undefined;
+    if (fee > 0 && t.payment_method === 'cash') { fee = 0; feeWaived = 'cash'; }
     const status = isOps ? 'cancelled_admin' : isRider ? 'cancelled_rider' : 'cancelled_driver';
     await c.query(`UPDATE trips SET status = $2, cancelled_at = now(), cancel_reason = $3, cancel_fee_cents = $4 WHERE id = $1`,
       [tripId, status, reason ?? null, fee]);
@@ -672,10 +746,13 @@ export async function cancelTrip(actor: { id: string; role: string }, tripId: st
     if (t.promo_code) await c.query('UPDATE promo_codes SET uses = greatest(uses - 1, 0) WHERE code = $1', [t.promo_code]);
     await releaseHoldsAndPoints(c, t, fee);
     if (fee && t.driver_id) {
-      await c.query(`INSERT INTO driver_ledger (driver_id, trip_id, kind, amount_cents, note) VALUES ($1,$2,'cancel_fee',$3,'Rider late cancellation')`,
-        [t.driver_id, tripId, Math.round(fee * 0.8)]);
+      // Driver keeps the same share as on fares (100% − their DingoGo service fee, 25% by default).
+      const d = await one('SELECT commission_pct FROM drivers WHERE user_id = $1', [t.driver_id], c);
+      const pct = Number(d?.commission_pct ?? 25);
+      await c.query(`INSERT INTO driver_ledger (driver_id, trip_id, kind, amount_cents, note) VALUES ($1,$2,'cancel_fee',$3,$4)`,
+        [t.driver_id, tripId, Math.round((fee * (100 - pct)) / 100), `Rider late cancellation (after ${pct}% service fee)`]);
     }
-    await event(c, tripId, status, actor.id, { reason, fee });
+    await event(c, tripId, status, actor.id, { reason, fee, ...(feeWaived ? { fee_waived: feeWaived } : {}) });
     if (isDriver && t.assistance_animal) {
       await c.query(`INSERT INTO compliance_flags (kind, driver_id, trip_id, detail) VALUES ('assistance_animal_refusal', $1, $2, $3)`,
         [actor.id, tripId, `Driver cancelled a trip with an assistance animal. Reason: ${reason ?? 'none given'}`]);
@@ -699,12 +776,13 @@ export async function rateTrip(actor: { id: string }, tripId: string, rating: nu
   if (t.status !== 'completed') throw conflict('bad_state', 'Rate after the trip is completed');
   let subject: string;
   if (actor.id === t.rider_id) {
-    if (t.rider_rating) throw conflict('already_rated');
-    await q('UPDATE trips SET rider_rating = $2, rider_feedback = $3 WHERE id = $1', [tripId, rating, feedback ?? null]);
+    // Conditional update: two requests at once can't both count.
+    const r = await one('UPDATE trips SET rider_rating = $2, rider_feedback = $3 WHERE id = $1 AND rider_rating IS NULL RETURNING id', [tripId, rating, feedback ?? null]);
+    if (!r) throw conflict('already_rated');
     subject = t.driver_id;
   } else if (actor.id === t.driver_id) {
-    if (t.driver_rating) throw conflict('already_rated');
-    await q('UPDATE trips SET driver_rating = $2 WHERE id = $1', [tripId, rating]);
+    const r = await one('UPDATE trips SET driver_rating = $2 WHERE id = $1 AND driver_rating IS NULL RETURNING id', [tripId, rating]);
+    if (!r) throw conflict('already_rated');
     subject = t.rider_id;
   } else throw forbidden();
   await q(`UPDATE users SET rating_avg = ((coalesce(rating_avg,0) * rating_count) + $2) / (rating_count + 1), rating_count = rating_count + 1 WHERE id = $1`,

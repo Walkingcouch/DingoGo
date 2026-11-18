@@ -1,6 +1,6 @@
 # DingoGo Rideshare & Courier — platform
 
-Aboriginal-owned, 100% electric rideshare and courier for Alice Springs (Mparntwe), NT.
+Aboriginal-owned rideshare and courier for Alice Springs (Mparntwe), NT. Local drivers in their own cars; electric and hybrid cars get trips first, and an electric fleet is the goal.
 This repository is the whole platform: one API and database, five apps and the public website.
 
 | Part | Folder | Dev port | Who uses it |
@@ -36,7 +36,7 @@ npm install
 npm run db:setup                                   # migrations + demo data
 npm run dev:api                                    # http://localhost:4000
 npm run dev:web    # and/or dev:rider, dev:driver, dev:admin, dev:partner, dev:roof
-npm test                                           # 16 end-to-end API tests (needs a throwaway DB: they reset it)
+npm test                                           # 38 API tests (needs a throwaway DB: they reset it)
 ```
 
 Demo sign-ins (development only — any SMS code is shown on screen, and `000000` always works):
@@ -46,7 +46,7 @@ Demo sign-ins (development only — any SMS code is shown on screen, and `000000
 | Admin | 0400 000 001 |
 | Dispatcher | 0400 000 002 |
 | Rider (has points, credit, business account) | 0400 000 100 |
-| Drivers (approved, each with a BYD Dolphin) | 0400 000 011, 012, 013 |
+| Drivers (approved, each with an electric demo car) | 0400 000 011, 012, 013 |
 | Driver applicant (missing documents) | 0400 000 014 |
 | Café partner | 0400 000 300 |
 

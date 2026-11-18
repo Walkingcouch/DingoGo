@@ -22,7 +22,8 @@ export default async function uploadRoutes(app: FastifyInstance) {
   app.get('/uploads/:name', async (req, reply) => {
     const f = await one('SELECT mime, data FROM uploads WHERE name = $1', [(req.params as any).name]);
     if (!f) throw notFound('File');
-    reply.header('Content-Type', f.mime).header('Cache-Control', 'private, max-age=86400');
+    // nosniff: browsers must not reinterpret an upload as HTML/script.
+    reply.header('Content-Type', f.mime).header('Cache-Control', 'private, max-age=86400').header('X-Content-Type-Options', 'nosniff');
     return reply.send(f.data);
   });
 }

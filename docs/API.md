@@ -286,3 +286,17 @@ ppsr_checked_at, ppsr_clear, lookup, lookup_at` and computed `compliance_year` (
 `GET /ws?token=<JWT>` — auto-subscribes `user:<id>` (and `ops` for admin/dispatcher). Send `{"type":"subscribe","channel":"trip:<id>"}` to watch a trip you're part of. `GET /ws?share=<share_token>` gives read-only trip tracking for share links.
 
 Events: `offer.new`, `offer.expired`, `trip.updated`, `driver.location`, `notification`, and on `ops`: `trip.created`, `trip.updated`, `driver.status`, `driver.location`, `sos.new`, `sos.updated`, `support.new`, `compliance.flag`, `safety.deviation`, `application.new`, `hire.new`.
+
+## Money and safety rules (Round 1, Nov 2026)
+
+- `POST /admin/trips/:id/refund` (admin) `{ cents, reason }` → `{ ok, refundable_cents }`. The running total of refunds on a trip can't exceed what was paid (fare or cancellation fee + tip): 400 `refund_too_large` (`details.refundable_cents`). Refunds on one trip are serialised. A full refund sets `payment_status = 'refunded'`. Wallet and cash trips are refunded as DingoGo credit.
+- `POST /admin/trips/:id/redispatch` (ops) → `{ result: 'offered'|'waiting'|'no_drivers' }`. Works on `requested` trips (restarts the search window) and `no_drivers` trips: the card hold, wallet credit, Dingo Points and promo use are taken again first (409 `wallet_insufficient` / `points_spent`, 402 `payment_failed`). Other states: 409 `bad_state`.
+- "No drivers" gives the promo code use back (as cancellation does).
+- Cancellation fees: the driver's share is `100 − commission_pct` % (75% by default). Cash trips are never charged a fee (event data `fee_waived: 'cash'`). Business-account fees are recorded as a pending invoice and appear on `GET /admin/corporate/:id/statement` (lines carry `cancellation_fee: true`). The statement only lists trips billed to the account (`payment_method = 'corporate'`).
+- `POST /trips/:id/tip` — on a trip paid with DingoGo credit the tip comes from credit (402 `wallet_insufficient`); otherwise the card.
+- `POST /trips/:id/rate` — a second rating (even sent at the same time) → 409 `already_rated`.
+- `POST /driver/trips/:id/complete` (courier) — a wrong `delivery_pin` → 400 `pin_mismatch`; after 5 wrong PINs → 429 `pin_locked` (use signature + receiver's name, or photo if allowed).
+- `POST /admin/payouts/:driverId` — serialised per driver; a second click → 400 `nothing_to_pay`.
+- `PATCH /driver/me` — `female_driver` can't be changed by the driver (403); admins set it in `PATCH /admin/drivers/:id`.
+- `POST /wallet/voucher` — wrong codes are counted (5 per hour, then 429 `too_many_attempts`).
+- `GET /uploads/:name` sends `X-Content-Type-Options: nosniff`.

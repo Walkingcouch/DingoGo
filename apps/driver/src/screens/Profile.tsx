@@ -81,7 +81,11 @@ export function Profile({ onSignOut }: { onSignOut: () => void }) {
         <h2 style={{ marginTop: 0 }}>Trip preferences</h2>
         <label className="dg-check"><input type="checkbox" checked={!!d?.accepts_courier} onChange={(e) => pref('accepts_courier', e.target.checked)} /><span>Accept parcel deliveries</span></label>
         <label className="dg-check"><input type="checkbox" checked={!!d?.accepts_pets} onChange={(e) => pref('accepts_pets', e.target.checked)} /><span>Accept pet-friendly rides (needs a pet-ready car)</span></label>
-        <label className="dg-check"><input type="checkbox" checked={!!d?.female_driver} onChange={(e) => pref('female_driver', e.target.checked)} /><span>I'm a woman driver. Match me with riders who ask for one</span></label>
+        <p className="dg-muted" style={{ fontSize: 'var(--fs-sm)', margin: '8px 0 4px' }}>
+          {d?.female_driver
+            ? 'Women-driver matching is on. Riders who ask for a woman driver can be matched with you.'
+            : 'Women-driver matching: DingoGo turns this on after checking your ID. Ask support if you’d like it.'}
+        </p>
         <p className="dg-muted" style={{ fontSize: 'var(--fs-sm)', margin: '4px 0 12px' }}>Assistance animals are always accepted, whatever these settings.</p>
         <form onSubmit={(e) => { e.preventDefault(); void pref('languages', langs.split(',').map((s) => s.trim()).filter(Boolean)); }}>
           <label className="dg-field"><span>Languages you speak</span><input className="dg-input" value={langs} onChange={(e) => setLangs(e.target.value)} placeholder="English, Arrernte" /></label>

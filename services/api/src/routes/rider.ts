@@ -265,12 +265,15 @@ export default async function riderRoutes(app: FastifyInstance) {
     const b = parse(z.object({ code: z.string().min(6).max(30) }), req.body);
     const fails = await one(`SELECT count(*)::int n FROM audit_log WHERE actor_id = $1 AND action = 'voucher_fail' AND at > now() - interval '1 hour'`, [me.id]);
     if (fails!.n >= 5) throw new ApiError(429, 'too_many_attempts', 'Too many wrong codes. Try again in an hour.');
+    // Log a wrong code outside the redeem transaction — inside it, the throw would roll the log back and the limit would never trip.
+    const exists = await one('SELECT 1 FROM gift_vouchers WHERE upper(code) = upper($1)', [b.code.trim()]);
+    if (!exists) {
+      await q(`INSERT INTO audit_log (actor_id, action, entity) VALUES ($1, 'voucher_fail', 'gift_vouchers')`, [me.id]);
+      throw bad('voucher_invalid', 'Voucher code not found');
+    }
     return tx(async (c) => {
       const v = await one('SELECT * FROM gift_vouchers WHERE upper(code) = upper($1) FOR UPDATE', [b.code.trim()], c);
-      if (!v) {
-        await c.query(`INSERT INTO audit_log (actor_id, action, entity) VALUES ($1, 'voucher_fail', 'gift_vouchers')`, [me.id]);
-        throw bad('voucher_invalid', 'Voucher code not found');
-      }
+      if (!v) throw bad('voucher_invalid', 'Voucher code not found');
       if (v.redeemed_at) throw bad('voucher_used', 'This voucher has already been used');
       if (v.expires_at && new Date(v.expires_at) < new Date()) throw bad('voucher_expired', 'This voucher has expired');
       await c.query('UPDATE gift_vouchers SET redeemed_by = $2, redeemed_at = now() WHERE code = $1', [v.code, me.id]);

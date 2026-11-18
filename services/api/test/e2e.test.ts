@@ -547,3 +547,156 @@ test('dispatch: an NT trip is not offered to an SA driver', async () => {
     await call('PATCH', '/admin/jurisdictions/SA', 'admin', { active: false });
   }
 });
+
+// ───────────── Round 1: money flows, idempotency, safety ─────────────
+async function onlyD1Online() {
+  for (const w of ['d2', 'd3', 'pd', 'sa']) if (tokens[w]) await call('POST', '/driver/online', w, { online: false });
+  const r = await call('POST', '/driver/online', 'd1', { online: true, lat: TODD_MALL.lat, lng: TODD_MALL.lng, battery_pct: 90 });
+  assert.equal(r.status, 200, JSON.stringify(r));
+}
+async function driveToArrived(tripId: string) {
+  const offer = await waitForOffer('d1');
+  assert.equal(offer.trip_id, tripId);
+  assert.equal((await call('POST', `/driver/offers/${tripId}/accept`, 'd1')).trip.status, 'accepted');
+  assert.equal((await call('POST', `/driver/trips/${tripId}/arrive`, 'd1')).trip.status, 'arrived');
+}
+const wallet = async () => (await one('SELECT wallet_cents FROM users WHERE phone = $1', ['+61400000100'])).wallet_cents as number;
+
+test('voucher: wrong codes are counted, 6th try in an hour is blocked', async () => {
+  await login('vtry', '0400 000 881');
+  for (let i = 0; i < 5; i++) assert.equal((await call('POST', '/wallet/voucher', 'vtry', { code: `NOPE${i}XYZ` })).error, 'voucher_invalid');
+  const r = await call('POST', '/wallet/voucher', 'vtry', { code: 'DGDEMO5000' });
+  assert.equal(r.status, 429, 'blocked even for a real code once the limit is hit');
+});
+
+test('refunds: running total capped at what was paid; fully refunded trip is marked refunded', async () => {
+  const t = await one('SELECT final_cents, tip_cents FROM trips WHERE id = $1', [rideId]);
+  const paid = t.final_cents + t.tip_cents;
+  const r1 = await call('POST', `/admin/trips/${rideId}/refund`, 'admin', { cents: paid - 100, reason: 'Long wait' });
+  assert.equal(r1.status, 200, JSON.stringify(r1));
+  assert.equal(r1.refundable_cents, 100);
+  const tooMuch = await call('POST', `/admin/trips/${rideId}/refund`, 'admin', { cents: 200, reason: 'Again' });
+  assert.equal(tooMuch.error, 'refund_too_large');
+  // Two clicks at once: only one can take the last $1.
+  const both = await Promise.all([1, 2].map(() => call('POST', `/admin/trips/${rideId}/refund`, 'admin', { cents: 100, reason: 'Rest' })));
+  assert.deepEqual(both.map((b) => b.status).sort(), [200, 400]);
+  const sum = await one(`SELECT -sum(amount_cents)::int s FROM payments WHERE trip_id = $1 AND kind = 'refund'`, [rideId]);
+  assert.equal(sum.s, paid);
+  assert.equal((await one('SELECT payment_status FROM trips WHERE id = $1', [rideId])).payment_status, 'refunded');
+  assert.equal((await call('POST', `/trips/${rideId}/refund`, 'rider', { cents: 1, reason: 'x' })).status, 404, 'riders cannot refund');
+});
+
+test('ratings: two at once count once', async () => {
+  const before = await one('SELECT rating_count FROM users WHERE phone = $1', ['+61400000100']);
+  const both = await Promise.all([5, 4].map((rating) => call('POST', `/trips/${rideId}/rate`, 'd1', { rating })));
+  assert.deepEqual(both.map((b) => b.status).sort(), [200, 409]);
+  const after = await one('SELECT rating_count FROM users WHERE phone = $1', ['+61400000100']);
+  assert.equal(after.rating_count, before.rating_count + 1);
+});
+
+test('no drivers → admin searches again: payment, points and promo are taken again; wallet tip comes from credit', async () => {
+  for (const w of ['d1', 'd2', 'd3', 'pd', 'sa']) if (tokens[w]) await call('POST', '/driver/online', w, { online: false });
+  assert.equal((await call('POST', '/admin/promos', 'admin', { code: 'ROUND1', kind: 'fixed', value: 200, per_user_limit: 5, active: true })).status, 201);
+  const uses = async () => (await one(`SELECT uses FROM promo_codes WHERE code = 'ROUND1'`)).uses;
+  const w0 = await wallet();
+  const t = await call('POST', '/trips', 'rider', { kind: 'ride', service: 'ride', pickup: TODD_MALL, dropoff: HOSPITAL, payment_method: 'wallet', promo_code: 'ROUND1' });
+  assert.equal(t.status, 201, JSON.stringify(t));
+  const id = t.trip.id; const fare = t.trip.quote_cents;
+  assert.equal(await wallet(), w0 - fare);
+  assert.equal(await uses(), 1);
+
+  // Nobody free for the whole search window → no_drivers releases credit and the promo use.
+  await pool.query(`UPDATE trips SET requested_at = now() - interval '10 minutes' WHERE id = $1`, [id]);
+  const { dispatchTrip } = await import('../src/services/trips.js');
+  assert.equal(await dispatchTrip(id), 'no_drivers');
+  assert.equal(await wallet(), w0);
+  assert.equal(await uses(), 0);
+
+  // Search again: credit and promo taken again, search window restarts (it used to fail again straight away).
+  await onlyD1Online();
+  const again = await call('POST', `/admin/trips/${id}/redispatch`, 'admin');
+  assert.equal(again.result, 'offered', JSON.stringify(again));
+  assert.equal(await wallet(), w0 - fare);
+  assert.equal(await uses(), 1);
+  assert.equal((await call('POST', `/admin/trips/${rideId}/redispatch`, 'admin')).error, 'bad_state', 'completed trips cannot be re-dispatched');
+
+  await driveToArrived(id);
+  const pin = (await one('SELECT verify_pin FROM trips WHERE id = $1', [id])).verify_pin;
+  await call('POST', `/driver/trips/${id}/start`, 'd1', { pin });
+  const done = await call('POST', `/driver/trips/${id}/complete`, 'd1', {});
+  assert.equal(done.trip.status, 'completed');
+  assert.equal(await wallet(), w0 - fare, 'charged once');
+
+  const tip = await call('POST', `/trips/${id}/tip`, 'rider', { cents: 300 });
+  assert.equal(tip.ok, true, JSON.stringify(tip));
+  assert.equal(await wallet(), w0 - fare - 300, 'tip on a credit-paid trip comes from credit');
+  const p = await one(`SELECT provider FROM payments WHERE trip_id = $1 AND kind = 'tip'`, [id]);
+  assert.equal(p.provider, 'wallet');
+});
+
+test('cancellation fees: driver gets 75%; cash courier no-show charges nothing; business account fee is invoiced', async () => {
+  await onlyD1Online();
+  // Card ride, late cancel after waiting → $3, driver credited 75%.
+  const t1 = await call('POST', '/trips', 'rider', { kind: 'ride', service: 'ride', pickup: TODD_MALL, dropoff: HOSPITAL, payment_method: 'card' });
+  await driveToArrived(t1.trip.id);
+  await pool.query(`UPDATE trips SET arrived_at = now() - interval '6 minutes' WHERE id = $1`, [t1.trip.id]);
+  const c1 = await call('POST', `/trips/${t1.trip.id}/cancel`, 'rider', {});
+  assert.equal(c1.trip.cancel_fee_cents, 300);
+  const share = await one(`SELECT amount_cents FROM driver_ledger WHERE trip_id = $1 AND kind = 'cancel_fee'`, [t1.trip.id]);
+  assert.equal(share.amount_cents, 225);
+
+  // Cash courier: a fee DingoGo can't collect is not charged or credited.
+  const parcel = { size: 'S', description: 'Keys', sender_name: 'Demo', sender_phone: '0400000100', recipient_name: 'Nan', recipient_phone: '0400000555', prohibited_ack: true };
+  const t2 = await call('POST', '/trips', 'rider', { kind: 'courier', service: 'courier_s', pickup: TODD_MALL, dropoff: HOSPITAL, payment_method: 'cash', parcel });
+  assert.equal(t2.status, 201, JSON.stringify(t2));
+  await driveToArrived(t2.trip.id);
+  await pool.query(`UPDATE trips SET arrived_at = now() - interval '6 minutes' WHERE id = $1`, [t2.trip.id]);
+  const c2 = await call('POST', `/trips/${t2.trip.id}/cancel`, 'rider', {});
+  assert.equal(c2.trip.cancel_fee_cents, 0);
+  assert.equal(await one(`SELECT 1 FROM driver_ledger WHERE trip_id = $1`, [t2.trip.id]), null);
+
+  // Business account: the fee goes on the monthly statement.
+  const me = await call('GET', '/me', 'rider');
+  const acct = me.corporate_accounts[0];
+  assert.ok(acct, 'demo rider has a business account');
+  const t3 = await call('POST', '/trips', 'rider', { kind: 'ride', service: 'ride', pickup: TODD_MALL, dropoff: HOSPITAL, payment_method: 'corporate', corporate_account_id: acct.id });
+  assert.equal(t3.status, 201, JSON.stringify(t3));
+  await driveToArrived(t3.trip.id);
+  await pool.query(`UPDATE trips SET arrived_at = now() - interval '6 minutes' WHERE id = $1`, [t3.trip.id]);
+  assert.equal((await call('POST', `/trips/${t3.trip.id}/cancel`, 'rider', {})).trip.cancel_fee_cents, 300);
+  const inv = await one(`SELECT amount_cents, status FROM payments WHERE trip_id = $1 AND kind = 'invoice'`, [t3.trip.id]);
+  assert.deepEqual(inv, { amount_cents: 300, status: 'pending' });
+  const st = await call('GET', `/admin/corporate/${acct.id}/statement`, 'admin');
+  assert.ok(st.lines.some((l: any) => l.ref === t3.trip.ref && l.cancellation_fee && l.final_cents === 300));
+});
+
+test('courier: delivery PIN locks after 5 wrong tries; signature still works', async () => {
+  await onlyD1Online();
+  const parcel = { size: 'S', description: 'Medicine', sender_name: 'Demo', sender_phone: '0400000100', recipient_name: 'Nan', recipient_phone: '0400000555', prohibited_ack: true };
+  const t = await call('POST', '/trips', 'rider', { kind: 'courier', service: 'courier_s', pickup: TODD_MALL, dropoff: HOSPITAL, payment_method: 'card', parcel });
+  await driveToArrived(t.trip.id);
+  await call('POST', `/driver/trips/${t.trip.id}/start`, 'd1');
+  const pin = (await one('SELECT delivery_pin FROM parcels WHERE trip_id = $1', [t.trip.id])).delivery_pin;
+  const wrong = pin === '0000' ? '1111' : '0000';
+  for (let i = 0; i < 5; i++) assert.equal((await call('POST', `/driver/trips/${t.trip.id}/complete`, 'd1', { delivery_pin: wrong })).error, 'pin_mismatch');
+  const locked = await call('POST', `/driver/trips/${t.trip.id}/complete`, 'd1', { delivery_pin: pin });
+  assert.equal(locked.status, 429);
+  assert.equal(locked.error, 'pin_locked');
+  const ok = await call('POST', `/driver/trips/${t.trip.id}/complete`, 'd1', { pod_signature: 'data:image/png;base64,AAAA', pod_received_by: 'Nan' });
+  assert.equal(ok.trip.status, 'completed');
+});
+
+test('payouts: two clicks pay once', async () => {
+  const d1 = (await one('SELECT id FROM users WHERE phone = $1', ['+61400000011'])).id;
+  const both = await Promise.all([1, 2].map(() => call('POST', `/admin/payouts/${d1}`, 'admin')));
+  assert.deepEqual(both.map((b) => b.status).sort(), [200, 400]);
+  const bal = await one(`SELECT sum(amount_cents)::int s FROM driver_ledger l JOIN users u ON u.id = l.driver_id WHERE u.phone = '+61400000011'`);
+  assert.equal(bal.s, 0);
+});
+
+test('safety: drivers cannot switch on women-driver matching themselves', async () => {
+  const r = await call('PATCH', '/driver/me', 'd1', { female_driver: true });
+  assert.equal(r.status, 403);
+  assert.equal((await call('PATCH', '/driver/me', 'd1', { female_driver: false, accepts_courier: true })).status, 200, 'sending the current value is fine');
+  await call('POST', '/driver/online', 'd1', { online: false });
+});
