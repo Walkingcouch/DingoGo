@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import QRCode from 'qrcode';
 import { ApiError, Icon, date, del, get, money, post, useLoad } from '@dingogo/shared';
 import { Dialog, Page, Spinner, shareOrCopy, useCopy } from '../components/ui';
-import { useMe } from '../ctx';
+import { WEB_URL, useMe } from '../ctx';
 
 const REASON: Record<string, string> = { trip_earned: 'Trip', redeemed_on_trip: 'Used on a trip', referral_bonus: 'Friend referral', refund_cancelled_trip: 'Cancelled trip refund', admin_adjustment: 'Adjustment' };
 
@@ -98,7 +98,7 @@ export function RewardsScreen() {
         <h2 className="section__title">Bring a friend</h2>
         <p>When a friend signs up with your code and takes their first trip, you both get {data.referral_bonus} points.</p>
         <div className="refer__code"><span>{data.referral_code}</span>
-          <button className="dg-btn dg-btn--sm" onClick={() => shareOrCopy({ title: 'DingoGo', text: `Try DingoGo, Alice Springs' Aboriginal-owned rideshare. Use my code ${data.referral_code} when you sign up and we both get ${data.referral_bonus} points.` }, copy)}>
+          <button className="dg-btn dg-btn--sm" onClick={() => shareOrCopy({ title: 'DingoGo', text: `Try DingoGo, Alice Springs' Aboriginal-owned rideshare. Use my code ${data.referral_code} when you sign up and we both get ${data.referral_bonus} points.`, url: `${WEB_URL}/invite/${encodeURIComponent(data.referral_code)}` }, copy)}>
             {copied ? 'Copied' : 'Share code'}
           </button>
         </div>

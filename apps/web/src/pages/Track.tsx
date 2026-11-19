@@ -65,7 +65,7 @@ export default function Track() {
   const [car, setCar] = useState<{ lat: number; lng: number; heading?: number | null } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [, tick] = useState(0);
-  useMeta(trip ? `Trip ${trip.ref}` : 'Track a trip', 'Live DingoGo trip tracking.');
+  useMeta(trip ? `Trip ${trip.ref}` : 'Track a trip', 'Live DingoGo trip tracking.', { noindex: true });
 
   const load = useCallback(async () => {
     try {

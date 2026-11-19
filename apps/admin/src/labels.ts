@@ -44,7 +44,8 @@ export const FAIL_REASON: Map = { no_one_home: 'Nobody home', no_safe_place: 'No
 export const FLAG_STATUS: Map = { open: 'Open', reviewing: 'Reviewing', reviewed: 'Reviewed', actioned: 'Action taken', resolved: 'Resolved', dismissed: 'Dismissed' };
 export const SOS_STATUS: Map = { open: 'Open', acknowledged: 'Acknowledged', resolved: 'Resolved' };
 export const TICKET_STATUS: Map = { open: 'Open', pending: 'Waiting on customer', resolved: 'Resolved', closed: 'Closed', new: 'New', contacted: 'Contacted', quoted: 'Quoted', booked: 'Booked', confirmed: 'Confirmed', replied: 'Replied', declined: 'Declined' };
-export const APPLICATION_STATUS: Map = { new: 'New', contacted: 'Contacted', onboarding: 'Onboarding', declined: 'Declined' };
+/** Driver application stages; the applicant sees these words on their status link (see services/api/src/lib/growth.ts). */
+export const APPLICATION_STATUS: Map = { new: 'Received', contacted: "We've called", onboarding: 'Paperwork', approved: 'Approved', declined: 'Not right now', withdrawn: 'Withdrawn' };
 export const CAMPAIGN_STATUS: Map = { pending: 'Waiting for approval', approved: 'Approved', paused: 'Paused', ended: 'Ended', rejected: 'Rejected' };
 export const REDEMPTION_STATUS: Map = { issued: 'Issued', redeemed: 'Redeemed', expired: 'Expired', cancelled: 'Cancelled' };
 export const CORPORATE_KIND: Map = { business: 'Business', ndis_plan_manager: 'NDIS plan manager', community_org: 'Community organisation', aboriginal_corporation: 'Aboriginal corporation', health_service: 'Health service', government: 'Government' };

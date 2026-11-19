@@ -3,7 +3,7 @@ import { PageHead } from '../Layout';
 import { useMeta } from '../meta';
 
 export default function NotFound() {
-  useMeta('Page not found');
+  useMeta('Page not found', 'This page could not be found.', { noindex: true });
   return (
     <>
       <PageHead title="We couldn't find that page">The link may be old, or the address mistyped.</PageHead>

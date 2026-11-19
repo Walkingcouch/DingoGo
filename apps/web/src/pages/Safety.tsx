@@ -3,7 +3,7 @@ import { contact, useConfig } from '../config';
 import { useMeta } from '../meta';
 
 export default function Safety() {
-  useMeta('Safety', 'How DingoGo keeps riders, recipients and drivers safe: vetted drivers, trip PINs, live trip sharing, an emergency button and route checks.');
+  useMeta();
   const c = contact(useConfig());
   const items = [
     ['Accredited, vetted drivers', 'Every driver holds an NT H endorsement and CPV identity card, has a current police check and medical, and is trained by us. Their licence and accreditation dates are checked by the system; a driver with anything expired can\'t go online.'],

@@ -26,7 +26,7 @@ export function FareTable({ services }: { services: (FareRule | undefined)[] }) 
 }
 
 export default function Rides() {
-  useMeta('Rides', 'Fixed-price local rides around Alice Springs: airport, town, hospital and home. Pet-friendly cars and assistance animals always welcome.');
+  useMeta();
   const cfg = useConfig();
   const ride = rule(cfg, 'ride');
   const plan = cfg?.plans.find((p) => p.code === 'pass');

@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useState } from 'react';
 import { get } from '@dingogo/shared';
+import { SITE } from './seo';
 
 export type FareRule = { service: string; label: string; base_cents: number; per_km_cents: number; per_min_cents: number; booking_fee_cents: number; min_fare_cents: number; cancel_fee_cents: number; free_wait_min: number; night_pct: number; levy_cents: number; description: string };
 export type PublicConfig = {
@@ -20,7 +21,7 @@ export const useConfig = () => useContext(Ctx);
 export const rule = (cfg: PublicConfig | null, s: string) => cfg?.services.find((r) => r.service === s);
 /** Contact details fall back to the business plan's published contact if the API is unreachable. */
 export const contact = (cfg: PublicConfig | null) => ({
-  phone: cfg?.support.phone ?? '0432 101 175',
-  email: cfg?.support.email ?? 'contact@aperrke.com.au',
-  hours: cfg?.support.hours ?? '6am to midnight, 7 days',
+  phone: cfg?.support.phone ?? SITE.phone,
+  email: cfg?.support.email ?? SITE.email,
+  hours: cfg?.support.hours ?? SITE.hours,
 });

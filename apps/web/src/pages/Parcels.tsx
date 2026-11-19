@@ -3,6 +3,7 @@ import { Estimator } from '../Estimator';
 import { PageHead } from '../Layout';
 import { rule, useConfig } from '../config';
 import { useMeta } from '../meta';
+import { FaqSection } from '../components/Faq';
 import { FareTable } from './Rides';
 import { PROHIBITED_ITEMS } from '@dingogo/shared';
 
@@ -10,7 +11,7 @@ import { PROHIBITED_ITEMS } from '@dingogo/shared';
 export const PROHIBITED: [string, string][] = PROHIBITED_ITEMS.map((i) => [i.title, i.detail]);
 
 export default function Parcels() {
-  useMeta('Send a parcel', 'Same-day parcel delivery around Alice Springs by local drivers, with a delivery PIN or signature on every handover.');
+  useMeta();
   const cfg = useConfig();
   return (
     <>
@@ -45,6 +46,7 @@ export default function Parcels() {
           </ul>
         </div>
       </section>
+      <FaqSection set="parcels" />
     </>
   );
 }

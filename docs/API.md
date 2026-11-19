@@ -715,3 +715,30 @@ card gives a `Concession (−N%)` fare line on the discountable amount (fare + b
 offers withdrawn, no paper reminders; `DELETE /driver/leave` or going online ends it; `GET /driver/me` has `driver.leave`. Driver cancel reason
 `sorry_business`: the trip goes to the next driver, the offer is marked `released` (not a cancellation, no repeat-cancel or assistance-animal flag),
 no note is stored, and the driver is put on leave (`leave` in the response). Ops: `GET /admin/drivers/on-leave`; drivers list has `leave`.
+
+## Website, SEO and growth (Round 13)
+
+Driver recruitment funnel (migration 018; before it is applied the form still works without a reference or status link, status links answer
+503 `migration_pending`, admin stages save without `updated_at`):
+- `POST /public/driver-applications` also takes `source` (≤ 80 chars; normalised to lower-case `utm_source / utm_campaign` or a referrer host) and
+  `drive_state` (`NT`|`SA`). Returns `{ ok, id, ref: "DA-XXXXXX", status_token, status_url }` and texts the applicant the status link
+  (template `driver_application_received`, when SMS is set up).
+- `GET /public/driver-applications/status/:token` → `{ application: { ref, first_name, stage, stage_label, stage_detail, steps[{key,label,done,current}],
+  note, drive_state, received_at, updated_at, can_withdraw } }` — no phone, email, message or source. `Cache-Control: no-store`. Wrong tokens are
+  404 and counted per IP (`application_token_ip`, 60/hour); over the limit → 429.
+- `POST /public/driver-applications/status/:token/withdraw` → stage `withdrawn` (409 `application_closed` once approved/declined/withdrawn).
+- Stages: `new` (Received) → `contacted` (We've called) → `onboarding` (Paperwork) → `approved`; or `declined` (Not right now) / `withdrawn`.
+- `GET /admin/applications` → `{ items (no status_token), stages, funnel: { days: 90, stages: {status: n}, sources: [{source, n, approved}] }, status_links }`.
+- `PATCH /admin/applications/:id` `{ status?: stage, public_note?: string ≤ 300 | null, notify?: true }` — a stage change texts the applicant the new
+  stage and link (`driver_application_update`) unless `notify: false`; returns `{ item, texted }`; audited. Other statuses are now 400.
+
+Referrals:
+- `GET /public/referrals/:code` → `{ valid, code (upper-case, or null), bonus_points }`. Nothing about the referrer. Misses counted per IP
+  (`referral_check_ip`, 60/hour) → 429 over the limit.
+
+Website (no API changes): every public page is prerendered with its own head (title, description, canonical, Open Graph with
+`/og-1200.jpg`, Twitter large card, JSON-LD) from `apps/web/src/seo.ts`; `sitemap.xml`, `robots.txt`; `app.html` (noindex) serves private and
+unknown paths. Links: `/fares?from=lat,lng,Name&to=…&service=ride|pet|courier_s|courier_m|courier_l` (shareable estimate), `/rider/?from=…&to=…&service=…`
+(pre-fills booking, survives sign-in) and `/rider/?ref=CODE` (pre-fills the sign-up code), `/invite/CODE`, `/drive/status/TOKEN`, `/airport`,
+`/hospital`. Build env (website): `VITE_SITE_URL` (canonical host; else `VERCEL_PROJECT_PRODUCTION_URL`, else the live URL), and analytics
+`VITE_ANALYTICS_DOMAIN` (off when unset), `VITE_ANALYTICS_SRC`, `VITE_ANALYTICS_API` (Plausible-compatible, cookie-free, Do Not Track honoured).

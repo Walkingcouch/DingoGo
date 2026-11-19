@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { NavLink, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
-import { Icon, Login, get, getToken, initAuth, setToken, connectRealtime, useOnline, disablePush, refreshPush, ServiceNotice } from '@dingogo/shared';
+import { Icon, Login, readHandoff, takeHandoff, get, getToken, initAuth, setToken, connectRealtime, useOnline, disablePush, refreshPush, ServiceNotice } from '@dingogo/shared';
 import { MeCtx, type Me, ACTIVE } from './ctx';
 import { RideScreen } from './screens/Ride';
 import { TripScreen, clearCachedTrip, readCachedTrip } from './screens/Trip';
@@ -57,7 +57,7 @@ export function App() {
 
   if (!authed) {
     return <><OfflineBar /><Login title="Rides and deliveries for Mparntwe" subtitle="Aboriginal-owned and local to Alice Springs. Going electric." askName askReferral
-      onDone={() => setAuthed(true)} /></>;
+      initialReferral={readHandoff().ref ?? ''} onDone={() => { takeHandoff('ref'); setAuthed(true); }} /></>;
   }
 
   const hideTabs = loc.pathname.startsWith('/trip/');

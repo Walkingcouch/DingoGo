@@ -766,3 +766,86 @@ Ideas for next rounds:
 - Cultural safety for drivers: optional cultural awareness module in onboarding, "men's/women's business" trip preference handled like women-driver
   matching, and sacred-site drop-off guidance on tours.
 - Community grants reporting: trips, kilometres and spend per community organisation per month (CSV for funders), concession use by card type.
+
+### Round 13 — website, SEO and growth
+Scan: read every website page, `index.html`, `meta.ts`, the estimator, the Vercel build and Caddyfile, the public API routes (driver applications,
+config), the admin applications tab, the rider sign-in/referral code and share text, and built the site to look at its output. Found: the site is a
+single `index.html` for every path, so crawlers and link previews (which don't run JavaScript) see the home page's title and description on every
+page, there's no canonical URL, `og:image` is a relative 512 px square (Facebook/LinkedIn/WhatsApp need an absolute ~1200×630 image), no sitemap,
+no robots.txt, no structured data, and `/track/<token>` pages are indexable; the 338 KB mascot PNG is downloaded for a 36 px header logo on every
+page; every page is in the main bundle (QR code library included); Google Fonts are discovered only after the CSS bundle downloads (`@import`);
+the fare estimator can't be shared or linked to and "Book this ride" drops the places chosen; no landing pages for airport or hospital trips;
+driver applicants get "we'll call you" and nothing else (no reference, no way to see where they're up to), the admin has four free-text statuses
+and no funnel counts or source; referrals exist only as a code typed at sign-up (no invite link, nothing on the website explains it); no analytics.
+
+Suggested:
+1. [add] Per-page SEO: one page list (`apps/web/src/seo.ts`) with title, description, canonical path and structured data; the build writes each
+   public page as its own HTML file with those tags in the head (canonical, Open Graph with an absolute 1200×630 image, Twitter large card), so
+   crawlers and link previews see the right page; `useMeta` keeps them in step in the browser; `noindex` on tracking, status, invite and 404 pages.
+2. [add] `sitemap.xml` and `robots.txt` generated from the same list at build time (apps, API and private links disallowed; sitemap linked).
+3. [add] Structured data (JSON-LD): `TaxiService` + `LocalBusiness` for DingoGo (Alice Springs area, phone, hours, price range), `FAQPage` from
+   one FAQ data file shared by the Help page, home and landing pages (visible text and markup always match), `BreadcrumbList` on inner pages.
+4. [fix] Page speed budget: mascot as WebP at the sizes shown (header mark and hero), new 1200×630 social image, every page except Home in its own
+   chunk, the QR library loaded on demand, fonts preconnected and requested from the HTML head, image width/height set; a budget check after the
+   build (entry JS and per-image limits) that fails the build when exceeded.
+5. [add] Fare estimator with shareable links: `/fares?from=…&to=…&service=…` restores the trip, "Share this price" copies/shares the link;
+   "Book this ride" hands pickup, drop-off and service to the rider app, which pre-fills them (after sign-in too).
+6. [add] Landing pages for airport transfers (`/airport`) and hospital and clinic trips (`/hospital`), each with a preset estimator, what to
+   expect, FAQ and structured data; FAQ sections added to parcels, tours and business pages from the shared FAQ file.
+7. [add] Driver recruitment funnel: each application gets a reference and a private status link (`/drive/status/<token>`) showing its stage
+   (received → we've called → paperwork → approved / not right now / withdrawn) with a note from the team; the applicant can withdraw; admin sets
+   stage + note, sees counts by stage and by source; applicant texted on a stage change (when SMS is set up); first-visit source (utm/referrer
+   host) recorded. Migration 018; old behaviour without it.
+8. [add] Referral programme visibility: `/invite/<code>` landing (code checked by a rate-limited public endpoint that reveals nothing about the
+   referrer), rider app takes `?ref=` into the sign-up form, the rider's "Share code" sends the invite link, "Bring a friend" on home and Rewards.
+9. [add] Privacy-friendly analytics behind config: Plausible-compatible script only when `VITE_ANALYTICS_DOMAIN` is set, cookie-free, honours Do
+   Not Track, tokens and codes stripped from paths, a few named events (Book, Share price, Driver application, Call); privacy policy says so.
+
+Done (all 9). Migration: `services/api/migrations/018_growth.sql` (columns `driver_applications.ref/status_token/public_note/source/drive_state/
+updated_at` + unique token/ref indexes and a status index; additive, IF NOT EXISTS). Before it is applied (`lib/growth.ts` `applicationsReady()`
+checks once a minute): the Drive form still takes applications (no reference or link), status links answer 503 `migration_pending`, admin stages
+still save (no note, no funnel by source). Tests: 105 → 114 (e2e: application gets a `DA-` reference and status link, applicant texted, status page
+shows first name/stage/steps only (no phone, email, message or source), admin list hides the token and has funnel counts by stage and source, bad
+stage 400, stage + note → texted and audited, withdraw once, declined path, wrong tokens 404 and limited per IP; referral check valid/invalid
+without referrer details, misses limited per IP, sign-up with the invite code links the friend; everything with the 018 columns renamed away. New
+`test/website.test.ts`: page list unique/sane/no private paths/no "all-electric", head tags with canonical + absolute 1200×630 image + JSON-LD types
+(LocalBusiness, WebSite, TaxiService, Service, FAQPage, BreadcrumbList) and filled placeholders, noindex pages without canonical/JSON-LD/token,
+HTML escaping, sitemap/robots, analytics path redaction, fare/booking link round trip and validation, FAQ fill). `messages.test.ts` covers the two
+new templates. Also checked in a headless browser: `/fares?…` restores the trip and service, prices it and builds the rider hand-off link; `/airport`
+has its title and 3 JSON-LD blocks; `/invite/…` is noindex; Help shows 11 FAQs.
+- API: new `src/lib/growth.ts` (stages, steps, `publicApplication`, `cleanSource`, `applicationsReady`); `routes/public.ts` (application with
+  reference/link/text, status, withdraw, referral check); `routes/admin.ts` (applications list with funnel, validated stage + note + text);
+  `lib/ids.ts` (`applicationRef`), `lib/messages.ts` (`driver_application_received`, `driver_application_update`).
+- Website: new `src/seo.ts` (page list, head tags, JSON-LD, sitemap, robots, analytics paths), `src/faqs.ts`, `src/analytics.ts`,
+  `src/attribution.ts`, `components/Faq.tsx`, pages `Fares`, `Landing` (airport, hospital), `Invite`, `DriveStatus`; `meta.ts` renders the same tags
+  at runtime; `vite.config.ts` plugin prerenders 18 pages + `app.html` + sitemap/robots and enforces the budget (entry JS 110 KB gz, CSS 20 KB gz,
+  images 120 KB; now 72.6 KB / 8.8 KB); every page except Home lazy-loaded; QR library on demand; mascot PNG (338 KB) → WebP 4 KB mark / 38 KB hero;
+  `og-1200.jpg` 71 KB replaces the 512 px `og.png`; fonts preconnected and requested from the HTML; estimator "Share this price" and booking
+  hand-off; Drive form reference + status link + "Already applied?"; FAQs on Help/Home/Parcels/Tours/Business from one file; nav "Fares", footer
+  links; privacy policy "Our website" paragraph. `scripts/build-vercel.mjs`: routes for prerendered pages, `app.html` fallback, cache headers for
+  `/assets/` and sitemap/robots; `deploy/Caddyfile` likewise.
+- Shared: new `handoff.ts` (place/trip link format, `saveHandoff`/`takeHandoff`), `Login` `initialReferral`. Rider: `main.tsx` keeps `?from/to/
+  service/ref` through sign-in, Ride screen pre-fills them, sign-up pre-fills the friend's code, Rewards "Share code" sends the invite link.
+  Admin: application stages (Received … Withdrawn), reference and source, note for the applicant, 90-day funnel line.
+- Behaviour changes to note: unknown and private website paths now get `app.html` (noindex) instead of the home page's HTML; `PATCH
+  /admin/applications/:id` only takes the six stages (old values `new/contacted/onboarding/declined` are among them); applicants are texted on
+  application and stage changes (when Twilio is set up); `og.png` is gone (`og-1200.jpg`); website "Book this ride" links carry the trip.
+- Deploy: apply migration 018 (AUTO_MIGRATE does it at cold start). Optional Vercel env vars: `VITE_SITE_URL` (set it when a custom domain such
+  as dingogo.com.au goes live, so canonical/sitemap use it), `VITE_ANALYTICS_DOMAIN` (+ `VITE_ANALYTICS_SRC`/`_API` for self-hosted Plausible) to turn
+  analytics on. `PUBLIC_WEB_URL` on the API must be the website's address (status links in texts). Submit `/sitemap.xml` in Google Search Console.
+
+Deferred:
+- Full server-side rendering of page bodies (only the head is prerendered; Google renders the JavaScript, other crawlers get the right title,
+  description and structured data). Needs a hydration-safe render of each page and the config fetched at build time.
+- Self-hosting the fonts (would remove two third-party origins and the render-blocking stylesheet): needs the font files and licence check
+  (both are OFL) and a change to `brand.css` that every app shares.
+- Per-page social images (one image for all pages today) and a `Review`/`AggregateRating` markup — no genuine reviews yet; never fake them.
+- Driver application documents upload from the status page (applicants still upload in the driver app after signing in).
+- A CSP header for the website (Round 2 deferral) now also needs the analytics origin when it is on.
+
+Ideas for next rounds:
+- Server-render or statically render page bodies (Vite SSR at build) for faster first paint and full content without JavaScript.
+- Self-host fonts with `font-display: swap` + `<link rel=preload>` for the two used weights; drop the Google Fonts origins from every app.
+- Driver application status page: checklist of NT paperwork with links and the ability to upload documents before getting the app.
+- Referral leaderboard/rewards for community champions, and partner-café QR posters that open `/invite/CODE` or `/fares` with the café preset.
+- Search Console / Bing Webmaster verification via env meta tags, and a weekly SEO check in CI (sitemap reachable, no noindex on public pages).

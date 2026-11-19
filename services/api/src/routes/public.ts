@@ -3,7 +3,10 @@ import type { FastifyInstance } from 'fastify';
 import { one, q } from '../db.js';
 import { ApiError, notFound } from '../lib/errors.js';
 import { config } from '../config.js';
-import { limit } from '../lib/rateLimit.js';
+import { limit, record, tooMany } from '../lib/rateLimit.js';
+import { applicationRef, shareToken } from '../lib/ids.js';
+import { FINAL_STAGES, REFERRAL_CODE, STATUS_TOKEN, applicationsPending, applicationsReady, cleanSource, publicApplication } from '../lib/growth.js';
+import { sendSmsT } from '../services/notify.js';
 import { quoteFare } from '../lib/fares.js';
 import { lastRouteError, route } from '../lib/geo.js';
 import { searchPlaces } from '../lib/places.js';
@@ -142,15 +145,68 @@ export default async function publicRoutes(app: FastifyInstance) {
       name: z.string().min(2).max(80), phone: z.string().min(8).max(20), email: z.string().email(), suburb: z.string().max(60).optional(),
       has_licence_years: z.number().int().min(0).max(70).optional(), has_cpv_authority: z.boolean().default(false),
       wants_lease: z.boolean().default(false), languages: z.string().max(120).optional(), message: z.string().max(1000).optional(),
+      // Round 13: where the applicant first came from (utm tags or referrer host, set by the website) and the state they'll drive in.
+      source: z.string().max(80).optional(), drive_state: z.enum(['NT', 'SA']).optional(),
     }), req.body);
     await formLimit(req);
+    const base = [b.name, b.phone, b.email, b.suburb ?? null, b.has_licence_years ?? null, b.has_cpv_authority, b.wants_lease, b.languages ?? null, b.message ?? null];
+    if (!(await applicationsReady())) {
+      // Migration 018 not applied yet: the application is still taken, just without a status link.
+      const row = await one(
+        `INSERT INTO driver_applications (name, phone, email, suburb, has_licence_years, has_cpv_authority, wants_lease, languages, message)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id, created_at`, base);
+      toOps('application.new', row);
+      reply.code(201);
+      return { ok: true, id: row.id };
+    }
+    const token = shareToken();
     const row = await one(
-      `INSERT INTO driver_applications (name, phone, email, suburb, has_licence_years, has_cpv_authority, wants_lease, languages, message)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id, created_at`,
-      [b.name, b.phone, b.email, b.suburb ?? null, b.has_licence_years ?? null, b.has_cpv_authority, b.wants_lease, b.languages ?? null, b.message ?? null]);
-    toOps('application.new', row);
+      `INSERT INTO driver_applications (name, phone, email, suburb, has_licence_years, has_cpv_authority, wants_lease, languages, message,
+                                        ref, status_token, source, drive_state, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13, now()) RETURNING id, ref, created_at`,
+      [...base, applicationRef(), token, cleanSource(b.source), b.drive_state ?? 'NT']);
+    toOps('application.new', { id: row.id, created_at: row.created_at });
+    const url = `${config.publicWebUrl}/drive/status/${token}`;
+    void sendSmsT(b.phone, 'driver_application_received', { ref: row.ref, url }, {});
     reply.code(201);
-    return { ok: true, id: row.id };
+    return { ok: true, id: row.id, ref: row.ref, status_token: token, status_url: url };
+  });
+
+  /** The applicant's private status link. Wrong tokens are counted per IP so links can't be guessed. */
+  const applicationByToken = async (req: { ip: string; params: unknown }) => {
+    if (!(await applicationsReady())) throw new ApiError(503, 'migration_pending', applicationsPending());
+    const token = String((req.params as any).token ?? '');
+    if (await tooMany('application_token_ip', req.ip, config.rateLimits.publicFormPerIp * 6, 3600)) {
+      throw new ApiError(429, 'rate_limited', 'Too many tries from this connection. Please wait an hour or call us.');
+    }
+    const row = STATUS_TOKEN.test(token) ? await one('SELECT * FROM driver_applications WHERE status_token = $1', [token]) : null;
+    if (!row) { await record('application_token_ip', req.ip); throw notFound('Application'); }
+    return row;
+  };
+  app.get('/public/driver-applications/status/:token', async (req, reply) => {
+    reply.header('Cache-Control', 'no-store');
+    return { application: publicApplication(await applicationByToken(req)) };
+  });
+  app.post('/public/driver-applications/status/:token/withdraw', async (req, reply) => {
+    reply.header('Cache-Control', 'no-store');
+    const row = await applicationByToken(req);
+    if (FINAL_STAGES.includes(row.status)) throw new ApiError(409, 'application_closed', 'This application is already closed.');
+    const upd = await one(`UPDATE driver_applications SET status = 'withdrawn', updated_at = now() WHERE id = $1 AND status = $2 RETURNING *`, [row.id, row.status]);
+    if (!upd) throw new ApiError(409, 'application_changed', 'This application just changed. Refresh to see where it is up to.');
+    toOps('application.withdrawn', { id: row.id });
+    return { application: publicApplication(upd) };
+  });
+
+  /** Referral invite links (/invite/CODE on the website): says only whether the code works and what it's worth — nothing about the
+   *  person who shared it. Misses are counted per IP so codes can't be listed by guessing. */
+  app.get('/public/referrals/:code', async (req) => {
+    const code = String((req.params as any).code ?? '');
+    if (await tooMany('referral_check_ip', req.ip, config.rateLimits.publicFormPerIp * 6, 3600)) {
+      throw new ApiError(429, 'rate_limited', 'Too many tries from this connection. Please wait an hour.');
+    }
+    const u = REFERRAL_CODE.test(code) ? await one(`SELECT 1 FROM users WHERE upper(referral_code) = upper($1) AND deleted_at IS NULL`, [code]) : null;
+    if (!u) await record('referral_check_ip', req.ip);
+    return { valid: !!u, code: u ? code.toUpperCase() : null, bonus_points: config.loyalty.referralBonusPoints };
   });
 
   app.post('/public/hire-requests', async (req, reply) => {

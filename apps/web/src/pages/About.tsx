@@ -3,7 +3,7 @@ import { contact, useConfig } from '../config';
 import { useMeta } from '../meta';
 
 export default function About() {
-  useMeta('About', 'DingoGo is an Aboriginal-owned, local rideshare and courier business in Alice Springs, going electric. Owned by Johnathan Ah Chee and Micah Bartlett.');
+  useMeta();
   const cfg = useConfig();
   const c = contact(cfg);
   const zones = cfg?.zones ?? [];

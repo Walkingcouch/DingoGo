@@ -24,6 +24,8 @@ export default function Legal() {
         </ul>
         <h2>How we use it</h2>
         <p>To arrange and price trips, show your trip to your driver and anyone you share it with, process payments, give you tax invoices, run rewards, keep people safe, meet legal obligations (including NT passenger transport and tax records) and improve the service.</p>
+        <h2>Our website</h2>
+        <p>The DingoGo website uses no advertising or tracking cookies. If we turn on visitor statistics, they are counted without cookies and without storing anything on your device, using a privacy-friendly service that doesn't collect personal information. We count pages viewed and a few actions (like tapping Book), never trip links, fare-link places or invite codes. If your browser sends Do Not Track, you are not counted. When you apply to drive, we note how you found us (for example the name of an ad campaign) for the visit you applied in.</p>
         <h2>Who we share it with</h2>
         <p>Your driver sees your first name, pickup and drop-off. Parcel recipients see a tracking link. We use service providers for payments, SMS and hosting. We don't sell personal information, and partner cafés only see a reward code and your first name. We may share information with police or emergency services when the law requires or someone's safety is at risk.</p>
         <h2>Marketing</h2>
@@ -78,7 +80,7 @@ export default function Legal() {
     },
   };
   const d = docs[doc];
-  useMeta(d?.title ?? 'Not found', d?.desc);
+  useMeta(d?.title ?? 'Page not found', d?.desc, { noindex: !d });
   if (!d) return <NotFound />;
   return (
     <>

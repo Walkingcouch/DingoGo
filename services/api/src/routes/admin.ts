@@ -1,7 +1,8 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { one, q, tx } from '../db.js';
 import { requireUser } from '../auth.js';
-import { bad, conflict, notFound } from '../lib/errors.js';
+import { ApiError, bad, conflict, notFound } from '../lib/errors.js';
+import { APPLICATION_STAGES, STAGE_KEYS, applicationsPending, applicationsReady } from '../lib/growth.js';
 import { displayKey, referralCode, voucherCode } from '../lib/ids.js';
 import { parse, phone, z } from '../lib/validate.js';
 import { VERIFIED_SOURCES, greenSql, normaliseRego, vehicleAgeRule, vehicleOut } from '../lib/vehicles.js';
@@ -928,7 +929,45 @@ export default async function adminRoutes(app: FastifyInstance) {
   });
 
   // ───────────── Inbound: hire requests, driver applications, enquiries ─────────────
-  for (const [path, table] of [['hire-requests', 'hire_requests'], ['applications', 'driver_applications'], ['enquiries', 'enquiries']] as const) {
+  // Driver applications (Round 13): stages the applicant sees through their status link, a note for them, funnel counts by stage and source.
+  app.get('/admin/applications', async (req) => {
+    await ops(req);
+    const ready = await applicationsReady();
+    const items = await q(`SELECT * FROM driver_applications ORDER BY created_at DESC LIMIT 300`);
+    for (const it of items) delete (it as any).status_token;   // the applicant's private link isn't shown to staff
+    const stages = await q(`SELECT status, count(*)::int n FROM driver_applications WHERE created_at > now() - interval '90 days' GROUP BY 1`);
+    const sources = ready
+      ? await q(`SELECT coalesce(source, 'direct') source, count(*)::int n, count(*) FILTER (WHERE status = 'approved')::int approved
+                 FROM driver_applications WHERE created_at > now() - interval '90 days' GROUP BY 1 ORDER BY 2 DESC LIMIT 10`)
+      : [];
+    return { items, stages: APPLICATION_STAGES, funnel: { days: 90, stages: Object.fromEntries(stages.map((r: any) => [r.status, r.n])), sources }, status_links: ready };
+  });
+  app.patch('/admin/applications/:id', async (req) => {
+    const me = await ops(req);
+    const b = parse(z.object({ status: z.enum(STAGE_KEYS).optional(), public_note: z.string().max(300).nullable().optional(), notify: z.boolean().default(true) }), req.body);
+    const ready = await applicationsReady();
+    if (b.public_note !== undefined && !ready) throw new ApiError(503, 'migration_pending', applicationsPending());
+    const before = await one('SELECT * FROM driver_applications WHERE id = $1', [(req.params as any).id]);
+    if (!before) throw notFound();
+    const sets: string[] = []; const vals: unknown[] = [before.id];
+    if (b.status) { vals.push(b.status); sets.push(`status = $${vals.length}`); }
+    if (b.public_note !== undefined) { vals.push(b.public_note?.trim() || null); sets.push(`public_note = $${vals.length}`); }
+    if (!sets.length) throw new ApiError(400, 'nothing_to_change', 'Send a status or a note');
+    if (ready) sets.push('updated_at = now()');
+    const item = await one(`UPDATE driver_applications SET ${sets.join(', ')} WHERE id = $1 RETURNING *`, vals);
+    const changed = !!b.status && b.status !== before.status;
+    let texted = false;
+    if (changed && b.notify && ready && item.status_token && item.ref) {
+      const r = await sendSmsT(item.phone, 'driver_application_update', { ref: item.ref, stage: APPLICATION_STAGES[b.status!].label,
+        url: `${config.publicWebUrl}/drive/status/${item.status_token}` });
+      texted = r.sent;
+    }
+    await audit(me.id, 'status', 'driver_applications', item.id, { status: b.status, note: b.public_note !== undefined ? 'set' : undefined, texted });
+    delete item.status_token;
+    return { item, texted };
+  });
+
+  for (const [path, table] of [['hire-requests', 'hire_requests'], ['enquiries', 'enquiries']] as const) {
     app.get(`/admin/${path}`, async (req) => { await ops(req); return { items: await q(`SELECT * FROM ${table} ORDER BY created_at DESC LIMIT 300`) }; });
     app.patch(`/admin/${path}/:id`, async (req) => {
       const me = await ops(req);

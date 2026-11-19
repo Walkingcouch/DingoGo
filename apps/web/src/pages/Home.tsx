@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import QRCode from 'qrcode';
 import { get, money, post } from '@dingogo/shared';
-import mascot from '../assets/mascot-clean.png';
+import mascot from '../assets/mascot-hero.webp';
+import { FaqList } from '../components/Faq';
 import { AIRPORT, Estimator, RIDER_URL, TODD_MALL, type Place, ANDROID_RIDER_APK } from '../Estimator';
 import { contact, rule, useConfig } from '../config';
 import { useMeta } from '../meta';
@@ -26,7 +26,7 @@ const TOUR_TONES: Record<string, { tone: SceneTone; gap?: boolean }> = {
 const hrs = (m: number) => (m % 60 ? `${Math.floor(m / 60)} h ${m % 60} min` : `${m / 60} hours`);
 
 export default function Home() {
-  useMeta('DingoGo', 'Aboriginal-owned, local rideshare and same-day courier in Alice Springs (Mparntwe), going electric. See your fixed price before you book.');
+  useMeta();
   const cfg = useConfig();
   const c = contact(cfg);
   const min = (s: string) => { const r = rule(cfg, s); return r ? money(r.min_fare_cents) : '—'; };
@@ -45,7 +45,7 @@ export default function Home() {
             <Estimator />
           </div>
           <div className="hero-mascot" aria-hidden="true">
-            <img src={mascot} alt="" width={260} height={380} />
+            <img src={mascot} alt="" width={480} height={700} decoding="async" />
           </div>
         </div>
       </section>
@@ -157,18 +157,12 @@ export default function Home() {
             <h2>Coffee on us</h2>
             <p className="section-intro">Every dollar you spend earns 10 Dingo Points. 800 points is a coffee at a partner café.</p>
             <PartnerList />
+            <p className="section-intro"><b>Bring a friend:</b> share your invite link from the app and you both get 500 points after their first trip.</p>
             <Link to="/rewards" className="text-link">How rewards work</Link>
           </div>
           <div>
             <h2>Questions people ask</h2>
-            <div className="faq">
-              <details><summary>How do I pay?</summary><p>Card in the app (held securely by our payment provider, never by us), DingoGo credit, a prepaid DingoGo card, or a business or NDIS account. Parcels can also be paid in cash.</p></details>
-              <details><summary>Can I book without a smartphone?</summary><p>Yes. Call {c.phone} and we'll book for you, {c.hours.toLowerCase()}. You can pay with a prepaid DingoGo card or a community organisation account.</p></details>
-              <details><summary>What does it cost to cancel?</summary><p>Nothing within 2 minutes of a driver accepting. After that, or once your driver has waited a few minutes, a small fee applies, and most of it goes to the driver. Tours are free to cancel up to 48 hours before.</p></details>
-              <details><summary>Can I bring my dog?</summary><p>Choose Ride with a pet and we'll send a car set up for animals. Assistance animals ride on every service, every time, at no cost.</p></details>
-              <details><summary>Do you go to Yulara or Tennant Creek?</summary><p>Not yet. We're starting in Alice Springs, then Tennant Creek and Yulara, then Darwin.</p></details>
-              <details><summary>Are you coming to South Australia?</summary><p>Yes, to regional towns: Port Augusta, Coober Pedy, Whyalla, Port Pirie and Mount Gambier. Coming soon, once we're accredited in SA.</p></details>
-            </div>
+            <FaqList set="home" />
             <Link to="/help" className="text-link">All help topics</Link>
           </div>
         </div>
@@ -244,7 +238,8 @@ function PartnerList() {
 /** Three phone screens drawn in HTML/CSS, showing real app states. */
 function Phones() {
   const [qr, setQr] = useState<string>('');
-  useEffect(() => { QRCode.toDataURL('DG7KQX2M', { margin: 0, width: 220, color: { dark: '#14213D', light: '#FFFFFF' } }).then(setQr).catch(() => {}); }, []);
+  // The QR library is only needed for this picture: load it after the page is up.
+  useEffect(() => { import('qrcode').then(({ default: QRCode }) => QRCode.toDataURL('DG7KQX2M', { margin: 0, width: 220, color: { dark: '#14213D', light: '#FFFFFF' } })).then(setQr).catch(() => {}); }, []);
   return (
     <div className="phones" aria-label="Screens from the DingoGo app" role="img" tabIndex={0}>
       <div className="phone phone--a">

@@ -3,9 +3,10 @@ import { PageHead } from '../Layout';
 import { Area, Field, formData, Sent, useSubmit } from '../forms';
 import { rule, useConfig } from '../config';
 import { useMeta } from '../meta';
+import { FaqSection } from '../components/Faq';
 
 export default function Business() {
-  useMeta('Business & events', 'Business accounts, NDIS plan-manager invoicing, community organisation billing and event transport in Alice Springs.');
+  useMeta();
   const cfg = useConfig();
   const hourly = rule(cfg, 'hourly');
   const f = useSubmit('/public/hire-requests');
@@ -32,6 +33,7 @@ export default function Business() {
           </div>
         </div>
       </section>
+      <FaqSection set="business" />
       <section className="section band" id="enquire">
         <div className="wrap split">
           <div>

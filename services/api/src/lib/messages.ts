@@ -41,6 +41,11 @@ export const templates = {
     render: (v) => v.approved
       ? { title: 'Concession fares are on', body: 'Your concession card is checked. Concession prices show when you book.' }
       : { title: 'Concession card not approved', body: `We couldn't approve your concession card${v.note ? `: ${v.note}` : ''}. You can send it again in Account.` } }),
+  // Round 13: driver applicants from the website (they have no account yet, so texts only) get a private status link.
+  driver_application_received: t<{ ref: string; url: string }>({ category: 'account', smsKind: 'transactional',
+    render: (v) => ({ sms: `DingoGo: thanks for applying to drive (ref ${v.ref}). We'll call you within a few days. See where it's up to: ${v.url}` }) }),
+  driver_application_update: t<{ ref: string; stage: string; url: string }>({ category: 'account', smsKind: 'transactional',
+    render: (v) => ({ sms: `DingoGo: your driver application ${v.ref} is now at "${v.stage}". Details: ${v.url}` }) }),
   ride_booked_for_you: t<{ org: string; ref: string; when: string; pickup: string }>({ category: 'trip', smsKind: 'transactional',
     render: (v) => ({
       title: 'Ride booked for you',

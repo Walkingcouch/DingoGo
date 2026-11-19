@@ -3,7 +3,7 @@ import { Area, Field, formData, Sent, useSubmit } from '../forms';
 import { useMeta } from '../meta';
 
 export default function Advertise() {
-  useMeta('Advertise', 'Advertise your Alice Springs business on DingoGo, on roof screens (subject to NT approval) and inside the app.');
+  useMeta();
   const f = useSubmit('/public/enquiries');
   return (
     <>

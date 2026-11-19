@@ -25,6 +25,7 @@ export default function Drivers() {
   const { data, error, reload } = useLoad(() => get('/admin/drivers'));
   const apps = useLoad(() => get('/admin/applications'));
   const run = useRun();
+  const ask = useAsk();
 
   const cols: Col<any>[] = [
     { key: 'name', label: 'Driver', nowrap: true, render: (d) => <><strong>{d.name || 'No name'}</strong><span className="sub">{d.phone}{d.state && d.state !== 'NT' ? `, ${d.state}` : ''}</span></> },
@@ -45,8 +46,16 @@ export default function Drivers() {
       <Tabs tabs={[['drivers', `Drivers (${data?.drivers.length ?? '…'})`], ['applications', `Website applications (${apps.data?.items.filter((a: any) => a.status === 'new').length ?? 0} new)`]]} value={tab} onChange={setTab}>
       {tab === 'drivers' && (<><ErrorMsg error={error} /><Table rows={data?.drivers} cols={cols} empty="No drivers yet. Applicants appear here when they sign in to the driver app." onRow={(d) => setOpen(d.user_id)} rowKey={(d) => d.user_id} /></>)}
       {tab === 'applications' && (
+        <>
+        {apps.data?.funnel && (
+          <p className="dg-muted" style={{ margin: '0 0 12px' }}>
+            Last {apps.data.funnel.days} days: {Object.entries(APPLICATION_STATUS).map(([k, l]) => `${l} ${apps.data.funnel.stages[k] ?? 0}`).join(', ')}.
+            {apps.data.funnel.sources?.length > 0 && <> Where they came from: {apps.data.funnel.sources.map((s: any) => `${s.source} ${s.n}${s.approved ? ` (${s.approved} approved)` : ''}`).join(', ')}.</>}
+            {apps.data.status_links === false && <> Status links for applicants start once database migration 018 is applied.</>}
+          </p>
+        )}
         <Table rows={apps.data?.items} empty="No applications yet. They arrive from the Drive with us form on the website." cols={[
-          { key: 'created_at', label: 'Received', nowrap: true, render: (a) => date(a.created_at) },
+          { key: 'created_at', label: 'Received', nowrap: true, render: (a) => <>{date(a.created_at)}{a.ref && <span className="sub">{a.ref}</span>}{a.source && <span className="sub">From {a.source}</span>}</> },
           { key: 'name', label: 'Name', render: (a) => <><strong>{a.name}</strong><span className="sub"><a href={`tel:${a.phone}`}>{a.phone}</a>{a.email && <>, <a href={`mailto:${a.email}`}>{a.email}</a></>}</span></> },
           { key: 'suburb', label: 'Suburb' },
           { key: 'has_licence_years', label: 'Licence yrs', num: true },
@@ -56,10 +65,18 @@ export default function Drivers() {
           { key: 'message', label: 'Message', truncate: 260 },
           { key: 'status', label: 'Status', render: (a) => (
             <select className="dg-select" style={{ minHeight: 34, padding: '2px 6px' }} value={a.status} aria-label="Application status"
-              onChange={async (e) => { await run(() => patch(`/admin/applications/${a.id}`, { status: e.target.value }), 'Updated'); void apps.reload(); }}>
+              onChange={async (e) => { await run(() => patch(`/admin/applications/${a.id}`, { status: e.target.value }), a.ref ? 'Updated. The applicant is texted when SMS is set up.' : 'Updated'); void apps.reload(); }}>
               {Object.entries(APPLICATION_STATUS).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
             </select>) },
+          { key: 'public_note', label: 'Note for applicant', render: (a) => (
+            <>{a.public_note ? <span>{a.public_note}</span> : <span className="dg-muted">None</span>}
+              {a.ref && <button className="dg-btn dg-btn--ghost dg-btn--sm" style={{ marginLeft: 6 }} onClick={async () => {
+                const note = await ask({ title: `Note for ${a.name}`, label: 'Shown on their status link (300 characters). Leave empty to remove.', initial: a.public_note ?? '', required: false, multiline: true });
+                if (note === null) return;
+                await run(() => patch(`/admin/applications/${a.id}`, { public_note: note.trim() || null }), 'Note saved'); void apps.reload();
+              }}>{a.public_note ? 'Edit' : 'Add'}</button>}</>) },
         ]} />
+        </>
       )}
       {open && <DriverDrawer id={open} onClose={() => { setOpen(null); void reload(); }} />}
       </Tabs>

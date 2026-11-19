@@ -9,7 +9,8 @@
 }
 :8080 {
 	root * /srv/web
-	try_files {path} /index.html
+	# Website pages are prerendered as /page/index.html; private links and unknown paths get app.html (noindex).
+	try_files {path} {path}/index.html /app.html
 	file_server
 	import security
 }

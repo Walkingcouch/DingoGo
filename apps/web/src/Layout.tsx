@@ -1,12 +1,14 @@
 import { useEffect, useState } from 'react';
 import { Link, NavLink, Outlet, useLocation } from 'react-router-dom';
-import mascot from './assets/mascot-clean.png';
+import mascot from './assets/mascot-mark.webp';
+import { pageview } from './analytics';
+import { captureSource } from './attribution';
 import { contact, useConfig } from './config';
 import { RIDER_URL } from './Estimator';
 import { Scene, type SceneTone } from './Scene';
 
 const NAV = [
-  ['/rides', 'Ride'], ['/parcels', 'Send'], ['/tours', 'Tours'], ['/business', 'Business'], ['/drive', 'Drive'], ['/about', 'About'],
+  ['/rides', 'Ride'], ['/fares', 'Fares'], ['/parcels', 'Send'], ['/tours', 'Tours'], ['/business', 'Business'], ['/drive', 'Drive'], ['/about', 'About'],
 ] as const;
 
 export function Layout() {
@@ -17,13 +19,15 @@ export function Layout() {
     if (loc.hash) document.getElementById(loc.hash.slice(1))?.scrollIntoView();
     else window.scrollTo(0, 0);
   }, [loc.pathname, loc.hash]);
+  useEffect(() => { captureSource(); }, []);
+  useEffect(() => { pageview(loc.pathname + loc.search); }, [loc.pathname]); // eslint-disable-line
   return (
     <>
       <a className="skip" href="#main">Skip to content</a>
       <header className="site-header">
         <div className="wrap head-row">
           <Link to="/" className="brand" aria-label="DingoGo home">
-            <span className="brand-mark"><img src={mascot} alt="" /></span><b>DingoGo</b>
+            <span className="brand-mark"><img src={mascot} alt="" width={30} height={36} /></span><b>DingoGo</b>
           </Link>
           <nav id="site-nav" className={`nav${open ? ' open' : ''}`} aria-label="Main">
             {NAV.map(([to, label]) => <NavLink key={to} to={to}>{label}</NavLink>)}
@@ -60,7 +64,7 @@ function Footer() {
         <div className="foot-cols">
           <div>
             <h2>Get around</h2>
-            <ul><li><Link to="/rides">Rides</Link></li><li><Link to="/parcels">Send a parcel</Link></li><li><Link to="/tours">Private tours</Link></li><li><Link to="/rewards">Rewards and partner cafés</Link></li><li><a href={RIDER_URL}>Open the web app</a></li></ul>
+            <ul><li><Link to="/rides">Rides</Link></li><li><Link to="/fares">Check a fare</Link></li><li><Link to="/airport">Airport transfers</Link></li><li><Link to="/hospital">Hospital and clinic trips</Link></li><li><Link to="/parcels">Send a parcel</Link></li><li><Link to="/tours">Private tours</Link></li><li><Link to="/rewards">Rewards and partner cafés</Link></li><li><Link to="/rewards#refer">Bring a friend</Link></li><li><a href={RIDER_URL}>Open the web app</a></li></ul>
           </div>
           <div>
             <h2>Work with us</h2>
@@ -76,7 +80,7 @@ function Footer() {
           </div>
         </div>
         <div className="foot-base">
-          <span className="brand foot-brand"><span className="brand-mark"><img src={mascot} alt="" /></span><b>DingoGo</b></span>
+          <span className="brand foot-brand"><span className="brand-mark"><img src={mascot} alt="" width={25} height={30} loading="lazy" /></span><b>DingoGo</b></span>
           <p>Aboriginal-owned, local rides and deliveries, going electric. Owned by Johnathan Ah Chee and Micah Bartlett. In an emergency call 000.</p>
           <p>© {new Date().getFullYear()} DingoGo Rideshare &amp; Courier</p>
         </div>

@@ -1,6 +1,12 @@
 import { ANDROID_DRIVER_APK } from '../Estimator';
 import { PageHead } from '../Layout';
-import { Area, Field, formData, Sent, useSubmit } from '../forms';
+import { useState } from 'react';
+import { Link } from 'react-router-dom';
+import { ApiError, post } from '@dingogo/shared';
+import { Area, Field, formData, Sent } from '../forms';
+import { track } from '../analytics';
+import { source } from '../attribution';
+import { STATUS_KEY } from './DriveStatus';
 import { useMeta } from '../meta';
 
 const FUELS = ['Electric', 'Plug-in hybrid', 'Hybrid', 'Petrol', 'Diesel'];
@@ -15,12 +21,26 @@ function withCar(raw: Record<string, unknown>) {
     car ? `Car: ${car}. Registered owner: ${car_owner ? 'yes' : 'no'}` : 'Car: not given',
     typeof message === 'string' ? message : '',
   ].filter(Boolean);
-  return { ...rest, message: lines.join('\n').slice(0, 1000) };
+  return { ...rest, drive_state: drive_state === 'SA' ? 'SA' : 'NT', source: source(), message: lines.join('\n').slice(0, 1000) };
 }
 
 export default function Drive() {
-  useMeta('Drive with us', 'Drive your own car for DingoGo in Alice Springs, and soon in regional South Australia. What the NT requires of you and your car, how we help you get accredited, and how earnings work.');
-  const f = useSubmit('/public/driver-applications');
+  useMeta();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [done, setDone] = useState<{ ref?: string; status_token?: string } | null>(null);
+  const saved = (() => { try { return localStorage.getItem(STATUS_KEY); } catch { return null; } })();
+  async function submit(body: Record<string, unknown>) {
+    setBusy(true); setError(null);
+    try {
+      const r = await post<{ ref?: string; status_token?: string }>('/public/driver-applications', body);
+      if (r.status_token) { try { localStorage.setItem(STATUS_KEY, r.status_token); } catch { /* ignore */ } }
+      track('Driver application', { state: String(body.drive_state ?? 'NT') });
+      setDone(r);
+    } catch (e) { setError(e instanceof ApiError ? e.message.replace(/^\w+: /, '') : 'Could not send. Check your connection and try again.'); }
+    finally { setBusy(false); }
+  }
+  const f = { busy, error, done: !!done, submit };
   return (
     <>
       <PageHead title="Drive with DingoGo">Drive your own car around your own town, with a local team behind you. Here's exactly what it takes.</PageHead>
@@ -124,9 +144,12 @@ export default function Drive() {
 
       <section className="section band" id="apply">
         <div className="wrap split">
-          <div><h2>Register your interest</h2><p className="section-intro">We'll call you for a yarn about your car, the paperwork and when you'd like to drive. It's fine if you haven't started on the accreditation yet.</p></div>
+          <div><h2>Register your interest</h2><p className="section-intro">We'll call you for a yarn about your car, the paperwork and when you'd like to drive. It's fine if you haven't started on the accreditation yet.</p>
+            {saved && !done && <p className="section-intro">Already applied? <Link to={`/drive/status/${saved}`}>See where your application is up to</Link>.</p>}</div>
           <div className="panel" style={{ color: 'var(--text)' }}>
-            {f.done ? <Sent title="Thanks for applying.">We'll call you within a few days to talk about next steps.</Sent> : (
+            {done ? <Sent title="Thanks for applying.">
+              {done.ref ? <>Your reference is <b>{done.ref}</b>. We'll call you within a few days. We've texted you a private link to <Link to={`/drive/status/${done.status_token}`}>see where your application is up to</Link>, any time.</> : <>We'll call you within a few days to talk about next steps.</>}
+            </Sent> : (
               <form className="form-grid" onSubmit={(e) => f.submit(withCar(formData(e)))}>
                 <Field label="Full name" name="name" required autoComplete="name" />
                 <Field label="Mobile" name="phone" type="tel" required autoComplete="tel" />

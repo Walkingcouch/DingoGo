@@ -1,6 +1,6 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { ApiError, Icon, PARCEL_SIZE_MAX_KG, PROHIBITED_ITEMS, canSpeak, get, money, post, Ranges, speak, t, useLoad } from '@dingogo/shared';
+import { ApiError, Icon, PARCEL_SIZE_MAX_KG, takeHandoff, PROHIBITED_ITEMS, canSpeak, get, money, post, Ranges, speak, t, useLoad } from '@dingogo/shared';
 import { DgMap, type MapMarker } from '@dingogo/shared/map';
 import { PlaceField, type Place } from '../components/PlaceField';
 import { QuoteBox } from '../components/QuoteBox';
@@ -122,6 +122,16 @@ export function RideScreen() {
     }, 350);
     return () => clearTimeout(t);
   }, [JSON.stringify(quoteBody), quotable]); // eslint-disable-line
+
+  // A trip handed over from the website ("Book this ride" or a shared fare link): fill it in once.
+  useEffect(() => {
+    const h = takeHandoff('trip');
+    if (h.from) setPickup({ lat: h.from.lat, lng: h.from.lng, address: h.from.name });
+    if (h.to) setDropoff({ lat: h.to.lat, lng: h.to.lng, address: h.to.name });
+    if (h.service?.startsWith('courier')) { setMode('courier'); setSize(h.service === 'courier_m' ? 'M' : h.service === 'courier_l' ? 'L' : 'S'); }
+    else if (h.service === 'pet') setMode('pet');
+    if (h.from && !h.to) setTarget('dropoff');
+  }, []);
 
   function useMyLocation() {
     setLocMsg(null);

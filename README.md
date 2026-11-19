@@ -39,7 +39,7 @@ npm install
 npm run db:setup                                   # migrations + demo data (local databases only)
 npm run dev:api                                    # http://localhost:4000
 npm run dev:web    # and/or dev:rider, dev:driver, dev:admin, dev:partner, dev:roof
-npm test                                           # 105 API tests (needs a throwaway DB: they reset it, and create/drop scratch databases)
+npm test                                           # 114 API and website tests (needs a throwaway DB: they reset it, and create/drop scratch databases)
 node scripts/a11y-check.mjs                        # WCAG 2.2 AA check (axe-core + Playwright) of the website and rider app; needs api, web and rider running
 ```
 
@@ -115,6 +115,8 @@ They also install from the browser as web apps (PWA) — useful for testing befo
 ## Docs
 
 - `docs/API.md` — every endpoint and realtime event.
+- Website SEO and growth: page list, structured data and sitemap in `apps/web/src/seo.ts`, FAQs in `apps/web/src/faqs.ts`; optional
+  cookie-free analytics with `VITE_ANALYTICS_DOMAIN` (see `docs/API.md` → Website, SEO and growth).
 - `docs/OPERATIONS.md` — bootstrap a new database, migrations, health checks, logs and error reporting, backups and restore.
 - `docs/screenshots/` — cross-app run (driver accepts in-app, rider sees it live, admin map, website tracking, roof screen).
 - `apps/*/screenshots/` — every screen of every app.

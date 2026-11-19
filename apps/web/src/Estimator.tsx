@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, useState } from 'react';
-import { ApiError, get, money, post } from '@dingogo/shared';
+import { ApiError, get, money, post, tripLinkQuery, type LinkService } from '@dingogo/shared';
+import { track } from './analytics';
 import { contact, useConfig } from './config';
 
 export type Place = { name: string; address: string; lat: number; lng: number };
@@ -82,9 +83,18 @@ export const ANDROID_DRIVER_APK = 'https://github.com/Walkingcouch/DingoGo/relea
 const isNightQuote = (q: { lines: { label: string }[] }) => q.lines.some((l) => l.label.startsWith('Late-night'));
 const taxiEstimate = (km: number, night: boolean) => Math.round(night ? 660 + 289 * km : 530 + 245 * km);
 
-export function Estimator({ initialService = 'ride', compact = false }: { initialService?: string; compact?: boolean }) {
-  const [from, setFrom] = useState<Place | null>(TODD_MALL);
-  const [to, setTo] = useState<Place | null>(AIRPORT);
+/** A place from a link (lat, lng, name) as an estimator place. */
+export const linkPlace = (p: { name: string; lat: number; lng: number }): Place => ({ name: p.name, address: p.name, lat: p.lat, lng: p.lng });
+const toLink = (p: Place) => ({ name: p.name, lat: p.lat, lng: p.lng });
+
+export function Estimator({ initialService = 'ride', compact = false, initialFrom = TODD_MALL, initialTo = AIRPORT, onChange }: {
+  initialService?: string; compact?: boolean; initialFrom?: Place | null; initialTo?: Place | null;
+  /** The /fares page keeps the address bar in step so the page itself is the shareable link. */
+  onChange?: (query: string) => void;
+}) {
+  const [from, setFrom] = useState<Place | null>(initialFrom);
+  const [to, setTo] = useState<Place | null>(initialTo);
+  const [shared, setShared] = useState<string | null>(null);
   const initialMode = initialService.startsWith('courier') ? 'parcel' : initialService === 'pet' ? 'pet' : 'ride';
   const [mode, setMode] = useState<'ride' | 'pet' | 'parcel'>(initialMode);
   const [size, setSize] = useState(initialService.startsWith('courier') ? initialService : 'courier_s');
@@ -104,6 +114,21 @@ export function Estimator({ initialService = 'ride', compact = false }: { initia
       .finally(() => { if (!stale) setLoading(false); });
     return () => { stale = true; };
   }, [from, to, service]);
+
+  // The trip as a link: /fares?… to share the price, the rider app with the same query to book it (it pre-fills the places).
+  const query = tripLinkQuery({ from: from ? toLink(from) : undefined, to: to ? toLink(to) : undefined, service: service as LinkService });
+  useEffect(() => { onChange?.(query); }, [query]); // eslint-disable-line
+  const bookHref = RIDER_URL + query;
+  async function share() {
+    const url = `${location.origin}/fares${query}`;
+    track('Share price', { service });
+    const text = quote ? `DingoGo price from ${from?.name} to ${to?.name}: ${money(quote.total_cents)}` : 'DingoGo fare estimate';
+    try {
+      if (navigator.share) { await navigator.share({ title: 'DingoGo fare', text, url }); setShared('Shared'); return; }
+    } catch { /* cancelled: fall back to copying */ }
+    try { await navigator.clipboard.writeText(url); setShared('Link copied'); }
+    catch { setShared(url); }
+  }
 
   const isRide = mode !== 'parcel';
   const c = contact(useConfig());
@@ -158,9 +183,11 @@ export function Estimator({ initialService = 'ride', compact = false }: { initia
         )}
       </div>
       <div className="est-foot">
-        <a className="dg-btn est-book" href={RIDER_URL}>{mode === 'parcel' ? 'Send this parcel' : 'Book this ride'}</a>
-        {!compact && <a className="dg-btn dg-btn--ghost" href={`tel:${c.phone.replace(/\s/g, '')}`}>Call {c.phone}</a>}
+        <a className="dg-btn est-book" href={bookHref} onClick={() => track('Book', { service, page: location.pathname })}>{mode === 'parcel' ? 'Send this parcel' : 'Book this ride'}</a>
+        {!compact && <a className="dg-btn dg-btn--ghost" href={`tel:${c.phone.replace(/\s/g, '')}`} onClick={() => track('Call', { page: location.pathname })}>Call {c.phone}</a>}
+        {from && to && <button type="button" className="dg-btn dg-btn--ghost est-share" onClick={share}>Share this price</button>}
       </div>
+      <p className="est-shared" role="status">{shared && (shared.startsWith('http') ? <>Copy this link: <span className="est-shared-url">{shared}</span></> : shared)}</p>
     </section>
   );
 }

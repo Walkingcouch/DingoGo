@@ -53,15 +53,23 @@ const staticHeaders = {
   'Permissions-Policy': 'camera=(self), geolocation=(self), microphone=(), payment=(self), usb=(), interest-cohort=()',
 };
 const spa = (base) => ({ src: `^${base}(.*)$`, dest: `${base}index.html` });
+// Website pages written with their own <head> (title, canonical, Open Graph, structured data) by apps/web/vite.config.ts.
+// Each is served at /path and /path/; anything else (share-trip, status and invite links, unknown paths) gets app.html (noindex).
+const prerendered = JSON.parse(fs.readFileSync(path.join(out, 'static', 'prerendered.json'), 'utf8')).pages.filter((p) => p !== '/');
+fs.rmSync(path.join(out, 'static', 'prerendered.json'));
+const escRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 fs.writeFileSync(path.join(out, 'config.json'), JSON.stringify({
   version: 3,
   routes: [
     { src: '^/(?!api(?:/|$)).*$', headers: staticHeaders, continue: true },
     { src: '^/(rider|driver|admin|partner|roof)$', status: 308, headers: { Location: '/$1/' } },
     { src: '^/api/?(.*)$', dest: '/api?__path=$1' },
+    { src: '^/(sitemap\\.xml|robots\\.txt)$', headers: { 'Cache-Control': 'public, max-age=3600' }, continue: true },
+    { src: '^/assets/(.*)$', headers: { 'Cache-Control': 'public, max-age=31536000, immutable' }, continue: true },
+    ...prerendered.map((p) => ({ src: `^${escRe(p)}/?$`, dest: `${p}/index.html` })),
     { handle: 'filesystem' },
     ...['/rider/', '/driver/', '/admin/', '/partner/', '/roof/'].map(spa),
-    { src: '^/(.*)$', dest: '/index.html' },
+    { src: '^/(.*)$', dest: '/app.html' },
   ],
 }, null, 2));
 console.log('\n✓ .vercel/output ready');

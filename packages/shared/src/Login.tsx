@@ -5,14 +5,16 @@ import { Acknowledgement } from './Acknowledgement';
 import mascot from '../assets/mascot.png';
 
 /** Phone + SMS code sign-in, shared by every app. */
-export function Login({ title, subtitle, onDone, askName = false, askReferral = false }: {
+export function Login({ title, subtitle, onDone, askName = false, askReferral = false, initialReferral = '' }: {
   title: string; subtitle?: string; onDone: (r: { token: string; user: any; is_new: boolean }) => void; askName?: boolean; askReferral?: boolean;
+  /** A friend's code from an invite link (rider app `?ref=`). */
+  initialReferral?: string;
 }) {
   const [step, setStep] = useState<'phone' | 'code'>('phone');
   const [phone, setPhone] = useState('');
   const [code, setCode] = useState('');
   const [name, setName] = useState('');
-  const [referral, setReferral] = useState('');
+  const [referral, setReferral] = useState(initialReferral);
   const [devCode, setDevCode] = useState<string | undefined>();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);

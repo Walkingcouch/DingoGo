@@ -2908,3 +2908,98 @@ test('before migration 017: everything else works; concession, client bookings a
     resetCommunityReady();
   }
 });
+
+// ───────────── Round 13: website growth ─────────────
+test('driver application funnel: reference + private status link, applicant texted; admin stages, note and funnel; withdraw; guessing limited', async () => {
+  const ip = '10.213.0.1';
+  const a = await call('POST', '/public/driver-applications', undefined, {
+    name: 'Kumanjayi Test Applicant', phone: '0412 555 013', email: 'apply13@example.com', has_cpv_authority: false,
+    source: 'Facebook / Driver-Ad!!', drive_state: 'NT', message: 'Car: Toyota Camry',
+  }, ip);
+  assert.equal(a.status, 201, JSON.stringify(a));
+  assert.match(a.ref, /^DA-[A-Z0-9]{6}$/);
+  assert.match(a.status_token, /^[a-z0-9]{20}$/);
+  assert.ok(a.status_url.endsWith(`/drive/status/${a.status_token}`));
+  const stored = await one(`SELECT source, drive_state, status, updated_at FROM driver_applications WHERE id = $1`, [a.id]);
+  assert.deepEqual([stored.source, stored.drive_state, stored.status], ['facebook / driver-ad', 'NT', 'new']);
+  await flushBackground();
+  assert.ok(await one(`SELECT 1 FROM comms_log WHERE template = 'driver_application_received' AND to_tail = '013'`), 'applicant texted the status link');
+
+  // The status page shows the stage and first name only.
+  const s = await call('GET', `/public/driver-applications/status/${a.status_token}`, undefined, undefined, ip);
+  assert.equal(s.status, 200);
+  assert.equal(s.headers['cache-control'], 'no-store');
+  assert.deepEqual([s.application.ref, s.application.first_name, s.application.stage, s.application.stage_label, s.application.can_withdraw],
+    [a.ref, 'Kumanjayi', 'new', 'Received', true]);
+  assert.deepEqual(s.application.steps.map((x: any) => [x.key, x.current]), [['new', true], ['contacted', false], ['onboarding', false], ['approved', false]]);
+  const body = JSON.stringify(s.application);
+  for (const secret of ['0412', 'apply13@example.com', 'Toyota', 'facebook']) assert.ok(!body.includes(secret), `status page leaks ${secret}`);
+
+  // Admin: list hides the token, has funnel counts by stage and source; stage + note → applicant texted; audit.
+  const list = await call('GET', '/admin/applications', 'admin');
+  const mine = list.items.find((x: any) => x.id === a.id);
+  assert.ok(mine && !('status_token' in mine) && mine.ref === a.ref);
+  assert.ok(list.funnel.stages.new >= 1 && list.funnel.sources.some((x: any) => x.source === 'facebook / driver-ad'));
+  assert.equal((await call('PATCH', `/admin/applications/${a.id}`, 'admin', { status: 'nonsense' })).status, 400);
+  const up = await call('PATCH', `/admin/applications/${a.id}`, 'admin', { status: 'contacted', public_note: 'Book your medical at the Flynn Drive clinic.' });
+  assert.equal(up.status, 200);
+  assert.ok(!('status_token' in up.item));
+  assert.ok(await one(`SELECT 1 FROM comms_log WHERE template = 'driver_application_update'`), 'stage change texted');
+  assert.ok(await one(`SELECT 1 FROM audit_log WHERE entity = 'driver_applications' AND entity_id = $1`, [a.id]), 'audited');
+  const s2 = await call('GET', `/public/driver-applications/status/${a.status_token}`, undefined, undefined, ip);
+  assert.deepEqual([s2.application.stage_label, s2.application.note], ["We've called", 'Book your medical at the Flynn Drive clinic.']);
+  assert.deepEqual(s2.application.steps.map((x: any) => x.done), [true, false, false, false]);
+
+  // Applicant withdraws; can't withdraw twice; declined path shows "Not right now" as the last step.
+  const w = await call('POST', `/public/driver-applications/status/${a.status_token}/withdraw`, undefined, {}, ip);
+  assert.deepEqual([w.status, w.application.stage, w.application.can_withdraw], [200, 'withdrawn', false]);
+  assert.equal((await call('POST', `/public/driver-applications/status/${a.status_token}/withdraw`, undefined, {}, ip)).status, 409);
+  await call('PATCH', `/admin/applications/${a.id}`, 'admin', { status: 'declined', notify: false });
+  const d = await call('GET', `/public/driver-applications/status/${a.status_token}`, undefined, undefined, ip);
+  assert.deepEqual(d.application.steps.map((x: any) => x.key), ['new', 'contacted', 'onboarding', 'declined']);
+
+  // Wrong tokens are 404 and counted per IP; after the limit even a right token is refused from that address.
+  const guessIp = '10.213.0.99';
+  assert.equal((await call('GET', '/public/driver-applications/status/zzzzzzzzzzzzzzzzzzzz', undefined, undefined, guessIp)).status, 404);
+  assert.equal((await call('GET', '/public/driver-applications/status/not-a-token', undefined, undefined, guessIp)).status, 404);
+  for (let i = 0; i < config.rateLimits.publicFormPerIp * 6; i++) await q(`INSERT INTO rate_events (bucket, key) VALUES ('application_token_ip', $1)`, [guessIp]);
+  assert.equal((await call('GET', `/public/driver-applications/status/${a.status_token}`, undefined, undefined, guessIp)).status, 429);
+});
+
+test('referral invite links: code check says only valid/invalid and the bonus, misses limited per IP; sign-up with the code links the friend', async () => {
+  const me = await one(`SELECT referral_code, name FROM users WHERE phone = '+61400000100'`);
+  const ok = await call('GET', `/public/referrals/${me.referral_code.toLowerCase()}`, undefined, undefined, '10.213.1.1');
+  assert.deepEqual([ok.status, ok.valid, ok.code, ok.bonus_points], [200, true, me.referral_code.toUpperCase(), config.loyalty.referralBonusPoints]);
+  assert.ok(!JSON.stringify(ok).includes(me.name.split(' ')[0] + ' '), 'no referrer name');
+  assert.deepEqual(Object.keys(ok).filter((k) => k !== 'status' && k !== 'headers').sort(), ['bonus_points', 'code', 'valid']);
+  const miss = await call('GET', '/public/referrals/NOPE9999', undefined, undefined, '10.213.1.2');
+  assert.deepEqual([miss.status, miss.valid, miss.code], [200, false, null]);
+  assert.equal((await call('GET', '/public/referrals/bad%20code!', undefined, undefined, '10.213.1.2')).valid, false);
+  for (let i = 0; i < config.rateLimits.publicFormPerIp * 6; i++) await q(`INSERT INTO rate_events (bucket, key) VALUES ('referral_check_ip', '10.213.1.3')`);
+  assert.equal((await call('GET', `/public/referrals/${me.referral_code}`, undefined, undefined, '10.213.1.3')).status, 429);
+  // The invite link's code works at sign-up (the rider app pre-fills it from ?ref=).
+  const ip = '10.213.1.4';
+  const r = await call('POST', '/auth/otp/request', undefined, { phone: '0412 555 014' }, ip);
+  const v = await call('POST', '/auth/otp/verify', undefined, { phone: '0412 555 014', code: r.dev_code, name: 'Invited Friend', referral_code: me.referral_code.toLowerCase() }, ip);
+  assert.equal(v.status, 200);
+  assert.ok(await one(`SELECT 1 FROM referrals rf JOIN users u ON u.id = rf.referee_id WHERE u.phone = '+61412555014'`));
+});
+
+test('before migration 018: driver applications are still taken (no status link); status links say migration_pending; admin stages still save', async () => {
+  const { resetApplicationsReady } = await import('../src/lib/growth.js');
+  const cols = ['ref', 'status_token', 'public_note', 'source', 'drive_state', 'updated_at'];
+  for (const c of cols) await q(`ALTER TABLE driver_applications RENAME COLUMN ${c} TO ${c}_off`);
+  resetApplicationsReady();
+  try {
+    const a = await call('POST', '/public/driver-applications', undefined, { name: 'Old Form', phone: '0412 555 015', email: 'old13@example.com', source: 'google' }, '10.213.2.1');
+    assert.deepEqual([a.status, a.ref, a.status_token], [201, undefined, undefined]);
+    assert.equal((await call('GET', '/public/driver-applications/status/abcdefghijklmnopqrst', undefined, undefined, '10.213.2.1')).error, 'migration_pending');
+    const list = await call('GET', '/admin/applications', 'admin');
+    assert.deepEqual([list.status, list.status_links, list.funnel.sources], [200, false, []]);
+    assert.equal((await call('PATCH', `/admin/applications/${a.id}`, 'admin', { status: 'contacted' })).item.status, 'contacted');
+    assert.equal((await call('PATCH', `/admin/applications/${a.id}`, 'admin', { public_note: 'x' })).error, 'migration_pending');
+  } finally {
+    for (const c of cols) await q(`ALTER TABLE driver_applications RENAME COLUMN ${c}_off TO ${c}`);
+    resetApplicationsReady();
+  }
+});

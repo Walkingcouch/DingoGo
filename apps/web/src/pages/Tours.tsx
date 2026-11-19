@@ -3,12 +3,13 @@ import { get, money } from '@dingogo/shared';
 import { PageHead } from '../Layout';
 import { Area, Field, formData, Sent, useSubmit } from '../forms';
 import { useMeta } from '../meta';
+import { FaqSection } from '../components/Faq';
 
 type Tour = { id: string; slug: string; name: string; summary: string; description: string; duration_min: number; price_cents: number; max_passengers: number; stops: string[]; cultural_note: string | null; requires_permit: boolean };
 const hours = (m: number) => (m % 60 ? `${Math.floor(m / 60)} h ${m % 60} min` : `${m / 60} hours`);
 
 export default function Tours() {
-  useMeta('Private tours', 'Private tours with a local driver from Alice Springs: Telegraph Station, the West MacDonnell gaps, Desert Park and Emily and Jessie Gaps.');
+  useMeta();
   const [tours, setTours] = useState<Tour[] | null>(null);
   const [err, setErr] = useState(false);
   const f = useSubmit('/public/hire-requests');
@@ -43,6 +44,7 @@ export default function Tours() {
           <p className="dg-muted prose" style={{ marginTop: 20 }}>Park entry fees aren't included. Some places on these routes are sacred sites or on Aboriginal land; your driver will explain where you can walk, swim and take photos. Trips onto Aboriginal land beyond these routes need a permit from the Central Land Council, which we'll help arrange. For longer guided cultural tours we partner with licensed Aboriginal tour operators.</p>
         </div>
       </section>
+      <FaqSection set="tours" />
       <section className="section band" id="enquire">
         <div className="wrap split">
           <div><h2>Book a tour</h2><p className="section-intro">Tell us the date and how many of you there are. We'll confirm a pickup time and driver within a day.</p></div>

@@ -32,6 +32,8 @@ const sample: Record<string, any> = {
   concession_reviewed: { approved: false, note: 'Card has expired' },
   client_consent_recorded: { org: 'Tangentyere Health Transport Service' },
   ride_booked_for_you: { org: 'Tangentyere Health Transport Service', ref: 'DG-ABC123', when: 'Thu 2:00 pm', pickup: 'Alice Springs Hospital' },
+  driver_application_received: { ref: 'DA-ABC123', url: 'https://dingogo.com.au/drive/status/abcdefghijklmnopqrst' },
+  driver_application_update: { ref: 'DA-ABC123', stage: "We've called", url: 'https://dingogo.com.au/drive/status/abcdefghijklmnopqrst' },
   promo: { title: 'Cheap Tuesdays', body: '20% off rides to the Todd Mall markets this Sunday.' },
 };
 const EMOJI = /\p{Extended_Pictographic}/u;
