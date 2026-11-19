@@ -6,6 +6,7 @@
  * Counted earnings: fares less the service fee, pickup pay, fuel surcharge and cancellation fees. Tips never count.
  * Top-up = floor × engaged hours − counted earnings (never negative), paid into the driver ledger once per driver per week.
  */
+import { engagedFromSql } from './courier.js';
 import { logError } from '../lib/log.js';
 import type pg from 'pg';
 import { config } from '../config.js';
@@ -32,11 +33,12 @@ export function parseWeek(week?: string | null) {
 
 /** Engaged time and counted earnings per driver for the week starting `week` (a Monday, Darwin time). */
 export async function floorRows(week: string, rateCents: number, c: Q = pool, driverId?: string): Promise<FloorRow[]> {
+  const from = await engagedFromSql('t');
   const rows = await q(
     `WITH bounds AS (SELECT ($1::date)::timestamp AT TIME ZONE $2 AS f, ($1::date + 7)::timestamp AT TIME ZONE $2 AS t),
      tr AS (
        SELECT t.driver_id, count(*) FILTER (WHERE t.status = 'completed')::int trips,
-              sum(least(extract(epoch FROM coalesce(t.completed_at, t.cancelled_at) - t.accepted_at), t.est_duration_s * 2 + 2700))::int engaged_s
+              sum(greatest(0, least(extract(epoch FROM coalesce(t.completed_at, t.cancelled_at) - ${from}), t.est_duration_s * 2 + 2700)))::int engaged_s
        FROM trips t, bounds b
        WHERE t.driver_id IS NOT NULL AND t.accepted_at IS NOT NULL
          AND (t.status IN ('completed','cancelled_rider','cancelled_admin')

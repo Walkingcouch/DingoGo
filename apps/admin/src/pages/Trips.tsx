@@ -4,7 +4,7 @@ import { get, post, money, dateTime, time, km, mins, STATUS_LABEL, COURIER_STATU
 import { DgMap, type MapMarker } from '@dingogo/shared/map';
 import { Page } from '../ctx';
 import { Chip, Drawer, ErrorMsg, Modal, Table, downloadCsv, useAsk, useRun, useToast, type Col } from '../ui';
-import { CHANNEL, COMMS_STATUS, COMMS_TEMPLATE, EVENT_TYPE, LEDGER_KIND, OFFER_STATUS, PARCEL_SIZE, PAYMENT_KIND, PAYMENT_METHOD, PAYMENT_PROVIDER, PAYMENT_ROW_STATUS, PAYMENT_STATUS, SERVICE_NAME, label } from '../labels';
+import { CHANNEL, COMMS_STATUS, COMMS_TEMPLATE, EVENT_TYPE, LEDGER_KIND, OFFER_STATUS, PARCEL_SIZE, PARCEL_OUTCOME, FAIL_REASON, PAYMENT_KIND, PAYMENT_METHOD, PAYMENT_PROVIDER, PAYMENT_ROW_STATUS, PAYMENT_STATUS, SERVICE_NAME, label } from '../labels';
 
 const SERVICES: [string, string][] = [['ride', 'Ride'], ['pet', 'Pet-friendly'], ['courier_s', 'Courier small'], ['courier_m', 'Courier medium'], ['courier_l', 'Courier large'], ['hourly', 'Hourly hire']];
 
@@ -146,6 +146,12 @@ function TripDrawer({ id, onClose }: { id: string; onClose: () => void }) {
             <dt>Recipient</dt><dd>{t.parcel.recipient_name} {t.parcel.recipient_phone}</dd>
             <dt>Delivery PIN</dt><dd>{t.parcel.delivery_pin}</dd>
             <dt>Delivered</dt><dd>{t.parcel.delivered_at ? `${dateTime(t.parcel.delivered_at)} to ${t.parcel.pod_received_by ?? 'recipient'}` : 'Not yet'}{t.parcel.pod_photo_url && <> · <FileLink href={t.parcel.pod_photo_url}>Delivery photo</FileLink></>}</dd>
+            {t.parcel.customer_ref && <><dt>Sender's reference</dt><dd>{t.parcel.customer_ref}</dd></>}
+            {t.batch && <><dt>Run</dt><dd>{t.batch.ref}, drop {t.batch_seq} of {t.batch.stops.length}: {t.batch.stops.map((x: any) => `${x.ref} ${label(PARCEL_OUTCOME, x.outcome ?? x.status)}`).join(', ')}</dd></>}
+            {t.pickup_window_end && <><dt>Pickup window</dt><dd>{dateTime(t.scheduled_for)} to {dateTime(t.pickup_window_end)}</dd></>}
+            {(t.parcel.safe_place || t.parcel.recipient_notes) && <><dt>Safe place / notes</dt><dd>{[t.parcel.safe_place, t.parcel.recipient_notes && `Recipient: ${t.parcel.recipient_notes}`].filter(Boolean).join(' · ')}</dd></>}
+            {t.parcel.outcome && <><dt>Outcome</dt><dd>{label(PARCEL_OUTCOME, t.parcel.outcome)}{t.parcel.failed_reason ? `: ${label(FAIL_REASON, t.parcel.failed_reason)}` : ''}{t.parcel.failed_note ? ` (${t.parcel.failed_note})` : ''}
+              {t.parcel.failed_photo_url && <> · <FileLink href={t.parcel.failed_photo_url}>Photo</FileLink></>}{t.parcel.pod_distance_m != null ? ` · handed over ${t.parcel.pod_distance_m} m from the address` : ''}</dd></>}
           </dl>
         </>)}
         <h3 style={{ marginTop: 18 }}>Fare</h3>

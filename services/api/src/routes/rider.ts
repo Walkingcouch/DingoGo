@@ -12,6 +12,7 @@ import { toOps } from '../realtime.js';
 import { send, sendSmsT } from '../services/notify.js';
 import * as pay from '../services/payments.js';
 import * as trips from '../services/trips.js';
+import { reattempt } from '../services/courier.js';
 
 /** Client Idempotency-Key header (a double tap or a retry after a lost reply sends the same one). */
 const idemKey = (req: FastifyRequest) => {
@@ -36,6 +37,26 @@ const quoteSchema = z.object({
   tour_package_id: z.string().uuid().nullable().optional(),
 });
 
+/** Parcel details. Sizes, weights, phones and the checklist are checked in lib/courier.ts (`checkParcel`). */
+export const parcelSchema = z.object({
+  size: z.enum(['S', 'M', 'L']),
+  weight_kg: z.number().positive().max(25).optional(),
+  description: z.string().min(2).max(200),
+  declared_value_cents: z.number().int().min(0).max(100000).optional(),
+  sender_name: z.string().min(1).max(80),
+  sender_phone: z.string().min(8).max(20),
+  recipient_name: z.string().min(1).max(80),
+  recipient_phone: z.string().min(8).max(20),
+  instructions: z.string().max(300).optional(),
+  leave_unattended: z.boolean().optional(),
+  requires_signature: z.boolean().optional(),
+  safe_place: z.string().max(120).optional(),
+  customer_ref: z.string().max(40).optional(),
+  // Every line of the prohibited items check (new apps), or the single tick box (older apps).
+  prohibited_items: z.array(z.string().max(30)).max(20).optional(),
+  prohibited_ack: z.boolean().default(false),
+});
+
 const tripSchema = quoteSchema.extend({
   kind: z.enum(['ride', 'courier']),
   passengers: z.number().int().min(1).max(7).optional(),
@@ -47,20 +68,8 @@ const tripSchema = quoteSchema.extend({
   payment_method: z.enum(['card', 'cash', 'corporate', 'wallet']),
   women_driver_pref: z.boolean().optional(),
   ndis_number: z.string().regex(/^\d{9}$/, 'NDIS number is 9 digits').optional(),
-  parcel: z.object({
-    size: z.enum(['S', 'M', 'L']),
-    weight_kg: z.number().max(25).optional(),
-    description: z.string().min(2).max(200),
-    declared_value_cents: z.number().int().max(100000).optional(),
-    sender_name: z.string().min(1).max(80),
-    sender_phone: z.string().min(8).max(20),
-    recipient_name: z.string().min(1).max(80),
-    recipient_phone: z.string().min(8).max(20),
-    instructions: z.string().max(300).optional(),
-    leave_unattended: z.boolean().optional(),
-    requires_signature: z.boolean().optional(),
-    prohibited_ack: z.boolean(),
-  }).optional(),
+  parcel: parcelSchema.optional(),
+  pickup_window_end: z.string().datetime().nullable().optional(),
 });
 
 export default async function riderRoutes(app: FastifyInstance) {
@@ -113,6 +122,19 @@ export default async function riderRoutes(app: FastifyInstance) {
     const me = await requireUser(req);
     const b = parse(z.object({ reason: z.string().max(200).optional() }), req.body);
     return { trip: trips.viewFor(await trips.cancelTrip(me, (req.params as any).id, b.reason), me) };
+  });
+
+  /** A parcel that came back to the sender: book another try (same parcel and addresses, new PIN, normal fare). */
+  app.post('/trips/:id/reattempt', async (req, reply) => {
+    const me = await requireUser(req);
+    const b = parse(z.object({
+      scheduled_for: z.string().datetime().nullable().optional(), pickup_window_end: z.string().datetime().nullable().optional(),
+      payment_method: z.enum(['card', 'cash', 'corporate', 'wallet']).optional(), leave_unattended: z.boolean().optional(),
+      safe_place: z.string().max(120).optional(), instructions: z.string().max(300).optional(),
+    }), req.body ?? {});
+    const t = await reattempt(me.id, (req.params as any).id, b);
+    reply.code(201);
+    return { trip: trips.viewFor(t, me) };
   });
 
   app.post('/trips/:id/rate', async (req) => {

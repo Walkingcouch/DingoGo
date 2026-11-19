@@ -27,6 +27,21 @@ export const templates = {
     render: (v) => ({ sms: `DingoGo: ${v.sender} is sending you a parcel (${v.ref}). Track it: ${v.url} - give the driver PIN ${v.pin} on delivery.` }) }),
   parcel_delivered_sender: t<{ ref: string; to: string }>({ category: 'trip', smsKind: 'transactional',
     render: (v) => ({ sms: `DingoGo: parcel ${v.ref} delivered to ${v.to}.` }) }),
+  // Round 11: booked with a pickup window; on its way with an ETA; couldn't be delivered; back with the sender.
+  parcel_recipient_booked: t<{ sender: string; ref: string; url: string; pin: string; when: string }>({ category: 'trip', smsKind: 'transactional',
+    render: (v) => ({ sms: `DingoGo: ${v.sender} is sending you a parcel (${v.ref}), collected ${v.when}. Track it: ${v.url} - give the driver PIN ${v.pin} on delivery.` }) }),
+  parcel_on_way: t<{ sender: string; ref: string; eta: string; url: string; safe_place: string | null }>({ category: 'trip', smsKind: 'transactional',
+    render: (v) => ({ sms: `DingoGo: your parcel from ${v.sender} (${v.ref}) is on its way, arriving about ${v.eta}.${v.safe_place ? ` If you're out it will be left: ${v.safe_place}.` : ''} Track: ${v.url}` }) }),
+  parcel_failed_recipient: t<{ sender: string; ref: string; reason: string }>({ category: 'trip', smsKind: 'transactional',
+    render: (v) => ({ sms: `DingoGo: we couldn't deliver your parcel from ${v.sender} (${v.ref}): ${v.reason}. It is going back to the sender, who will be in touch.` }) }),
+  parcel_failed_sender: t<{ ref: string; to: string; reason: string; fee_cents: number }>({ category: 'trip', smsKind: 'transactional',
+    render: (v) => ({
+      title: 'Parcel not delivered',
+      body: `${v.ref} to ${v.to}: ${v.reason}. The driver is bringing it back to you${v.fee_cents > 0 ? ` (return ${money(v.fee_cents)})` : ''}. Book another try from the trip.`,
+      sms: `DingoGo: parcel ${v.ref} to ${v.to} couldn't be delivered (${v.reason}). The driver is bringing it back to you.`,
+    }) }),
+  parcel_returned_sender: t<{ ref: string; to: string }>({ category: 'trip', smsKind: 'transactional',
+    render: (v) => ({ title: 'Parcel returned', body: `${v.ref} for ${v.to} is back with you. Book another try from the trip.`, sms: `DingoGo: parcel ${v.ref} for ${v.to} has been returned to you.` }) }),
 
   // ── Rider trip updates (texted too for phone bookings, or when the rider asks for texts) ──
   driver_on_way: t<{ again: boolean; driver: string; colour: string; make: string; model: string; rego: string; eta_min: number }>({ category: 'trip', smsKind: 'transactional',
@@ -149,7 +164,9 @@ export type VarsOf<K extends TemplateKey> = Parameters<(typeof templates)[K]['re
 
 export function render<K extends TemplateKey>(key: K, vars: VarsOf<K>): Rendered & { category: Category; smsKind?: SmsKind } {
   const tpl = templates[key] as Template<any>;
-  return { ...tpl.render(vars), category: tpl.category, smsKind: tpl.smsKind };
+  const m = tpl.render(vars);
+  // Text built from what people typed (safe places, names) can carry curly quotes or dashes: keep it GSM-7.
+  return { ...m, ...(m.sms ? { sms: gsmFriendly(m.sms) } : {}), category: tpl.category, smsKind: tpl.smsKind };
 }
 
 export function firstName(name: string) { return name.trim().split(/\s+/)[0] ?? ''; }

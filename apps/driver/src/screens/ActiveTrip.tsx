@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { ApiError, ChatThread, Icon, REALTIME, assetUrl, connectRealtime, get, km, money, post, uploadFile, useTripChat } from '@dingogo/shared';
+import { ApiError, ChatThread, DELIVERY_FAIL_REASONS, Icon, REALTIME, assetUrl, connectRealtime, get, km, money, post, uploadFile, useTripChat } from '@dingogo/shared';
 import { DgMap, type MapMarker } from '@dingogo/shared/map';
 import { needFlags, useDriver } from '../state';
 import { SignaturePad } from './SignaturePad';
@@ -49,6 +49,11 @@ export function ActiveTrip() {
   }, [chat.unread, chatOpen]); // eslint-disable-line
   const isCourier = t.kind === 'courier';
   const parcel = t.parcel;
+  // After a failed delivery the parcel goes back to the sender: the next stop is the pickup.
+  const returning = isCourier && parcel?.outcome === 'returning';
+  const [failOpen, setFailOpen] = useState(false);
+  const run = t.batch as { ref: string; stops: any[] } | undefined;
+  const runText = run ? `Drop ${t.batch_seq} of ${run.stops.length}` : null;
 
   useEffect(() => { get('/public/config').then((c) => setSupport(c.support?.phone ?? null)).catch(() => undefined); }, []);
   useEffect(() => { setError(null); setPin(''); }, [t.status]);
@@ -73,16 +78,17 @@ export function ActiveTrip() {
   const stageTitle = {
     accepted: isCourier ? 'Head to pickup' : `Pick up ${firstName}`,
     arrived: isCourier ? 'Collect the parcel' : 'Check the PIN',
-    in_progress: isCourier ? 'Deliver the parcel' : 'Drive to drop-off',
+    in_progress: returning ? 'Take it back to the sender' : isCourier ? 'Deliver the parcel' : 'Drive to drop-off',
   }[t.status as 'accepted' | 'arrived' | 'in_progress'] ?? t.status;
-  useStageAnnouncement(done ? null : `${stageTitle}. ${t.status === 'in_progress' ? t.dropoff_address : t.pickup_address}`, stageTitle);
+  const toDrop = t.status === 'in_progress' && !returning;
+  useStageAnnouncement(done ? null : `${stageTitle}. ${toDrop ? t.dropoff_address : t.pickup_address}`, stageTitle);
   if (done) return <TripDone onClose={() => { setTrip(null); void reloadMe(); void reloadTrip(); }} />;
 
-  const target = t.status === 'in_progress' ? { lat: t.dropoff_lat, lng: t.dropoff_lng, address: t.dropoff_address } : { lat: t.pickup_lat, lng: t.pickup_lng, address: t.pickup_address };
-  const toWhere = t.status === 'in_progress' ? (isCourier ? 'delivery' : 'drop-off') : 'pickup';
+  const target = toDrop ? { lat: t.dropoff_lat, lng: t.dropoff_lng, address: t.dropoff_address } : { lat: t.pickup_lat, lng: t.pickup_lng, address: t.pickup_address };
+  const toWhere = toDrop ? (isCourier ? 'delivery' : 'drop-off') : returning ? 'sender' : 'pickup';
   const markers: MapMarker[] = [
     ...(pos ? [{ id: 'me', kind: 'car' as const, lat: pos.lat, lng: pos.lng, heading: pos.heading }] : []),
-    ...(t.status !== 'in_progress' ? [{ id: 'p', kind: 'pickup' as const, lat: t.pickup_lat, lng: t.pickup_lng }] : []),
+    ...(!toDrop ? [{ id: 'p', kind: 'pickup' as const, lat: t.pickup_lat, lng: t.pickup_lng }] : []),
     { id: 'd', kind: 'dropoff' as const, lat: t.dropoff_lat, lng: t.dropoff_lng },
   ];
 
@@ -95,6 +101,7 @@ export function ActiveTrip() {
       <section className="trip-sheet">
         <div className="trip-meta"><span className="dg-muted">{t.ref}</span>{t.payment_method === 'cash' && <span className="dg-chip dg-chip--ochre"><Icon name="cash" size={16} />Cash {money(t.quote_cents)}</span>}</div>
         <h1 className="stage">{stageTitle}</h1>
+        {runText && <p className="dg-chip" style={{ margin: '0 0 6px' }}>{runText}, run {run!.ref}</p>}
         <p className="addr">{target.address}</p>
         {t.pending_sync && <p className="sync-note"><Icon name="info" size={18} />No signal. Saved on your phone, sends when signal returns.</p>}
 
@@ -137,7 +144,7 @@ export function ActiveTrip() {
 
         {t.status === 'arrived' && isCourier && (
           <>
-            {parcel && <ParcelInfo p={parcel} />}
+            {run ? <p><strong>Collect {run.stops.filter((x) => x.status === 'arrived').length} parcels</strong> for this run: {run.stops.map((x) => x.recipient_name).join(', ')}.</p> : parcel && <ParcelInfo p={parcel} />}
             <p className="dg-note">Check the parcel. Refuse alcohol, weapons, drugs or dangerous goods. Cancel with "Parcel looks prohibited".</p>
             <button className="dg-btn dg-btn--block btn-xl" onClick={() => step('start')} disabled={busy}>{busy ? 'Updating…' : 'Parcel collected'}</button>
           </>
@@ -147,7 +154,11 @@ export function ActiveTrip() {
           <button className="dg-btn dg-btn--green dg-btn--block btn-xl" onClick={() => step('complete', { lat: pos?.lat, lng: pos?.lng })} disabled={busy}>{busy ? 'Finishing…' : 'Complete trip'}</button>
         )}
 
-        {t.status === 'in_progress' && isCourier && <ProofOfDelivery parcel={parcel} busy={busy} onSubmit={(b) => step('complete', { ...b, lat: pos?.lat, lng: pos?.lng })} />}
+        {t.status === 'in_progress' && isCourier && parcel && <ParcelInfo p={parcel} />}
+        {t.status === 'in_progress' && isCourier && <ProofOfDelivery parcel={parcel} returning={returning} busy={busy} onSubmit={(b) => step('complete', { ...b, lat: pos?.lat, lng: pos?.lng })} />}
+        {t.status === 'in_progress' && isCourier && !returning && (
+          <button className="dg-btn dg-btn--ghost dg-btn--block" style={{ marginTop: 12 }} onClick={() => setFailOpen(true)}>Couldn’t deliver</button>
+        )}
 
         {error && <p className="dg-error" role="alert" style={{ marginTop: 12 }}>{error}</p>}
 
@@ -162,6 +173,10 @@ export function ActiveTrip() {
         if (r) { setCancelOpen(false); showToast(r.trip?.released ? 'Trip passed to another driver' : 'Trip cancelled'); }
       }} busy={busy} isCourier={isCourier} />}
       {sosOpen && <SosSheet onClose={() => setSosOpen(false)} />}
+      {failOpen && <FailSheet parcel={parcel} busy={busy} onClose={() => setFailOpen(false)} onSubmit={async (b) => {
+        const r = await act('delivery-failed', { ...b, lat: pos?.lat, lng: pos?.lng });
+        if (r) { setFailOpen(false); showToast('Not delivered. Take it back to the sender.'); }
+      }} />}
       {chatOpen && (
         <Sheet onClose={() => setChatOpen(false)} labelledBy="chat-h">
           <h2 id="chat-h" style={{ marginTop: 0 }}>Messages with {isCourier ? 'the customer' : firstName}</h2>
@@ -194,13 +209,18 @@ function ParcelInfo({ p }: { p: any }) {
       <div className="info-row"><span className="dg-muted">From</span><strong>{p.sender_name}</strong></div>
       <div className="info-row"><span className="dg-muted">To</span><strong>{p.recipient_name}</strong></div>
       {p.instructions && <div className="info-row"><span className="dg-muted">Notes</span><strong>{p.instructions}</strong></div>}
+      {p.recipient_notes && <div className="info-row"><span className="dg-muted">From the recipient</span><strong>{p.recipient_notes}</strong></div>}
+      {p.leave_unattended && <div className="info-row"><span className="dg-muted">If nobody's home</span><strong>Leave it{p.safe_place ? `: ${p.safe_place}` : ' in a safe place'} (photo)</strong></div>}
+      {p.requires_signature && <div className="info-row"><span className="dg-muted">Handover</span><strong>Signature needed</strong></div>}
+      {p.outcome === 'returning' && <div className="info-row"><span className="dg-muted">Not delivered</span><strong>Return to {p.sender_name}</strong></div>}
     </div>
   );
 }
 
-function ProofOfDelivery({ parcel, busy, onSubmit }: { parcel: any; busy: boolean; onSubmit: (b: any) => void }) {
-  const modes = [['pin', 'PIN'], ['signature', 'Signature'], ...(parcel?.leave_unattended ? [['photo', 'Photo']] : [])] as [string, string][];
-  const [mode, setMode] = useState(parcel?.requires_signature ? 'signature' : 'pin');
+function ProofOfDelivery({ parcel, busy, onSubmit, returning }: { parcel: any; busy: boolean; onSubmit: (b: any) => void; returning?: boolean }) {
+  // Back at the sender: the person taking it gives their name and signs (or a photo of the handover).
+  const modes = (returning ? [['signature', 'Signature'], ['photo', 'Photo']] : [['pin', 'PIN'], ['signature', 'Signature'], ...(parcel?.leave_unattended ? [['photo', 'Photo']] : [])]) as [string, string][];
+  const [mode, setMode] = useState(returning || parcel?.requires_signature ? 'signature' : 'pin');
   const [pin, setPin] = useState('');
   const [sig, setSig] = useState<string | null>(null);
   const [name, setName] = useState('');
@@ -214,11 +234,13 @@ function ProofOfDelivery({ parcel, busy, onSubmit }: { parcel: any; busy: boolea
     setUploading(true); setErr(null);
     try { const r = await uploadFile(f, 'pod'); setPhoto(r.url); setPreview(r.view_url ?? null); } catch (e) { setErr(e instanceof ApiError ? e.message : 'Upload failed'); } finally { setUploading(false); }
   }
-  const ready = mode === 'pin' ? pin.length === 4 : mode === 'signature' ? !!sig && name.trim().length > 1 : !!photo;
+  const ready = mode === 'pin' ? pin.length === 4 : mode === 'signature' ? !!sig && name.trim().length > 1 : !!photo && (!returning || name.trim().length > 1);
 
   return (
     <div>
-      {parcel && <p style={{ marginTop: 0 }}>For <strong>{parcel.recipient_name}</strong>{parcel.requires_signature ? ', signature required' : ''}.</p>}
+      {parcel && !returning && <p style={{ marginTop: 0 }}>For <strong>{parcel.recipient_name}</strong>{parcel.requires_signature ? ', signature required' : ''}.</p>}
+      {returning && <p style={{ marginTop: 0 }}>Hand it back to <strong>{parcel?.sender_name}</strong>. Ask for their name.</p>}
+      {returning && mode === 'photo' && <label className="dg-field"><span>Taken back by</span><input className="dg-input" value={name} onChange={(e) => setName(e.target.value)} autoComplete="off" /></label>}
       <div className="seg" role="group" aria-label="Proof of delivery">
         {modes.filter(([k]) => !(parcel?.requires_signature && k !== 'signature')).map(([k, l]) => <button key={k} type="button" aria-pressed={mode === k} onClick={() => setMode(k)}>{l}</button>)}
       </div>
@@ -244,10 +266,40 @@ function ProofOfDelivery({ parcel, busy, onSubmit }: { parcel: any; busy: boolea
       )}
       {err && <p className="dg-error">{err}</p>}
       <button className="dg-btn dg-btn--green dg-btn--block btn-xl" style={{ marginTop: 12 }} disabled={busy || !ready}
-        onClick={() => onSubmit(mode === 'pin' ? { delivery_pin: pin } : mode === 'signature' ? { pod_signature: sig, pod_received_by: name.trim() } : { pod_photo_url: photo })}>
-        {busy ? 'Finishing…' : 'Mark delivered'}
+        onClick={() => onSubmit(mode === 'pin' ? { delivery_pin: pin } : mode === 'signature' ? { pod_signature: sig, pod_received_by: name.trim() } : { pod_photo_url: photo, ...(returning ? { pod_received_by: name.trim() } : {}) })}>
+        {busy ? 'Finishing…' : returning ? 'Returned to the sender' : 'Mark delivered'}
       </button>
     </div>
+  );
+}
+
+function FailSheet({ parcel, busy, onClose, onSubmit }: { parcel: any; busy: boolean; onClose: () => void; onSubmit: (b: any) => void }) {
+  const [reason, setReason] = useState<string | null>(null);
+  const [note, setNote] = useState('');
+  const [photo, setPhoto] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  async function onPhoto(f?: File) {
+    if (!f) return;
+    try { setPhoto((await uploadFile(f, 'pod')).url); } catch (e) { setErr(e instanceof ApiError ? e.message : 'Upload failed'); }
+  }
+  // "Nobody home" when the sender allowed a safe place: leave it there instead.
+  const reasons = DELIVERY_FAIL_REASONS.filter(([k]) => !(k === 'no_one_home' && parcel?.leave_unattended));
+  return (
+    <Sheet onClose={onClose} labelledBy="fail-h">
+      <h2 id="fail-h">Why couldn’t you deliver?</h2>
+      <p className="dg-note">The parcel goes back to {parcel?.sender_name ?? 'the sender'}. You’re paid for the return. We text the sender and the recipient.</p>
+      <div style={{ display: 'grid', gap: 8 }} role="radiogroup" aria-label="Reason">
+        {reasons.map(([k, l]) => <button key={k} type="button" role="radio" aria-checked={reason === k} className="dg-btn dg-btn--ghost dg-btn--block"
+          style={{ justifyContent: 'flex-start', minHeight: 52, ...(reason === k ? { outline: '3px solid var(--ochre)' } : {}) }} onClick={() => setReason(k)}>{l}</button>)}
+      </div>
+      <label className="dg-field"><span>What happened{reason === 'other' ? '' : ' (optional)'}</span><input className="dg-input" value={note} maxLength={300} onChange={(e) => setNote(e.target.value)} /></label>
+      <label className="dg-field"><span>Photo of the door or gate (optional)</span><input className="dg-input" type="file" accept="image/*" capture="environment" onChange={(e) => onPhoto(e.target.files?.[0])} /></label>
+      {photo && <span className="dg-chip dg-chip--green">Photo saved</span>}
+      {err && <p className="dg-error" role="alert">{err}</p>}
+      <button className="dg-btn dg-btn--dark dg-btn--block btn-xl" style={{ marginTop: 12 }} disabled={busy || !reason || (reason === 'other' && !note.trim())}
+        onClick={() => onSubmit({ reason, note: note.trim() || undefined, photo_url: photo ?? undefined })}>{busy ? 'Saving…' : 'Not delivered: return it'}</button>
+      <button className="dg-btn dg-btn--ghost dg-btn--block" style={{ marginTop: 10 }} onClick={onClose}>Back</button>
+    </Sheet>
   );
 }
 
@@ -305,7 +357,7 @@ function TripDone({ onClose }: { onClose: () => void }) {
       {completed ? (
         <>
           <p className="dg-muted" style={{ margin: 0 }}>{t.ref}</p>
-          <h1>{t.kind === 'courier' ? 'Delivered' : 'Trip complete'}</h1>
+          <h1>{t.kind === 'courier' ? (t.parcel?.outcome === 'returned' ? 'Returned to the sender' : 'Delivered') : 'Trip complete'}</h1>
           {t.pending_sync && <p className="sync-note" role="status"><Icon name="info" size={18} />No signal. Saved on your phone and sent to DingoGo when signal returns. The fare shown is the quoted fare.</p>}
           <div className="big-num">{money(t.final_cents)}</div>
           <p className="dg-muted" style={{ marginTop: 0 }}>Fare incl. GST{t.actual_distance_m || t.est_distance_m ? `, ${km(t.actual_distance_m ?? t.est_distance_m)}` : ''}.{t.payment_method === 'cash' ? ' Collect this amount in cash.' : ' Paid in the app.'}</p>
@@ -333,7 +385,11 @@ function TripDone({ onClose }: { onClose: () => void }) {
           <p className="dg-muted">{t.ref} won't count against you if the passenger cancelled.</p>
         </>
       )}
-      <button className="dg-btn dg-btn--block btn-xl" style={{ marginTop: 16 }} onClick={onClose}>Back to driving</button>
+      {(() => {
+        // Multi-drop run: more drops (or a return) still to do.
+        const next = t.batch?.stops?.find((x: any) => x.id !== t.id && ['accepted', 'arrived', 'in_progress'].includes(x.status));
+        return <button className="dg-btn dg-btn--block btn-xl" style={{ marginTop: 16 }} onClick={onClose}>{next ? `Next: ${next.outcome === 'returning' ? 'return to the sender' : next.dropoff_address}` : 'Back to driving'}</button>;
+      })()}
     </div>
   );
 }

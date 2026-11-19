@@ -22,6 +22,7 @@ import uploadRoutes from './routes/uploads.js';
 import paymentRoutes from './routes/payments.js';
 import commsRoutes from './routes/comms.js';
 import healthRoutes from './routes/health.js';
+import businessRoutes from './routes/business.js';
 import { log, logError, reportError, requestId, safePath } from './lib/log.js';
 import { autoMigrateOnce } from './lib/bootstrap.js';
 
@@ -174,6 +175,7 @@ export async function buildServer() {
   await app.register(uploadRoutes);
   await app.register(paymentRoutes);
   await app.register(commsRoutes);
+  await app.register(businessRoutes);
   return app;
 }
 

@@ -619,3 +619,57 @@ settings fall back to the defaults, chat answers 503 `migration_pending`, nothin
   and `BOOTSTRAP_ADMIN_PHONE`. Migrations use `MIGRATION_DATABASE_URL` when set (owner), else `DATABASE_URL`. The Vercel function ships the SQL files.
 - **Scripts.** `db:reset` refuses a non-local database unless `ALLOW_DB_RESET=yes`; the demo seed refuses one unless `DEMO_DATA=true`.
   `npm run db:backup` (`--json`, `--out`). See `docs/OPERATIONS.md`.
+
+## Courier and delivery business (Round 11)
+
+Needs migration `016_courier_business.sql`. Until it is applied: single parcels, tracking, dispatch and earnings work as before;
+runs, pickup windows, failed-delivery returns and recipient instructions answer 503 `migration_pending`; `/public/config` → `courier.runs: false`.
+
+**Parcel checks** (`POST /trips` with `kind: courier`, runs, CSV): weight within the size (S 5 kg, M 15 kg, L 25 kg) → 400 `parcel_too_heavy`;
+recipient must be an Australian mobile → `recipient_mobile` (phones stored as +61…); sender any Australian number → `sender_phone`; declared value
+≤ $1,000. Prohibited items: `parcel.prohibited_items` must list every key in `/public/config` → `courier.prohibited.keys` (stored with the version
+in `parcels.prohibited_checklist`); older apps may still send `prohibited_ack: true`. New optional parcel fields: `safe_place` (with
+`leave_unattended`), `customer_ref` (the sender's order/script number). Signature-required parcels can't have a safe place.
+
+**Pickup windows:** `pickup_window_end` with `scheduled_for` (parcels only, 30 min to 4 h). Released at the start of the window (not 15 min early),
+searched until the window closes, offer and tracking show the window, recipient texted `parcel_recipient_booked` ("collected Thu 2:00-4:00 pm").
+
+**Multi-drop runs:** `POST /courier/runs/quote` `{ pickup, drops: [{ dropoff, size }], keep_order? }` → stops in delivery order (nearest first)
+with `index` into the request; `POST /courier/runs` `{ pickup, sender_name, sender_phone, payment_method, corporate_account_id?, scheduled_for?,
+pickup_window_end?, prohibited_items, drops: [{ dropoff, parcel }] (2–10) }` → `{ batch, trips }`, all-or-nothing. Each drop is its own trip
+(`batch_id`, `batch_seq`, own price, PIN, hold, invoice line and tracking link). Later drops are priced on the leg from the previous drop with no
+base fare, booking fee or long-pickup charge, minimum `courier_policy.extra_stop_min_cents` ($6). Only the first drop is dispatched; the offer
+carries `run: { stops, trip_m, pay_cents, last_drop }`; accepting assigns every drop; arrive/start apply to the whole run; each drop is delivered on
+its own. `/driver/trips/active` returns the next drop (returns last); trips carry `batch` (ref and every stop) for the sender, driver and ops, never
+on share links. A driver pulling out (own reason) or ops reassigning releases the whole run; a driver no-show/rider-asked/unsafe cancel at the
+pickup ends every drop; a prohibited parcel ends only its drop. No route-deviation alert on runs. Engaged time (earnings floor) counts each drop from
+the previous drop's finish, so minutes aren't counted twice.
+
+**On its way:** at pickup each recipient gets `parcel_on_way` with an ETA (cumulative leg times + `handover_s` per earlier drop), stored as
+`parcels.eta_at`.
+
+**Failed delivery:** `POST /driver/trips/:id/delivery-failed` `{ reason: no_one_home|no_safe_place|refused|wrong_address|no_access|unsafe|other,
+note?, photo_url? (own pod upload), lat?, lng? }` (in-progress parcels; `other` needs a note; `no_one_home` refused with `use_safe_place` when a safe
+place is allowed). The parcel becomes `outcome: returning`, a "Return to sender" line is added (`courier_policy.return_fee_pct` 50% of the trip
+fare, min $5; 0 turns it off), the recipient and sender are texted and the sender notified. Completing a returning parcel needs `pod_received_by`
+plus a signature or photo (`return_pod_required`); the trip completes with `final_cents = quote + fee`, outcome `returned`, and the driver is paid
+the fee like the fare (less the service fee). Credit-paid returns take only the credit left. Card trips over the hold are charged afresh and the old
+hold is released. `POST /trips/:id/reattempt` (sender, returned parcels, once → `already_rebooked`) books the same parcel again at a normal fare with
+a new PIN; optional `scheduled_for`, `pickup_window_end`, `leave_unattended`, `safe_place`, `instructions`, `payment_method`.
+
+**Delivered:** `parcels.outcome = delivered`, `pod_distance_m` from the drop-off; a photo-only drop more than 400 m away raises a
+`delivery_far_from_address` compliance flag.
+
+**Recipient tracking:** `GET /public/track/:token` adds `trip.parcel` (outcome, `eta_at`, window, safe place, notes, `left_photo_url` signed when
+left with a photo, failed reason, `can_add_instructions`). `POST /public/track/:token/instructions` `{ notes?, safe_place? }` before the driver has
+been (10 per hour per IP); a safe place switches on `leave_unattended` (refused for signature parcels: `signature_required`).
+
+**Business dashboard:** `GET /business/deliveries?account_id&status=all|active|done|problem&from&to&q&limit` — managers of a business account see
+every courier trip on it, members their own, no account → own; with `summary`. `GET /business/deliveries.csv` (same filters, no phone numbers).
+`POST /business/deliveries/import` `{ csv, dry_run (default true), pickup, sender_name, sender_phone, payment_method, corporate_account_id?,
+scheduled_for?, pickup_window_end?, prohibited_items }`: header row with `recipient_name`, `recipient_phone`, `address` (+ optional `lat`, `lng`,
+`size`, `weight_kg`, `description`, `instructions`, `safe_place`, `leave_unattended`, `requires_signature`, `reference`, `declared_value`; common
+aliases accepted), up to 50 rows; addresses without lat/lng are matched against known Alice Springs places. Every row is checked first; any error →
+400 `csv_errors` with `details: [{ row, error }]` and nothing booked; otherwise booked as runs of up to 10 drops.
+
+**Settings:** `courier_policy` `{ return_fee_pct, return_fee_min_cents, extra_stop_min_cents, handover_s }` (admin → Settings, clamped; defaults in code).

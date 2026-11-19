@@ -13,6 +13,9 @@ import { send, sendSmsT } from './notify.js';
 import { sendDocExpiryReminders } from './docExpiry.js';
 import * as pay from './payments.js';
 import { autoEarningsFloor } from './earningsFloor.js';
+import { checkParcel, type ParcelIn } from '../lib/courier.js';
+import { courierReady } from '../lib/courierSchema.js';
+import { loadCourierPolicy, onParcelsCollected, returnFeeFor } from './courier.js';
 
 export const ACTIVE = ['requested', 'accepted', 'arrived', 'in_progress'] as const;
 
@@ -69,13 +72,19 @@ export async function validatePromo(code: string, userId: string | null, c: Q = 
   return p;
 }
 
-export async function buildQuote(userId: string | null, input: QuoteInput, c: Q = pool, opts: { opsBooking?: boolean } = {}) {
-  const rule = await loadRule(input.service, c);
+/** `legFrom`/`extraStop`: a later drop on a multi-drop run is priced on the leg from the previous drop, with no base fare,
+ *  booking fee or long-pickup charge and its own (lower) minimum. */
+export async function buildQuote(userId: string | null, input: QuoteInput, c: Q = pool, opts: { opsBooking?: boolean; legFrom?: LatLng; extraStop?: boolean } = {}) {
+  let rule = await loadRule(input.service, c);
   const zone = await zoneFor(input.pickup, c);
   if (!zone) throw bad('outside_service_area', 'Pickup is outside our current service area (Alice Springs / Mparntwe)');
+  if (opts.extraStop) {
+    const policy = await loadCourierPolicy(c);
+    rule = { ...rule, base_cents: 0, booking_fee_cents: 0, min_fare_cents: policy.extra_stop_min_cents };
+  }
 
   let fixedPriceCents: number | undefined;
-  let r = await route(input.pickup, input.dropoff);
+  let r = await route(opts.legFrom ?? input.pickup, input.dropoff);
   if (input.service === 'tour') {
     if (!input.tour_package_id) throw bad('tour_required', 'Choose a tour package');
     const t = await one('SELECT * FROM tour_packages WHERE id = $1 AND active', [input.tour_package_id], c);
@@ -104,7 +113,7 @@ export async function buildQuote(userId: string | null, input: QuoteInput, c: Q 
   // Driver pay rules: long-pickup charge (nearest free car far away; on-demand only) and fuel surcharge (not tours).
   const pay = await loadDriverPay(c);
   let longPickup: { km: number; cents: number } | null = null;
-  if (pay.pickup.enabled && !input.scheduled_for && input.service !== 'tour') {
+  if (pay.pickup.enabled && !input.scheduled_for && input.service !== 'tour' && !opts.legFrom) {
     const m = await nearestFreeCarM(input.pickup, zone.state ?? 'NT', c);
     const cents = longPickupCents(m, pay);
     if (m != null && cents > 0) longPickup = { km: m / 1000, cents };
@@ -131,6 +140,7 @@ export async function buildQuote(userId: string | null, input: QuoteInput, c: Q 
     longPickup,
     fuelSurchargeCents,
   });
+  if (opts.extraStop) quote.lines.unshift({ label: 'Extra stop on a multi-drop run (no base fare or booking fee)', cents: 0 });
   return { quote, route: r, zone, rule, promo };
 }
 
@@ -177,14 +187,16 @@ export interface CreateTripInput extends QuoteInput {
   ndis_number?: string;
   channel?: 'app' | 'phone' | 'web' | 'sms';
   booked_by?: string;
-  parcel?: {
-    size: 'S' | 'M' | 'L'; weight_kg?: number; description: string; declared_value_cents?: number;
-    sender_name: string; sender_phone: string; recipient_name: string; recipient_phone: string;
-    instructions?: string; leave_unattended?: boolean; requires_signature?: boolean; prohibited_ack: boolean;
-  };
+  parcel?: ParcelIn;
+  /** Courier: collect any time between scheduled_for and this (30 min to 4 h). */
+  pickup_window_end?: string | null;
 }
 
-export async function createTrip(userId: string, input: CreateTripInput) {
+/** Where a trip sits in a multi-drop run, and how its price is worked out. */
+interface RunPlace { batchId: string; seq: number; legFrom?: LatLng }
+
+/** Checks that don't need the transaction (and run once for a whole multi-drop run). */
+async function precheck(userId: string, input: CreateTripInput) {
   // One live trip at a time per rider (courier jobs are exempt so a business can send several parcels).
   if (input.kind === 'ride') {
     const live = await one(`SELECT id FROM trips WHERE rider_id = $1 AND kind = 'ride' AND status = ANY($2)`, [userId, ACTIVE]);
@@ -192,10 +204,14 @@ export async function createTrip(userId: string, input: CreateTripInput) {
   }
   if (input.kind === 'courier') {
     if (!input.parcel) throw bad('parcel_required', 'Parcel details are required');
-    if (!input.parcel.prohibited_ack) {
-      throw bad('prohibited_ack_required', 'Please confirm the parcel contains no alcohol, weapons, drugs or dangerous goods');
-    }
+    input.parcel = checkParcel(input.parcel);
     if (!input.service.startsWith('courier')) throw bad('invalid_service', 'Courier jobs must use a courier service');
+  }
+  if (input.pickup_window_end) {
+    if (input.kind !== 'courier' || !input.scheduled_for) throw bad('validation_error', 'A pickup window is for booked parcel pickups');
+    if (!(await courierReady())) throw new ApiError(503, 'migration_pending', 'Pickup windows need database migration 016. Book a pickup time instead.');
+    const mins = (new Date(input.pickup_window_end).getTime() - new Date(input.scheduled_for).getTime()) / 60000;
+    if (!(mins >= 30 && mins <= 240)) throw bad('window_invalid', 'A pickup window is 30 minutes to 4 hours long');
   }
   if (input.has_pet && input.service !== 'pet') throw bad('pet_service_required', 'Choose "Pet-friendly" to bring a pet (assistance animals are always welcome on any service)');
   if (input.payment_method === 'corporate' && !input.corporate_account_id) throw bad('corporate_required');
@@ -206,18 +222,111 @@ export async function createTrip(userId: string, input: CreateTripInput) {
       : 'Cash is not accepted for this service.');
   }
 
-  const scheduled = input.scheduled_for ? new Date(input.scheduled_for) : null;
-  if (scheduled) {
-    const mins = (scheduled.getTime() - Date.now()) / 60000;
+  if (input.scheduled_for) {
+    const mins = (new Date(input.scheduled_for).getTime() - Date.now()) / 60000;
     if (mins < 20) throw bad('schedule_too_soon', 'Scheduled trips must be at least 20 minutes ahead');
     if (mins > 60 * 24 * 60) throw bad('schedule_too_far', 'You can book up to 60 days ahead');
   }
   // Card: available for this account (mock mode: test accounts only in production) and, with Stripe, a saved card to hold.
   if (input.payment_method === 'card') await pay.requireCardOnFile(userId);
+}
 
-  let heldRef: string | null = null;
-  return tx(async (c) => {
-    const { quote, route: r, zone, promo } = await buildQuote(userId, input, c, { opsBooking: !!input.booked_by });
+export async function createTrip(userId: string, input: CreateTripInput) {
+  await precheck(userId, input);
+  const held: string[] = [];
+  return tx((c) => insertTrip(c, userId, input, held)).catch(async (e) => {
+    for (const ref of held) await pay.cancelHold(ref);   // the booking didn't go through: don't leave money held on the card
+    throw e;
+  }).then(async (trip) => {
+    await afterCreate(trip, input);
+    return getTrip(trip.id);
+  });
+}
+
+/** After a booking has committed: ops board, the search for a driver and the recipient's text. */
+async function afterCreate(trip: any, input: CreateTripInput) {
+  toOps('trip.created', { id: trip.id, ref: trip.ref, status: trip.status });
+  if (trip.status === 'requested') await dispatchTrip(trip.id).catch((e) => logError('dispatch', e));
+  if (input.kind === 'courier') {
+    const p = await one('SELECT * FROM parcels WHERE trip_id = $1', [trip.id]);
+    const url = `${config.publicWebUrl}/track/${trip.share_token}`;
+    if (trip.scheduled_for) {
+      void sendSmsT(p.recipient_phone, 'parcel_recipient_booked', { sender: p.sender_name, ref: trip.ref, url, pin: p.delivery_pin,
+        when: pickupWhen(trip.scheduled_for, trip.pickup_window_end) }, { tripId: trip.id });
+    } else {
+      void sendSmsT(p.recipient_phone, 'parcel_recipient', { sender: p.sender_name, ref: trip.ref, url, pin: p.delivery_pin }, { tripId: trip.id });
+    }
+  }
+}
+
+/** "Thu 2:00 pm" or "Thu 2:00-4:00 pm" in Darwin time, for texts. */
+export function pickupWhen(from: Date | string, to?: Date | string | null) {
+  const f = (d: Date | string, o: Intl.DateTimeFormatOptions) => new Intl.DateTimeFormat('en-AU', { timeZone: config.timezone, ...o }).format(new Date(d));
+  const day = f(from, { weekday: 'short' });
+  const time = (d: Date | string) => f(d, { hour: 'numeric', minute: '2-digit', hour12: true }).replace(/\s+/g, ' ').toLowerCase();
+  if (!to) return `${day} ${time(from)}`;
+  return `${day} ${time(from).replace(/ (am|pm)$/, '')}-${time(to)}`;
+}
+
+/** Book a multi-drop run: one pickup, several drops, all in one transaction (all or nothing), offered to one driver. */
+export async function createRun(userId: string, base: Omit<CreateTripInput, 'dropoff' | 'parcel' | 'service'>,
+  drops: { dropoff: LatLng & { address?: string }; parcel: ParcelIn }[], meta: { source: 'app' | 'csv' }) {
+  if (!(await courierReady())) throw new ApiError(503, 'migration_pending', 'Multi-drop runs need database migration 016. Book each parcel on its own for now.');
+  const inputs: CreateTripInput[] = drops.map((d) => ({ ...base, kind: 'courier', service: sizeService(d.parcel.size), dropoff: d.dropoff, parcel: d.parcel }));
+  for (const [i, inp] of inputs.entries()) {
+    try { await precheck(userId, inp); }
+    catch (e) { if (e instanceof ApiError) e.message = `Drop ${i + 1}: ${e.message.replace(/^parcel: /, '')}`; throw e; }
+  }
+  const held: string[] = [];
+  const out = await tx(async (c) => {
+    const batch = await one(
+      `INSERT INTO courier_batches (ref, rider_id, corporate_account_id, source, pickup_address, stops) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
+      [tripRef().replace('DG-', 'RUN-'), userId, base.corporate_account_id ?? null, meta.source, base.pickup.address ?? 'Pinned location', inputs.length], c);
+    const made: any[] = [];
+    let prev: LatLng = base.pickup;
+    for (const [i, inp] of inputs.entries()) {
+      // Promo code and points go on the first drop only (they are once per booking).
+      const one_ = i === 0 ? inp : { ...inp, promo_code: null, redeem_points: 0 };
+      made.push(await insertTrip(c, userId, one_, held, { batchId: batch.id, seq: i + 1, legFrom: i === 0 ? undefined : prev }));
+      prev = inp.dropoff;
+    }
+    return { batch, made };
+  }).catch(async (e) => {
+    for (const ref of held) await pay.cancelHold(ref);
+    throw e;
+  });
+  // Only the first drop is dispatched: the others ride along with whoever accepts it.
+  for (const [i, t] of out.made.entries()) {
+    toOps('trip.created', { id: t.id, ref: t.ref, status: t.status });
+    if (i === 0 && t.status === 'requested') await dispatchTrip(t.id).catch((e) => logError('dispatch', e));
+    const p = await one('SELECT * FROM parcels WHERE trip_id = $1', [t.id]);
+    const url = `${config.publicWebUrl}/track/${t.share_token}`;
+    if (t.scheduled_for) void sendSmsT(p.recipient_phone, 'parcel_recipient_booked', { sender: p.sender_name, ref: t.ref, url, pin: p.delivery_pin, when: pickupWhen(t.scheduled_for, t.pickup_window_end) }, { tripId: t.id });
+    else void sendSmsT(p.recipient_phone, 'parcel_recipient', { sender: p.sender_name, ref: t.ref, url, pin: p.delivery_pin }, { tripId: t.id });
+  }
+  return { batch: out.batch, trips: await Promise.all(out.made.map((t) => getTrip(t.id))) };
+}
+
+export const sizeService = (s: string) => (s === 'L' ? 'courier_l' : s === 'M' ? 'courier_m' : 'courier_s');
+
+/** Price a multi-drop run without booking it (each later drop on the leg from the one before). */
+export async function quoteRun(userId: string, base: Omit<QuoteInput, 'dropoff' | 'service'>, drops: { dropoff: LatLng & { address?: string }; size: string }[]) {
+  const stops: { seq: number; dropoff: LatLng & { address?: string }; size: string; quote: FareQuote; leg: { distance_m: number; duration_s: number } }[] = [];
+  let prev: LatLng = base.pickup;
+  for (const [i, d] of drops.entries()) {
+    const { quote, route: r } = await buildQuote(userId, { ...base, service: sizeService(d.size), dropoff: d.dropoff, ...(i ? { promo_code: null, redeem_points: 0 } : {}) },
+      pool, i ? { legFrom: prev, extraStop: true } : {});
+    stops.push({ seq: i + 1, dropoff: d.dropoff, size: d.size, quote, leg: { distance_m: r.distance_m, duration_s: r.duration_s } });
+    prev = d.dropoff;
+  }
+  return { stops, total_cents: stops.reduce((n, s) => n + s.quote.total_cents, 0), distance_m: stops.reduce((n, s) => n + s.leg.distance_m, 0) };
+}
+
+/** One booking inside a transaction: price, trip row, points, promo, parcel, payment hold. Holds placed are pushed to `held`. */
+async function insertTrip(c: pg.PoolClient, userId: string, input: CreateTripInput, held: string[], run?: RunPlace) {
+  const scheduled = input.scheduled_for ? new Date(input.scheduled_for) : null;
+  {
+    const { quote, route: r, zone, promo } = await buildQuote(userId, input, c, { opsBooking: !!input.booked_by, legFrom: run?.legFrom, extraStop: !!run?.legFrom });
     const user = await one('SELECT * FROM users WHERE id = $1 FOR UPDATE', [userId], c);
 
     if (input.payment_method === 'wallet' && user.wallet_cents < quote.total_cents) {
@@ -241,6 +350,11 @@ export async function createTrip(userId: string, input: CreateTripInput) {
         r.distance_m, r.duration_s, quote.total_cents, JSON.stringify(quote), quote.discount_cents,
         quote.points_redeemed, promo?.code ?? null, input.payment_method, pin4(), shareToken(),
         !!input.women_driver_pref, input.ndis_number ?? null, input.channel ?? 'app', input.booked_by ?? null], c);
+    if (run || input.pickup_window_end) {
+      const extra = await one(`UPDATE trips SET batch_id = $2, batch_seq = $3, pickup_window_end = $4 WHERE id = $1 RETURNING batch_id, batch_seq, pickup_window_end`,
+        [trip.id, run?.batchId ?? null, run?.seq ?? null, input.pickup_window_end ?? null], c);
+      Object.assign(trip, extra);
+    }
 
     if (quote.points_redeemed) {
       await c.query('UPDATE users SET loyalty_points = loyalty_points - $2 WHERE id = $1', [userId, quote.points_redeemed]);
@@ -250,20 +364,25 @@ export async function createTrip(userId: string, input: CreateTripInput) {
     if (promo) await c.query('UPDATE promo_codes SET uses = uses + 1 WHERE code = $1', [promo.code]);
 
     if (input.kind === 'courier' && input.parcel) {
-      const p = input.parcel;
+      const p = input.parcel as ReturnType<typeof checkParcel>;
       await c.query(
         `INSERT INTO parcels (trip_id, size, weight_kg, description, declared_value_cents, sender_name, sender_phone,
            recipient_name, recipient_phone, instructions, leave_unattended, requires_signature, delivery_pin, prohibited_ack)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
         [trip.id, p.size, p.weight_kg ?? null, p.description, p.declared_value_cents ?? null, p.sender_name, p.sender_phone,
           p.recipient_name, p.recipient_phone, p.instructions ?? null, !!p.leave_unattended, !!p.requires_signature, pin4(), true]);
+      // Round 11 details (safe place, the checklist ticked, the sender's own reference) once migration 016 is in.
+      if (await courierReady()) {
+        await c.query(`UPDATE parcels SET safe_place = $2, prohibited_checklist = $3, customer_ref = $4 WHERE trip_id = $1`,
+          [trip.id, p.safe_place ?? null, p.checklist ? JSON.stringify(p.checklist) : null, p.customer_ref?.trim() || null]);
+      }
     }
 
     // Payment hold. Booked trips get theirs when they are released to drivers (card holds lapse after about 7 days).
     if (input.payment_method === 'card' && quote.total_cents > 0 && !scheduled) {
       const auth = await placeHold(c, trip);
       if (!auth.ok) throw payError(auth);
-      heldRef = auth.ref;
+      held.push(auth.ref);
       trip.payment_status = 'authorised';
       trip.payment_ref = auth.ref;
     }
@@ -272,21 +391,9 @@ export async function createTrip(userId: string, input: CreateTripInput) {
       await c.query(`UPDATE trips SET payment_status = 'authorised', payment_ref = 'wallet' WHERE id = $1`, [trip.id]);
     }
 
-    await event(c, trip.id, scheduled ? 'scheduled' : 'requested', userId, { quote: quote.total_cents });
+    await event(c, trip.id, scheduled ? 'scheduled' : 'requested', userId, { quote: quote.total_cents, ...(run ? { batch_seq: run.seq } : {}) });
     return trip;
-  }).catch(async (e) => {
-    if (heldRef) await pay.cancelHold(heldRef);   // the booking didn't go through: don't leave money held on the card
-    throw e;
-  }).then(async (trip) => {
-    toOps('trip.created', { id: trip.id, ref: trip.ref, status: trip.status });
-    if (trip.status === 'requested') await dispatchTrip(trip.id).catch((e) => logError('dispatch', e));
-    if (input.kind === 'courier') {
-      const p = await one('SELECT * FROM parcels WHERE trip_id = $1', [trip.id]);
-      void sendSmsT(p.recipient_phone, 'parcel_recipient',
-        { sender: p.sender_name, ref: trip.ref, url: `${config.publicWebUrl}/track/${trip.share_token}`, pin: p.delivery_pin }, { tripId: trip.id });
-    }
-    return getTrip(trip.id);
-  });
+  }
 }
 
 export async function event(c: Q, tripId: string, type: string, actorId: string | null, data?: unknown) {
@@ -367,7 +474,18 @@ export async function getTrip(id: string, c: Q = pool) {
   if (!t) throw notFound('Trip');
   if (t.rider) { t.rider.needs = riderNeeds(t.rider.accessibility, t.kind); delete t.rider.accessibility; }
   if (t.kind === 'courier') t.parcel = await one('SELECT * FROM parcels WHERE trip_id = $1', [id], c);
+  if (t.batch_id) t.batch = await runSummary(t.batch_id, c);
   return t;
+}
+
+/** A multi-drop run: its ref and every stop in delivery order (for the sender, the driver and ops; never on share links). */
+export async function runSummary(batchId: string, c: Q = pool) {
+  const b = await one('SELECT id, ref, stops, source, created_at FROM courier_batches WHERE id = $1', [batchId], c);
+  const stops = await q(
+    `SELECT t.id, t.ref, t.batch_seq AS seq, t.status, t.dropoff_address, t.est_distance_m, t.est_duration_s, p.recipient_name, p.outcome,
+            p.delivered_at, p.eta_at, p.customer_ref, p.size
+     FROM trips t JOIN parcels p ON p.trip_id = t.id WHERE t.batch_id = $1 ORDER BY t.batch_seq`, [batchId], c);
+  return { ...b, stops };
 }
 
 /** What the driver needs to know from the rider's accessibility profile (Account → Profile): Deaf or hard of hearing (message,
@@ -415,6 +533,8 @@ export async function dispatchTrip(tripId: string): Promise<'offered' | 'waiting
   return tx(async (c) => {
     const t = await one('SELECT * FROM trips WHERE id = $1 FOR UPDATE SKIP LOCKED', [tripId], c);
     if (!t || t.status !== 'requested') return 'skip';
+    // Multi-drop run: only the first drop still searching is offered; the rest go with whoever accepts it.
+    if (t.batch_id && await one(`SELECT 1 FROM trips WHERE batch_id = $1 AND batch_seq < $2 AND status = 'requested'`, [t.batch_id, t.batch_seq], c)) return 'skip';
     // An offer stays "live" through the accept grace period, so nobody else is offered the trip while a late tap is in flight.
     const pending = await one(`SELECT 1 FROM trip_offers WHERE trip_id = $1 AND status = 'offered' AND expires_at > now() - make_interval(secs => $2)`,
       [tripId, config.dispatch.offerGraceS], c);
@@ -474,6 +594,7 @@ export async function dispatchTrip(tripId: string): Promise<'offered' | 'waiting
     const pickupM = Math.round(pick.toPickup);
     await event(c, tripId, 'offered', null, { driver_id: pick.user_id, eta_s: etaS, pickup_m: pickupM });
     const dp = await offerPay(c, t, pick.user_id, pickupM);
+    const run = t.batch_id ? await offerRun(c, t, pick.user_id, dp) : null;
     const ru = await one('SELECT accessibility FROM users WHERE id = $1', [t.rider_id], c);
     const offer = {
       trip_id: t.id, ref: t.ref, kind: t.kind, service: t.service,
@@ -485,18 +606,33 @@ export async function dispatchTrip(tripId: string): Promise<'offered' | 'waiting
       pickup_m: pickupM, total_m: pickupM + t.est_distance_m, driver_pay: dp,
       assistance_animal: t.assistance_animal, needs_wheelchair: t.needs_wheelchair, passengers: t.passengers,
       payment_method: t.payment_method, notes: t.notes, rider_needs: riderNeeds(ru?.accessibility, t.kind),
+      run, pickup_window: t.pickup_window_end ? { from: t.scheduled_for, to: t.pickup_window_end } : null,
     };
     setImmediate(() => toUser(pick.user_id, 'offer.new', offer));
     return 'offered';
   });
 }
 
+/** The whole run for an offer: number of drops, total km (pickup + every leg) and total pay (pickup pay on the first drop only). */
+export async function offerRun(c: Q, lead: any, driverId: string, leadPay: DriverPay) {
+  const rest = await q(`SELECT * FROM trips WHERE batch_id = $1 AND id <> $2 AND status = 'requested' ORDER BY batch_seq`, [lead.batch_id, lead.id], c);
+  let pay = Number(leadPay.total_cents);
+  let m = Number(lead.est_distance_m);
+  for (const t of rest) {
+    pay += Number((await offerPay(c, t, driverId, null)).total_cents);
+    m += Number(t.est_distance_m);
+  }
+  return { stops: rest.length + 1, trip_m: m, pay_cents: pay, last_drop: rest.length ? rest[rest.length - 1].dropoff_address : lead.dropoff_address };
+}
+
 /** Has the search for a driver run its course? Booked (scheduled) trips keep looking until the booked time plus the
  *  search window (they are released early, so a plain window would give up before the pickup time) with twice the offers. */
-export function searchOver(t: { requested_at: Date | string; scheduled_for?: Date | string | null; dispatch_attempts: number }, now = Date.now()) {
+export function searchOver(t: { requested_at: Date | string; scheduled_for?: Date | string | null; pickup_window_end?: Date | string | null; dispatch_attempts: number }, now = Date.now()) {
   const windowMs = config.dispatch.searchWindowMin * 60000;
   const booked = t.scheduled_for ? new Date(t.scheduled_for).getTime() : null;
-  const until = Math.max(new Date(t.requested_at).getTime() + windowMs, booked != null ? booked + windowMs : 0);
+  // A pickup window ("collect between 2 and 4 pm") keeps the search going until the end of the window.
+  const windowEnd = t.pickup_window_end ? new Date(t.pickup_window_end).getTime() : 0;
+  const until = Math.max(new Date(t.requested_at).getTime() + windowMs, booked != null ? booked + windowMs : 0, windowEnd);
   const maxAttempts = config.dispatch.maxAttempts * (booked != null ? 2 : 1);
   return t.dispatch_attempts >= maxAttempts || now > until;
 }
@@ -507,6 +643,11 @@ async function failNoDrivers(c: pg.PoolClient, t: any, why: 'search' | 'missed' 
   if (t.promo_code) await c.query('UPDATE promo_codes SET uses = greatest(uses - 1, 0) WHERE code = $1', [t.promo_code]);
   await releaseHoldsAndPoints(c, t);
   await event(c, t.id, 'no_drivers', null, why === 'missed' ? { reason: 'Booking was not sent to drivers in time' } : undefined);
+  // The rest of a multi-drop run was waiting for this drop's driver: it ends too.
+  if (t.batch_id && !t._follower) {
+    const rest = await q(`SELECT * FROM trips WHERE batch_id = $1 AND id <> $2 AND status IN ('requested','scheduled') FOR UPDATE`, [t.batch_id, t.id], c);
+    for (const f of rest) await failNoDrivers(c, { ...f, _follower: true }, why);
+  }
   setImmediate(() => {
     toTrip(t.id, 'trip.updated', { id: t.id, status: 'no_drivers' });
     toUser(t.rider_id, 'trip.updated', { id: t.id, ref: t.ref, status: 'no_drivers' });
@@ -561,8 +702,12 @@ export async function dispatchTick() {
       [config.dispatch.offerGraceS]);
     for (const e of expired) toUser(e.driver_id, 'offer.expired', { trip_id: e.trip_id });
 
+    // Pickup windows (migration 016): released at the start of the window, missed only once the window has closed.
+    const windows = await courierReady();
+    const until = windows ? 'coalesce(pickup_window_end, scheduled_for)' : 'scheduled_for';
+    const lead = windows ? 'CASE WHEN pickup_window_end IS NULL THEN $1 ELSE 0 END' : '$1';
     // Bookings released very late (nobody used the apps to run the dispatcher): don't send a driver to a pickup long gone.
-    const missed = await q(`SELECT id FROM trips WHERE status = 'scheduled' AND scheduled_for < now() - make_interval(mins => $1)`,
+    const missed = await q(`SELECT id FROM trips WHERE status = 'scheduled' AND ${until} < now() - make_interval(mins => $1)`,
       [config.dispatch.scheduledMissedMin]);
     for (const m of missed) {
       await tx(async (c) => {
@@ -572,8 +717,8 @@ export async function dispatchTick() {
     }
 
     const due = await q(
-      `SELECT id FROM trips WHERE status = 'scheduled' AND scheduled_for <= now() + make_interval(mins => $1)
-         AND scheduled_for >= now() - make_interval(mins => $2) ORDER BY scheduled_for LIMIT 50`,
+      `SELECT id FROM trips WHERE status = 'scheduled' AND scheduled_for <= now() + make_interval(mins => ${lead})
+         AND ${until} >= now() - make_interval(mins => $2) ORDER BY scheduled_for LIMIT 50`,
       [config.dispatch.scheduledLeadMin, config.dispatch.scheduledMissedMin]);
     for (const d of due) await releaseBooking(d.id).catch((e) => logError('release booking', e));
 
@@ -740,10 +885,16 @@ export async function acceptOffer(driverId: string, tripId: string) {
     const pickupM = await offeredPickupM(c, tripId, driverId);
     const dp = await offerPay(c, t, driverId, pickupM);
     await event(c, tripId, 'accepted', driverId, { eta_s: offer.pickup_eta_s, pickup_m: pickupM, pay: dp });
-    return { t, eta: offer.pickup_eta_s };
+    // Multi-drop run: the other drops still waiting go to the same driver (no pickup pay on them: it's the same pickup).
+    const followers = t.batch_id ? await q(
+      `UPDATE trips SET status = 'accepted', driver_id = $3, vehicle_id = $4, accepted_at = now()
+       WHERE batch_id = $1 AND id <> $2 AND status = 'requested' RETURNING *`, [t.batch_id, tripId, driverId, d.vehicle_id], c) : [];
+    for (const f of followers) await event(c, f.id, 'accepted', driverId, { run_lead: tripId, pickup_m: null, pay: await offerPay(c, f, driverId, null) });
+    return { t, eta: offer.pickup_eta_s, followers: followers.map((f: any) => ({ id: f.id, ref: f.ref })) };
   });
   const trip = await getTrip(tripId);
   broadcast(trip);
+  for (const f of out.followers) broadcast({ ...f, status: 'accepted', rider_id: trip.rider_id, driver_id: driverId });
   void send(trip.rider_id, 'driver_on_way', { again: trip.driver_releases > 0, driver: trip.driver.name, colour: trip.vehicle.colour, make: trip.vehicle.make,
     model: trip.vehicle.model, rego: trip.vehicle.rego, eta_min: Math.ceil(out.eta / 60) }, { trip });
   return trip;
@@ -785,6 +936,13 @@ async function releaseTrip(c: pg.PoolClient, t: any, r: ReleaseBy) {
     `UPDATE trips SET status = 'requested', driver_id = NULL, vehicle_id = NULL, accepted_at = NULL, arrived_at = NULL,
        requested_at = now(), dispatch_attempts = 0 WHERE id = $1`, [t.id]);
   await event(c, t.id, 'driver_released', r.actorId, { driver_id: driverId, by: r.by, reason: r.note ? `${r.reason}: ${r.note}` : r.reason });
+  // A multi-drop run goes back to the search as a whole (one driver collects every parcel at the one pickup).
+  if (t.batch_id) {
+    const rest = await q(
+      `UPDATE trips SET status = 'requested', driver_id = NULL, vehicle_id = NULL, accepted_at = NULL, arrived_at = NULL, requested_at = now(), dispatch_attempts = 0
+       WHERE batch_id = $1 AND id <> $2 AND driver_id = $3 AND status IN ('accepted','arrived') RETURNING id`, [t.batch_id, t.id, driverId], c);
+    for (const f of rest) await event(c, f.id, 'driver_released', r.actorId, { driver_id: driverId, by: r.by, run_lead: t.id });
+  }
   if (fault) {
     await recordDriverCancel(c, t, driverId, r.reason);
     if (t.assistance_animal) {
@@ -821,6 +979,7 @@ async function afterRelease(t: any, driverId: string, r: ReleaseBy) {
   void send(t.rider_id, 'finding_another_driver', { ref: t.ref }, { trip: t });
   if (r.by !== 'driver') void send(driverId, 'trip_given_away', { ref: t.ref }, { data: { trip_id: t.id } });
   await dispatchTrip(t.id).catch((e) => logError('dispatch', e));
+  if (t.batch_id) await dispatchRun(t.batch_id);
 }
 
 /** Ops "give to another driver" (or the automatic lost-signal check): the trip goes back to the search. */
@@ -836,6 +995,12 @@ export async function reassignTrip(tripId: string, r: ReleaseBy) {
   });
   await afterRelease(out, out.driver_id, r);
   return getTrip(tripId);
+}
+
+/** Offer a run's first drop still searching (after a release or a cancelled drop). */
+async function dispatchRun(batchId: string) {
+  const next = await one(`SELECT id FROM trips WHERE batch_id = $1 AND status = 'requested' ORDER BY batch_seq LIMIT 1`, [batchId]);
+  if (next) await dispatchTrip(next.id).catch((e) => logError('dispatch', e));
 }
 
 export async function declineOffer(driverId: string, tripId: string) {
@@ -893,6 +1058,11 @@ export async function markArrived(driverId: string, tripId: string, r: Replay = 
     if (t.status !== 'accepted') throw conflict('bad_state', `Cannot arrive from ${t.status}`);
     await c.query(`UPDATE trips SET status = 'arrived', arrived_at = ${tapTime('accepted_at', r)} WHERE id = $1`, [tripId, ...tapArg(r)]);
     await event(c, tripId, 'arrived', driverId, idemData(r));
+    // Multi-drop run: the driver is at the one pickup for every drop.
+    if (t.batch_id) {
+      const rest = await q(`UPDATE trips SET status = 'arrived', arrived_at = now() WHERE batch_id = $1 AND driver_id = $2 AND status = 'accepted' RETURNING id`, [t.batch_id, driverId], c);
+      for (const f of rest) await event(c, f.id, 'arrived', driverId, { run_lead: tripId });
+    }
     return true;
   });
   const trip = await getTrip(tripId);
@@ -912,10 +1082,24 @@ export async function startTrip(driverId: string, tripId: string, pin?: string, 
     await c.query(`UPDATE trips SET status = 'in_progress', started_at = ${tapTime('arrived_at', r)} WHERE id = $1`, [tripId, ...tapArg(r)]);
     if (t.kind === 'courier') await c.query('UPDATE parcels SET picked_up_at = now() WHERE trip_id = $1', [tripId]);
     await event(c, tripId, 'started', driverId, idemData(r));
-    return true;
+    const collected = [tripId];
+    // Multi-drop run: every parcel is collected at once.
+    if (t.batch_id) {
+      const rest = await q(`UPDATE trips SET status = 'in_progress', started_at = now() WHERE batch_id = $1 AND driver_id = $2 AND status = 'arrived' RETURNING id`, [t.batch_id, driverId], c);
+      for (const f of rest) {
+        await c.query('UPDATE parcels SET picked_up_at = now() WHERE trip_id = $1', [f.id]);
+        await event(c, f.id, 'started', driverId, { run_lead: tripId });
+        collected.push(f.id);
+      }
+    }
+    return collected;
   });
   const trip = await getTrip(tripId);
-  if (changed) broadcast(trip);
+  if (changed) {
+    broadcast(trip);
+    // Courier: each recipient gets a text with the delivery estimate.
+    if (trip.kind === 'courier') await onParcelsCollected(changed).catch((e) => logError('parcel ETA', e));
+  }
   return trip;
 }
 
@@ -930,6 +1114,8 @@ export interface CompleteInput {
 
 /** Wrong delivery PINs allowed per parcel before the PIN stops working (stops a driver guessing 0000–9999). */
 export const DELIVERY_PIN_MAX_TRIES = 5;
+/** A photo-only drop further than this from the address raises a compliance flag (GPS drift in town is ~50 m). */
+export const POD_FAR_M = 400;
 
 export async function completeTrip(driverId: string, tripId: string, input: CompleteInput, r: Replay = {}) {
   const fails = input.delivery_pin
@@ -940,26 +1126,51 @@ export async function completeTrip(driverId: string, tripId: string, input: Comp
     if (await alreadyDone(c, t, 'completed', r)) return null;
     if (t.status !== 'in_progress') throw conflict('bad_state', `Cannot complete from ${t.status}`);
 
+    let returned = false;
+    let farFlag: number | null = null;
     if (t.kind === 'courier') {
       const p = await one('SELECT * FROM parcels WHERE trip_id = $1', [tripId], c);
-      const pinOk = !pinLocked && !!input.delivery_pin && input.delivery_pin === p.delivery_pin;
-      const unattendedOk = p.leave_unattended && input.pod_photo_url;
-      const signatureOk = input.pod_signature && input.pod_received_by;
-      if (p.requires_signature && !signatureOk) throw bad('signature_required', 'This parcel needs a signature and the receiver’s name');
-      if (!pinOk && !unattendedOk && !signatureOk) {
-        if (input.delivery_pin && pinLocked) throw new ApiError(429, 'pin_locked', 'Too many wrong PINs. Get a signature and the receiver’s name, or call DingoGo.');
-        if (input.delivery_pin) throw bad('pin_mismatch', 'That delivery PIN is wrong. Check it with the receiver.');
-        throw bad('pod_required', 'Enter the recipient’s delivery PIN, capture a signature, or (if allowed) a photo');
+      if (p.outcome === 'returning') {
+        // Back at the sender after a failed delivery: whoever takes it back gives their name and signs (or a photo of the handover).
+        if (!input.pod_received_by || !(input.pod_signature || input.pod_photo_url)) {
+          throw bad('return_pod_required', 'Get the name of the person taking the parcel back, and their signature or a photo');
+        }
+        await c.query(`UPDATE parcels SET outcome = 'returned', returned_at = now() WHERE trip_id = $1`, [tripId]);
+        await event(c, tripId, 'parcel_returned', driverId, { received_by: input.pod_received_by });
+        returned = true;
+      } else {
+        const pinOk = !pinLocked && !!input.delivery_pin && input.delivery_pin === p.delivery_pin;
+        const unattendedOk = p.leave_unattended && input.pod_photo_url;
+        const signatureOk = input.pod_signature && input.pod_received_by;
+        if (p.requires_signature && !signatureOk) throw bad('signature_required', 'This parcel needs a signature and the receiver’s name');
+        if (!pinOk && !unattendedOk && !signatureOk) {
+          if (input.delivery_pin && pinLocked) throw new ApiError(429, 'pin_locked', 'Too many wrong PINs. Get a signature and the receiver’s name, or call DingoGo.');
+          if (input.delivery_pin) throw bad('pin_mismatch', 'That delivery PIN is wrong. Check it with the receiver.');
+          throw bad('pod_required', 'Enter the recipient’s delivery PIN, capture a signature, or (if allowed) a photo');
+        }
+        await c.query(
+          `UPDATE parcels SET delivered_at = now(), pod_photo_url = $2, pod_signature = $3, pod_received_by = $4, pod_lat = $5, pod_lng = $6 WHERE trip_id = $1`,
+          [tripId, input.pod_photo_url ?? null, input.pod_signature ?? null, input.pod_received_by ?? null, input.lat ?? null, input.lng ?? null]);
+        if (await courierReady()) {
+          // How far from the address the handover happened: a parcel left with only a photo far from the drop-off is checked by ops.
+          const distM = input.lat != null && input.lng != null ? Math.round(haversine({ lat: input.lat, lng: input.lng }, { lat: t.dropoff_lat, lng: t.dropoff_lng })) : null;
+          await c.query(`UPDATE parcels SET outcome = 'delivered', pod_distance_m = $2 WHERE trip_id = $1`, [tripId, distM]);
+          if (distM != null && distM > POD_FAR_M && !pinOk && !signatureOk) farFlag = distM;
+        }
       }
-      await c.query(
-        `UPDATE parcels SET delivered_at = now(), pod_photo_url = $2, pod_signature = $3, pod_received_by = $4, pod_lat = $5, pod_lng = $6 WHERE trip_id = $1`,
-        [tripId, input.pod_photo_url ?? null, input.pod_signature ?? null, input.pod_received_by ?? null, input.lat ?? null, input.lng ?? null]);
+    }
+    if (farFlag != null) {
+      await c.query(`INSERT INTO compliance_flags (kind, driver_id, trip_id, detail) VALUES ('delivery_far_from_address', $1, $2, $3)`,
+        [driverId, tripId, `Parcel left with a photo only, ${farFlag} m from the drop-off address`]);
     }
 
     // Upfront pricing: rider pays the quote unless the route grew > 25%, then re-meter (capped at +20%).
+    // A returned parcel pays the quote plus the return fee set when the delivery failed (the extra distance is the return).
     let final = t.quote_cents;
     const actualM = input.actual_distance_m ?? null;
-    if (actualM && actualM > t.est_distance_m * 1.25 && t.service !== 'tour') {
+    if (returned) {
+      final = t.quote_cents + await returnFeeFor(c, t);
+    } else if (actualM && actualM > t.est_distance_m * 1.25 && t.service !== 'tour') {
       const rule = await loadRule(t.service, c);
       const breakdown = t.fare_breakdown;
       const perM = rule.per_km_cents / 1000;
@@ -975,7 +1186,7 @@ export async function completeTrip(driverId: string, tripId: string, input: Comp
       [tripId, final, actualM, ...tapArg(r)]);
     await event(c, tripId, 'completed', driverId, idemData(r, { final_cents: final }));
     await settle(c, { ...t, final_cents: final });
-    return t;
+    return { t, returned, far: farFlag };
   }).catch(async (e) => {
     // Recorded outside the (rolled-back) transaction so the try limit holds.
     if (e instanceof ApiError && e.code === 'pin_mismatch') await event(pool, tripId, 'pod_pin_failed', driverId);
@@ -984,12 +1195,23 @@ export async function completeTrip(driverId: string, tripId: string, input: Comp
   const trip = await getTrip(tripId);
   if (!result) return trip; // a replay of a completion already recorded: nothing more to send
   broadcast(trip);
+  if (result.far != null) toOps('compliance.flag', { kind: 'delivery_far_from_address', trip_id: tripId, driver_id: driverId });
+  if (result.returned) {
+    void send(trip.rider_id, 'parcel_returned_sender', { ref: trip.ref, to: trip.parcel.recipient_name }, { trip });
+    if (await senderNotRider(trip)) void sendSmsT(trip.parcel.sender_phone, 'parcel_returned_sender', { ref: trip.ref, to: trip.parcel.recipient_name }, { tripId: trip.id });
+    return trip;
+  }
   void send(trip.rider_id, 'trip_done', { ref: trip.ref, courier: trip.kind === 'courier', cents: trip.final_cents }, { trip });
   if (trip.kind === 'courier' && trip.parcel) {
     void sendSmsT(trip.parcel.sender_phone, 'parcel_delivered_sender', { ref: trip.ref, to: trip.parcel.pod_received_by || trip.parcel.recipient_name }, { tripId: trip.id });
   }
-  void result;
   return trip;
+}
+
+/** The parcel's sender phone isn't the booking account's own number (a shop booking under a staff login): text them too. */
+export async function senderNotRider(trip: any) {
+  const u = await one('SELECT phone FROM users WHERE id = $1', [trip.rider_id]);
+  return !!trip.parcel?.sender_phone && trip.parcel.sender_phone !== u?.phone;
 }
 
 const FEE_NOTE: Record<string, string> = { green: ' (electric/hybrid rate)', own_car: ' (own-car rate)' };
@@ -1002,7 +1224,13 @@ async function settle(c: pg.PoolClient, t: any) {
   if (t.payment_method === 'card') {
     // Capture the hold (or charge the saved card if it lapsed or was never placed). A failure leaves the trip "failed" to pay
     // (rider "Pay now", ops "Retry charge"); the driver is paid either way.
-    if (amount > 0) await collectCard(c, t, amount, 'fare', `DingoGo ${t.ref}`);
+    if (amount > 0) {
+      const r = await collectCard(c, t, amount, 'fare', `DingoGo ${t.ref}`);
+      // Charged afresh (the hold had lapsed, or the amount was more than the hold, e.g. a return fee): let the old hold go
+      // instead of leaving the money held on the rider's card for a week.
+      const held = t.payment_status === 'authorised' && t.payment_ref && t.payment_ref !== 'wallet' ? t.payment_ref : null;
+      if (r.ok && held && r.ref && r.ref !== held) await pay.cancelHold(held);
+    }
   } else if (t.payment_method === 'cash') {
     await c.query(`UPDATE trips SET payment_status = 'cash_collected' WHERE id = $1`, [t.id]);
     await c.query(`INSERT INTO payments (trip_id, user_id, provider, kind, amount_cents, gst_cents, status)
@@ -1024,7 +1252,9 @@ async function settle(c: pg.PoolClient, t: any) {
 
   // Driver earnings: trip fare (before rider discounts — DingoGo funds promos/points; excludes booking fee & levy) minus the
   // service fee, plus pickup pay and fuel surcharge (no fee on either). Rate and pickup pay as fixed when the driver accepted.
-  const adj = (t.fare_breakdown.lines ?? []).find((l: any) => l.label === 'Route change adjustment')?.cents ?? 0;
+  // Route changes and the return-to-sender fee are paid to the driver like the fare (less the service fee).
+  const adj = (t.fare_breakdown.lines ?? []).filter((l: any) => l.label === 'Route change adjustment' || String(l.label).startsWith('Return to sender'))
+    .reduce((n: number, l: any) => n + Number(l.cents ?? 0), 0);
   const gross = (t.fare_breakdown.trip_cents ?? amount) + adj;
   const fixed = await acceptedPay(c, t.id, t.driver_id);
   const dp = fixed ?? await offerPay(c, t, t.driver_id, null);
@@ -1097,7 +1327,7 @@ export async function addTip(riderId: string, tripId: string, cents: number) {
 }
 
 /** Cancellation. Riders get a free window (2 min after acceptance); after that, or once the driver has arrived, a fee applies. */
-export async function cancelTrip(actor: { id: string; role: string }, tripId: string, reason?: string, opts: { reasonCode?: string; note?: string } = {}) {
+export async function cancelTrip(actor: { id: string; role: string }, tripId: string, reason?: string, opts: { reasonCode?: string; note?: string; inRun?: boolean } = {}) {
   const out = await tx(async (c) => {
     const t = await one('SELECT * FROM trips WHERE id = $1 FOR UPDATE', [tripId], c);
     if (!t) throw notFound('Trip');
@@ -1167,6 +1397,14 @@ export async function cancelTrip(actor: { id: string; role: string }, tripId: st
   } else if (trip.driver_id) {
     void send(trip.driver_id, 'trip_cancelled', { ref: trip.ref }, { data: { trip_id: tripId } });
   }
+  if (trip.batch_id && !opts.inRun) {
+    // Driver at the pickup and the sender isn't there (or asked to cancel, or it's unsafe): the whole run ends. A prohibited
+    // parcel ends only that drop. A drop the sender cancels lets the next drop be offered if this one was still searching.
+    if (out.isDriver && ['rider_no_show', 'rider_requested', 'unsafe'].includes(opts.reasonCode ?? '')) {
+      const rest = await q(`SELECT id FROM trips WHERE batch_id = $1 AND driver_id = $2 AND status IN ('accepted','arrived') ORDER BY batch_seq`, [trip.batch_id, actor.id]);
+      for (const f of rest) await cancelTrip(actor, f.id, reason, { reasonCode: opts.reasonCode, note: opts.note, inRun: true }).catch((e) => logError('cancel run', e));
+    } else if (!out.isDriver) await dispatchRun(trip.batch_id);
+  }
   return { ...trip, cancel_fee_cents: out.fee };
 }
 
@@ -1231,25 +1469,34 @@ export function distToSegment(p: LatLng, a: LatLng, b: LatLng) {
 /** Late GPS points (sent after a signal drop) go on the driver's live trip track at the time they were taken. Points from
  *  before the driver accepted the trip are not part of it. Returns how many were stored. */
 export async function storeTrack(driverId: string, pts: { lat: number; lng: number; at: string }[]) {
-  const t = await one(`SELECT id, accepted_at FROM trips WHERE driver_id = $1 AND status IN ('accepted','arrived','in_progress')`, [driverId]);
-  if (!t || !pts.length) return 0;
-  const r = await q(
-    `INSERT INTO trip_track (trip_id, lat, lng, at)
-     SELECT $1, p.lat, p.lng, p.at FROM unnest($2::float8[], $3::float8[], $4::timestamptz[]) AS p(lat, lng, at)
-     WHERE p.at >= $5 RETURNING 1`,
-    [t.id, pts.map((p) => p.lat), pts.map((p) => p.lng), pts.map((p) => p.at), t.accepted_at]);
-  return r.length;
+  const live = await q(`SELECT id, accepted_at FROM trips WHERE driver_id = $1 AND status IN ('accepted','arrived','in_progress')`, [driverId]);
+  if (!live.length || !pts.length) return 0;
+  let n = 0;
+  for (const t of live) {
+    const r = await q(
+      `INSERT INTO trip_track (trip_id, lat, lng, at)
+       SELECT $1, p.lat, p.lng, p.at FROM unnest($2::float8[], $3::float8[], $4::timestamptz[]) AS p(lat, lng, at)
+       WHERE p.at >= $5 RETURNING 1`,
+      [t.id, pts.map((p) => p.lat), pts.map((p) => p.lng), pts.map((p) => p.at), t.accepted_at]);
+    if (t === live[0]) n = r.length;
+  }
+  return n;
 }
 
 /** Called on every driver location ping: stores breadcrumb, pushes live position, checks for route deviation. */
 export async function onDriverLocation(driverId: string, p: LatLng & { heading?: number }, opts: { track?: boolean } = {}) {
-  const t = await one(`SELECT * FROM trips WHERE driver_id = $1 AND status IN ('accepted','arrived','in_progress')`, [driverId]);
+  // Usually one live trip; a multi-drop run has one per parcel (each recipient's tracking link follows the car).
+  const live = await q(`SELECT * FROM trips WHERE driver_id = $1 AND status IN ('accepted','arrived','in_progress')`, [driverId]);
+  const t = live[0];
   if (!t) return null;
-  if (opts.track !== false) await q('INSERT INTO trip_track (trip_id, lat, lng) VALUES ($1,$2,$3)', [t.id, p.lat, p.lng]);
-  const payload = { trip_id: t.id, lat: p.lat, lng: p.lng, heading: p.heading ?? null };
-  toTrip(t.id, 'driver.location', payload);
-  toUser(t.rider_id, 'driver.location', payload);
-  if (t.status === 'in_progress' && !t.deviation_alerted && t.service !== 'tour') {
+  for (const x of live) {
+    if (opts.track !== false) await q('INSERT INTO trip_track (trip_id, lat, lng) VALUES ($1,$2,$3)', [x.id, p.lat, p.lng]);
+    const payload = { trip_id: x.id, lat: p.lat, lng: p.lng, heading: p.heading ?? null };
+    toTrip(x.id, 'driver.location', payload);
+    if (x === t) toUser(t.rider_id, 'driver.location', payload);
+  }
+  // Route deviation is a passenger-safety check on one pickup → drop-off line: not for multi-drop runs.
+  if (t.status === 'in_progress' && !t.deviation_alerted && t.service !== 'tour' && !t.batch_id) {
     const a = { lat: t.pickup_lat, lng: t.pickup_lng }, b = { lat: t.dropoff_lat, lng: t.dropoff_lng };
     const off = distToSegment(p, a, b);
     const allowed = Math.max(2500, haversine(a, b) * 0.5);

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import { ApiError, REALTIME, connectRealtime, COURIER_STATUS_LABEL, get, STATUS_LABEL, time, useInterval } from '@dingogo/shared';
+import { ApiError, PARCEL_OUTCOME_LABEL, REALTIME, assetUrl, connectRealtime, COURIER_STATUS_LABEL, get, post, STATUS_LABEL, time, useInterval } from '@dingogo/shared';
 import { DgMap, type MapMarker } from '@dingogo/shared/map';
 import { useMeta } from '../meta';
 
@@ -9,7 +9,53 @@ type T = {
   dropoff_address: string; dropoff_lat: number; dropoff_lng: number; requested_at: string; accepted_at: string | null; started_at: string | null;
   completed_at: string | null; est_duration_s: number; driver_first_name: string | null; rego: string | null; make: string | null; model: string | null;
   colour: string | null; driver_lat?: number; driver_lng?: number; rider_first_name: string;
+  parcel?: {
+    sender_name: string; recipient_first_name: string; outcome: string | null; eta_at: string | null; delivered_at: string | null;
+    pickup_window: { from: string; to: string } | null; leave_unattended: boolean; requires_signature: boolean; safe_place: string | null;
+    recipient_notes: string | null; left_photo_url: string | null; failed_reason: string | null; can_add_instructions: boolean;
+  } | null;
 };
+
+/** Parcel recipients: where it was left (with the photo), and a safe place or note for the driver before it arrives. */
+function ParcelBox({ token, p, done, onSaved }: { token: string; p: NonNullable<T['parcel']>; done: boolean; onSaved: () => void }) {
+  const [notes, setNotes] = useState('');
+  const [place, setPlace] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  async function save(e: React.FormEvent) {
+    e.preventDefault(); setBusy(true); setErr(null); setMsg(null);
+    try {
+      await post(`/public/track/${token}/instructions`, { notes: notes.trim() || undefined, safe_place: place.trim() || undefined });
+      setMsg('Saved. Your driver will see it.'); setNotes(''); setPlace(''); onSaved();
+    } catch (x) { setErr(x instanceof ApiError ? x.message : 'Could not save. Try again.'); } finally { setBusy(false); }
+  }
+  return (
+    <div style={{ marginTop: 12 }}>
+      {done && p.left_photo_url && (
+        <figure style={{ margin: '0 0 12px' }}>
+          <img src={assetUrl(p.left_photo_url)} alt="Photo the driver took of where your parcel was left" style={{ maxWidth: '100%', borderRadius: 8 }} />
+          <figcaption className="dg-muted">Left{p.safe_place ? `: ${p.safe_place}` : ' in a safe place'}.</figcaption>
+        </figure>
+      )}
+      {!done && p.safe_place && <p style={{ margin: '0 0 6px' }}>If you're out, the driver will leave it: <b>{p.safe_place}</b>.</p>}
+      {!done && p.requires_signature && <p style={{ margin: '0 0 6px' }}>Someone needs to be there to sign for it.</p>}
+      {p.recipient_notes && <p className="dg-muted" style={{ margin: '0 0 6px' }}>Your note: {p.recipient_notes}</p>}
+      {p.can_add_instructions && (
+        <form onSubmit={save} aria-labelledby="ins-h">
+          <h2 id="ins-h" style={{ fontSize: '1.05rem', margin: '10px 0 6px' }}>Help the driver find you</h2>
+          <label className="dg-field"><span>Note for the driver</span><input className="dg-input" value={notes} maxLength={300} onChange={(e) => setNotes(e.target.value)} placeholder="e.g. blue door, unit 4 at the back" /></label>
+          {!p.requires_signature && (
+            <label className="dg-field"><span>If I'm out, leave it here</span><input className="dg-input" value={place} maxLength={120} onChange={(e) => setPlace(e.target.value)} placeholder="e.g. behind the side gate" /></label>
+          )}
+          {err && <p className="dg-error" role="alert">{err}</p>}
+          {msg && <p role="status">{msg}</p>}
+          <button className="dg-btn" disabled={busy || (!notes.trim() && !place.trim())}>{busy ? 'Saving…' : 'Save'}</button>
+        </form>
+      )}
+    </div>
+  );
+}
 
 export default function Track() {
   const { token = '' } = useParams();
@@ -64,7 +110,8 @@ export default function Track() {
   const labels = trip.kind === 'courier' ? COURIER_STATUS_LABEL : STATUS_LABEL;
   const done = trip.status === 'completed';
   const ended = done || trip.status.startsWith('cancelled') || trip.status === 'no_drivers';
-  const eta = trip.status === 'in_progress' && trip.started_at ? new Date(new Date(trip.started_at).getTime() + trip.est_duration_s * 1000) : null;
+  const p = trip.parcel;
+  const eta = p?.eta_at ? new Date(p.eta_at) : trip.status === 'in_progress' && trip.started_at ? new Date(new Date(trip.started_at).getTime() + trip.est_duration_s * 1000) : null;
 
   const markers: MapMarker[] = [
     { id: 'a', kind: 'pickup', lat: trip.pickup_lat, lng: trip.pickup_lng, label: trip.pickup_address },
@@ -77,9 +124,14 @@ export default function Track() {
       <div className="track-side">
         <p className="dg-muted" style={{ margin: 0 }}>{trip.kind === 'courier' ? 'Parcel' : `${trip.rider_first_name}'s trip`} {trip.ref}</p>
         <p className="track-status" role="status" aria-live="polite">{live && <span className="live-dot" aria-hidden="true" />}{labels[trip.status] ?? trip.status}</p>
-        {eta && !ended && <p style={{ margin: 0 }}>Expected to arrive around <b>{time(eta)}</b></p>}
-        {done && <p style={{ margin: 0 }}>{trip.kind === 'courier' ? 'Delivered' : 'Arrived'} at {time(trip.completed_at)}.</p>}
-        {trip.status === 'scheduled' && <p style={{ margin: 0 }}>We'll find a driver shortly before pickup.</p>}
+        {p?.outcome === 'returning' || p?.outcome === 'returned'
+          ? <p style={{ margin: 0 }}><b>{PARCEL_OUTCOME_LABEL[p.outcome]}.</b> We couldn't deliver it{p.failed_reason ? ` (${p.failed_reason.toLowerCase()})` : ''}. {p.sender_name} will be in touch.</p>
+          : <>
+            {eta && !ended && trip.status === 'in_progress' && <p style={{ margin: 0 }}>Expected to arrive around <b>{time(eta)}</b></p>}
+            {done && <p style={{ margin: 0 }}>{trip.kind === 'courier' ? 'Delivered' : 'Arrived'} at {time(trip.completed_at)}.</p>}
+          </>}
+        {trip.status === 'scheduled' && <p style={{ margin: 0 }}>{p?.pickup_window ? `Collected between ${time(p.pickup_window.from)} and ${time(p.pickup_window.to)}.` : "We'll find a driver shortly before pickup."}</p>}
+        {p && <ParcelBox token={token} p={p} done={done} onSaved={load} />}
         {trip.driver_first_name && !ended && (
           <div className="track-car">
             <span className="rego">{trip.rego}</span>

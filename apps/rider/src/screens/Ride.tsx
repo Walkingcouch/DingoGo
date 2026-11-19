@@ -1,6 +1,6 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { ApiError, Icon, get, money, post, Ranges, useLoad } from '@dingogo/shared';
+import { ApiError, Icon, PARCEL_SIZE_MAX_KG, PROHIBITED_ITEMS, get, money, post, Ranges, useLoad } from '@dingogo/shared';
 import { DgMap, type MapMarker } from '@dingogo/shared/map';
 import { PlaceField, type Place } from '../components/PlaceField';
 import { QuoteBox } from '../components/QuoteBox';
@@ -61,7 +61,12 @@ export function RideScreen() {
 
   // courier
   const [size, setSize] = useState<'S' | 'M' | 'L'>('S');
-  const [parcel, setParcel] = useState({ description: '', declared: '', sender_name: '', sender_phone: '', recipient_name: '', recipient_phone: '', instructions: '', leave_unattended: false, requires_signature: false, prohibited_ack: false });
+  const [parcel, setParcel] = useState({ description: '', declared: '', sender_name: '', sender_phone: '', recipient_name: '', recipient_phone: '', instructions: '', leave_unattended: false, requires_signature: false, prohibited_ack: false, safe_place: '', weight: '', reference: '' });
+  // Prohibited items: every line ticked (the API checks the same list).
+  const [ticked, setTicked] = useState<string[]>([]);
+  const allTicked = PROHIBITED_ITEMS.every((i) => ticked.includes(i.key));
+  // Booked parcel pickups can give a window ("collect between 2 and 4 pm") instead of one time.
+  const [windowH, setWindowH] = useState(0);
 
   const [quote, setQuote] = useState<any | null>(null);
   const [qLoading, setQLoading] = useState(false);
@@ -150,8 +155,11 @@ export function RideScreen() {
           size, description: parcel.description.trim(), declared_value_cents: parcel.declared ? Math.round(Number(parcel.declared) * 100) : undefined,
           sender_name: parcel.sender_name.trim(), sender_phone: parcel.sender_phone.trim(), recipient_name: parcel.recipient_name.trim(),
           recipient_phone: parcel.recipient_phone.trim(), instructions: parcel.instructions.trim() || undefined,
-          leave_unattended: parcel.leave_unattended, requires_signature: parcel.requires_signature, prohibited_ack: parcel.prohibited_ack,
+          leave_unattended: parcel.leave_unattended, requires_signature: parcel.requires_signature, prohibited_ack: allTicked, prohibited_items: ticked,
+          safe_place: parcel.leave_unattended ? parcel.safe_place.trim() || undefined : undefined,
+          weight_kg: parcel.weight ? Number(parcel.weight) : undefined, customer_ref: parcel.reference.trim() || undefined,
         };
+        if (later && when && windowH > 0) body.pickup_window_end = new Date(new Date(when).getTime() + windowH * 3600_000).toISOString();
       }
       if (ndis && ndisNo) body.ndis_number = ndisNo;
       const r = await post('/trips', body);
@@ -170,6 +178,7 @@ export function RideScreen() {
 
   // What still stops the booking, in plain words: shown under the button and read out if it's pressed too early.
   const badPhone = (v: string) => v.trim() !== '' && v.replace(/\D/g, '').length < 8;
+  const tooHeavy = !!parcel.weight && !(Number(parcel.weight) > 0 && Number(parcel.weight) <= PARCEL_SIZE_MAX_KG[size]);
   const missing = [
     !pickup && 'a pickup', !dropoff && 'a drop-off',
     later && !when && 'a pickup time',
@@ -177,7 +186,8 @@ export function RideScreen() {
       parcel.description.trim().length < 2 && 'what you’re sending',
       !parcel.sender_name.trim() && 'the sender’s name', parcel.sender_phone.replace(/\D/g, '').length < 8 && 'the sender’s mobile',
       !parcel.recipient_name.trim() && 'the recipient’s name', parcel.recipient_phone.replace(/\D/g, '').length < 8 && 'the recipient’s mobile',
-      !parcel.prohibited_ack && 'the prohibited items check',
+      !allTicked && 'every line of the prohibited items check',
+      tooHeavy && `a weight up to ${PARCEL_SIZE_MAX_KG[size]} kg for this size (or a bigger size)`,
     ] : []),
     ndis && !/^\d{9}$/.test(ndisNo) && 'your 9-digit NDIS number',
   ].filter(Boolean) as string[];
@@ -244,6 +254,14 @@ export function RideScreen() {
                 </div>
                 <label className="dg-field"><span>What are you sending?</span>
                   <input className="dg-input" placeholder="e.g. house keys, documents, phone charger" value={parcel.description} maxLength={200} onChange={(e) => setParcel({ ...parcel, description: e.target.value })} /></label>
+                <div className="grid2">
+                  <label className="dg-field"><span>Weight in kg (optional)</span>
+                    <input className="dg-input" inputMode="decimal" placeholder={`up to ${PARCEL_SIZE_MAX_KG[size]}`} value={parcel.weight} aria-invalid={tooHeavy || undefined} aria-describedby={tooHeavy ? 'wt-err' : undefined}
+                      onChange={(e) => setParcel({ ...parcel, weight: e.target.value.replace(/[^\d.]/g, '') })} />
+                    {tooHeavy && <span id="wt-err" className="dg-field-error"><Icon name="alert" size={16} />Size {size} is up to {PARCEL_SIZE_MAX_KG[size]} kg. Choose a bigger size.</span>}</label>
+                  <label className="dg-field"><span>Your reference (optional)</span>
+                    <input className="dg-input" placeholder="e.g. order or script number" value={parcel.reference} maxLength={40} onChange={(e) => setParcel({ ...parcel, reference: e.target.value })} /></label>
+                </div>
                 <label className="dg-field"><span>Value in dollars (optional)</span>
                   <input className="dg-input" inputMode="decimal" placeholder="e.g. 80" value={parcel.declared} onChange={(e) => setParcel({ ...parcel, declared: e.target.value.replace(/[^\d.]/g, '') })} /></label>
                 <div className="grid2">
@@ -257,12 +275,22 @@ export function RideScreen() {
                   <input className="dg-input" placeholder="e.g. side gate, ask at reception" value={parcel.instructions} maxLength={300} onChange={(e) => setParcel({ ...parcel, instructions: e.target.value })} /></label>
                 <label className="dg-check"><input type="checkbox" checked={parcel.leave_unattended} onChange={(e) => setParcel({ ...parcel, leave_unattended: e.target.checked, requires_signature: e.target.checked ? false : parcel.requires_signature })} />
                   <span>OK to leave it if nobody's home (driver takes a photo)</span></label>
+                {parcel.leave_unattended && (
+                  <label className="dg-field"><span>Where to leave it</span>
+                    <input className="dg-input" placeholder="e.g. behind the side gate, under the verandah" value={parcel.safe_place} maxLength={120} onChange={(e) => setParcel({ ...parcel, safe_place: e.target.value })} /></label>
+                )}
                 <label className="dg-check"><input type="checkbox" checked={parcel.requires_signature} onChange={(e) => setParcel({ ...parcel, requires_signature: e.target.checked, leave_unattended: e.target.checked ? false : parcel.leave_unattended })} />
                   <span>Recipient must sign</span></label>
-                <label className={`dg-check prohibited ${parcel.prohibited_ack ? 'is-ok' : ''}`}>
-                  <input type="checkbox" checked={parcel.prohibited_ack} onChange={(e) => setParcel({ ...parcel, prohibited_ack: e.target.checked })} required />
-                  <span><strong>No alcohol, weapons, drugs, dangerous goods or cash.</strong> I confirm the parcel has none of these. Drivers can check and refuse.</span>
-                </label>
+                <fieldset className={`prohibited-list ${allTicked ? 'is-ok' : ''}`}>
+                  <legend><strong>Prohibited items check.</strong> Tick each line to confirm the parcel has none of these. Drivers can check and refuse.</legend>
+                  {PROHIBITED_ITEMS.map((i) => (
+                    <label key={i.key} className="dg-check">
+                      <input type="checkbox" checked={ticked.includes(i.key)} onChange={(e) => setTicked((t) => e.target.checked ? [...t, i.key] : t.filter((k) => k !== i.key))} />
+                      <span>No {i.title.charAt(0).toLowerCase() + i.title.slice(1)}<br /><small className="dg-muted">{i.detail}</small></span>
+                    </label>
+                  ))}
+                </fieldset>
+                {me?.corporate_accounts?.length ? <p className="dg-muted" style={{ fontSize: 'var(--fs-sm)' }}>Sending several parcels? <Link to="/business">Business deliveries</Link> books a run of drops for one driver, or imports a spreadsheet.</p> : null}
               </fieldset>
             )}
 
@@ -277,6 +305,13 @@ export function RideScreen() {
                 {later && (
                   <label className="dg-field"><span>Pickup date and time</span>
                     <input className="dg-input" type="datetime-local" min={minSchedule()} value={when} onChange={(e) => setWhen(e.target.value)} /></label>
+                )}
+                {later && mode === 'courier' && cfg.data?.courier?.windows && (
+                  <label className="dg-field"><span>Pickup window</span>
+                    <select className="dg-input" value={windowH} onChange={(e) => setWindowH(Number(e.target.value))}>
+                      <option value={0}>At that time</option><option value={0.5}>Within 30 minutes</option><option value={1}>Within 1 hour</option>
+                      <option value={2}>Within 2 hours</option><option value={4}>Within 4 hours</option>
+                    </select></label>
                 )}
                 {mode !== 'courier' && (
                   <>

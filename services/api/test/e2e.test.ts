@@ -2347,3 +2347,336 @@ test('before migration 015: chat says migration_pending, settings fall back to d
     for (const [a, b] of renames) await q(`ALTER TABLE ${b} RENAME TO ${a}`);
   }
 });
+
+// ───────────────────────── Round 11: courier and delivery business ─────────────────────────
+import { auMobile, auPhone, checkParcel, csvToDrops, orderStops, parseCsv as parseCsvText, PROHIBITED_KEYS, SIZE_MAX_KG } from '../src/lib/courier.js';
+import { readFileSync } from 'node:fs';
+import { resetCourierReady } from '../src/lib/courierSchema.js';
+import { engagedFromSql } from '../src/services/courier.js';
+import { pickupWhen } from '../src/services/trips.js';
+
+const ALL_ITEMS = [...PROHIBITED_KEYS];
+const YEPERENYE = { lat: -23.7008, lng: 133.8818, address: 'Yeperenye Shopping Centre' };
+const ARALUEN = { lat: -23.7036, lng: 133.8622, address: 'Araluen Arts Centre' };
+const BRAITLING = { lat: -23.6830, lng: 133.8680, address: 'Braitling' };
+const drop = (name: string, extra: Record<string, unknown> = {}) => ({ size: 'S', description: 'Prescription', recipient_name: name, recipient_phone: '0400 000 555', ...extra });
+const smsCount = async (tripId: string, template: string) => {
+  await flushBackground(3000);
+  return (await one<{ n: number }>(`SELECT count(*)::int n FROM comms_log WHERE trip_id = $1 AND template = $2`, [tripId, template]))!.n;
+};
+
+test('courier: top up the demo rider for the Round 11 deliveries', async () => {
+  await q(`UPDATE users SET wallet_cents = wallet_cents + 100000 WHERE phone = '+61400000100'`);
+});
+
+test('courier rules: sizes and weights, Australian mobiles, checklist, CSV parsing, drop order, pickup times', () => {
+  const p = { size: 'S' as const, description: 'Box', sender_name: 'Shop', sender_phone: '08 8950 1234', recipient_name: 'Jo', recipient_phone: '0412 345 678', prohibited_ack: false };
+  assert.equal(auMobile('+61 412 345 678'), '+61412345678');
+  assert.equal(auMobile('0889501234'), null, 'a landline cannot get texts');
+  assert.equal(auPhone('(08) 8950 1234'), '+61889501234');
+  assert.throws(() => checkParcel({ ...p, prohibited_items: ALL_ITEMS, weight_kg: 7 }), /too heavy for size S.*Choose size M/);
+  assert.throws(() => checkParcel({ ...p, prohibited_items: ALL_ITEMS, weight_kg: 30 }), /up to 25 kg/);
+  assert.throws(() => checkParcel({ ...p, prohibited_items: ALL_ITEMS, recipient_phone: '08 8950 1234' }), /Australian mobile/);
+  assert.throws(() => checkParcel({ ...p, prohibited_items: ALL_ITEMS.slice(1) }), /every line/);
+  assert.throws(() => checkParcel(p), /no alcohol/);
+  const ok = checkParcel({ ...p, prohibited_items: ALL_ITEMS, leave_unattended: true, safe_place: ' side gate ' });
+  assert.deepEqual([ok.recipient_phone, ok.sender_phone, ok.safe_place, ok.checklist?.items.length], ['+61412345678', '+61889501234', 'side gate', ALL_ITEMS.length]);
+  assert.equal(checkParcel({ ...p, prohibited_ack: true }).checklist, null, 'older apps: single tick still accepted');
+  assert.deepEqual(SIZE_MAX_KG, { S: 5, M: 15, L: 25 });
+  const shared = readFileSync(new URL('../../../packages/shared/src/courier.ts', import.meta.url), 'utf8');
+  assert.deepEqual([...shared.matchAll(/\{ key: '([a-z_]+)', title/g)].map((m) => m[1]), ALL_ITEMS, 'apps and API use the same checklist');
+
+  assert.deepEqual(parseCsvText('a,b\r\n"x, ""y""",2\n\n"multi\nline",3'), [['a', 'b'], ['x, "y"', '2'], ['multi\nline', '3']]);
+  const r = csvToDrops('Name,Mobile,Address,Size,Weight,Reference,Safe place\n'
+    + 'Jo Bloggs,0412 345 678,Araluen Arts Centre,M,8,ORD-1,\n'
+    + 'Nan,0400000555,"Somewhere unknown, Gillen",S,,ORD-2,\n'
+    + 'Bob,0889501234,Todd Mall,S,,,\n'
+    + 'Al,0400000556,Todd Mall,S,9,,\n'
+    + 'Sue,0400000557,Hospital,S,,ORD-5,front porch\n');
+  assert.equal(r.drops.length, 2);
+  assert.deepEqual(r.drops.map((d) => [d.row, d.parcel.customer_ref ?? null, d.parcel.leave_unattended]), [[2, 'ORD-1', false], [6, 'ORD-5', true]]);
+  assert.deepEqual(r.errors.map((e) => e.row), [3, 4, 5]);
+  assert.match(r.errors[0].error, /Couldn't find/);
+  assert.match(r.errors[1].error, /Australian mobile/);
+  assert.match(r.errors[2].error, /doesn't fit size S/);
+  assert.match(csvToDrops('recipient_name,address\nJo,Todd Mall').errors[0].error, /Missing column "recipient_phone"/);
+
+  const order = orderStops(TODD_MALL, [{ dropoff: AIRPORT, n: 1 }, { dropoff: YEPERENYE, n: 2 }, { dropoff: HOSPITAL, n: 3 }]);
+  assert.deepEqual(order.map((o) => o.n), [2, 3, 1], 'nearest first, then nearest to the last drop');
+  assert.equal(pickupWhen('2026-11-19T04:30:00Z', '2026-11-19T06:30:00Z'), 'Thu 2:00-4:00 pm');
+  assert.ok(searchOver({ requested_at: new Date(), scheduled_for: new Date(), dispatch_attempts: 0 }, Date.now() + 3 * 3600_000));
+  assert.ok(!searchOver({ requested_at: new Date(), scheduled_for: new Date(), pickup_window_end: new Date(Date.now() + 4 * 3600_000), dispatch_attempts: 0 }, Date.now() + 3 * 3600_000),
+    'a pickup window keeps the search going to its end');
+});
+
+test('parcel booking: weight, recipient mobile and the full checklist checked; checklist, safe place and reference stored; config lists the rules', async () => {
+  const base = { kind: 'courier', service: 'courier_s', pickup: TODD_MALL, dropoff: HOSPITAL, payment_method: 'wallet' };
+  const parcel = { size: 'S', description: 'Script', sender_name: 'Central Pharmacy', sender_phone: '08 8950 1234', recipient_name: 'Nan', recipient_phone: '0400 000 555' };
+  assert.equal((await call('POST', '/trips', 'rider', { ...base, parcel: { ...parcel, weight_kg: 9, prohibited_items: ALL_ITEMS } })).error, 'parcel_too_heavy');
+  assert.equal((await call('POST', '/trips', 'rider', { ...base, parcel: { ...parcel, recipient_phone: '08 8950 9999', prohibited_items: ALL_ITEMS } })).error, 'recipient_mobile');
+  const missing = await call('POST', '/trips', 'rider', { ...base, parcel: { ...parcel, prohibited_items: ['alcohol'] } });
+  assert.equal(missing.error, 'prohibited_ack_required');
+  assert.equal((await call('POST', '/trips', 'rider', { ...base, service: 'ride', kind: 'ride', scheduled_for: new Date(Date.now() + 3600_000).toISOString(),
+    pickup_window_end: new Date(Date.now() + 7200_000).toISOString() })).error, 'validation_error', 'windows are for parcels');
+  const shortWin = await call('POST', '/trips', 'rider', { ...base, parcel: { ...parcel, prohibited_items: ALL_ITEMS },
+    scheduled_for: new Date(Date.now() + 3600_000).toISOString(), pickup_window_end: new Date(Date.now() + 3600_000 + 10 * 60000).toISOString() });
+  assert.equal(shortWin.error, 'window_invalid');
+  const t = await call('POST', '/trips', 'rider', { ...base, parcel: { ...parcel, weight_kg: 2, prohibited_items: ALL_ITEMS, leave_unattended: true, safe_place: 'Behind the side gate', customer_ref: 'RX-1001' },
+    scheduled_for: new Date(Date.now() + 3600_000).toISOString(), pickup_window_end: new Date(Date.now() + 3 * 3600_000).toISOString() });
+  assert.equal(t.status, 201, JSON.stringify(t));
+  const p = await one('SELECT * FROM parcels WHERE trip_id = $1', [t.trip.id]);
+  assert.deepEqual([p.recipient_phone, p.sender_phone, p.safe_place, p.customer_ref, p.prohibited_checklist.version], ['+61400000555', '+61889501234', 'Behind the side gate', 'RX-1001', 1]);
+  assert.ok(t.trip.pickup_window_end, 'window stored');
+  assert.equal(await smsCount(t.trip.id, 'parcel_recipient_booked'), 1, 'recipient told when it will be collected');
+  const cfg = await call('GET', '/public/config');
+  assert.deepEqual([cfg.courier.size_max_kg.L, cfg.courier.prohibited.keys.length, cfg.courier.runs], [25, ALL_ITEMS.length, true]);
+  assert.equal((await call('POST', `/trips/${t.trip.id}/cancel`, 'rider', {})).trip.status, 'cancelled_rider');
+});
+
+test('pickup window: released at the start of the window (not 15 min early), searched until it closes', async () => {
+  for (const w of ['d1', 'd2', 'd3']) await call('POST', '/driver/online', w, { online: false });
+  const parcel = { size: 'S', description: 'Script', sender_name: 'Central Pharmacy', sender_phone: '08 8950 1234', recipient_name: 'Nan', recipient_phone: '0400 000 555', prohibited_items: ALL_ITEMS };
+  const mk = (win: boolean) => call('POST', '/trips', 'rider', { kind: 'courier', service: 'courier_s', pickup: TODD_MALL, dropoff: HOSPITAL, payment_method: 'wallet', parcel,
+    scheduled_for: new Date(Date.now() + 3600_000).toISOString(), ...(win ? { pickup_window_end: new Date(Date.now() + 3 * 3600_000).toISOString() } : {}) });
+  const w = await mk(true); const plain = await mk(false);
+  await pool.query(`UPDATE trips SET scheduled_for = now() + interval '10 minutes' WHERE id = ANY($1)`, [[w.trip.id, plain.trip.id]]);
+  await dispatchTick();
+  assert.equal((await one('SELECT status FROM trips WHERE id = $1', [plain.trip.id])).status, 'requested', 'a plain booking is released 15 min ahead');
+  assert.equal((await one('SELECT status FROM trips WHERE id = $1', [w.trip.id])).status, 'scheduled', 'the window has not started');
+  await pool.query(`UPDATE trips SET scheduled_for = now() - interval '40 minutes', pickup_window_end = now() + interval '1 hour' WHERE id = $1`, [w.trip.id]);
+  await dispatchTick();
+  assert.equal((await one('SELECT status FROM trips WHERE id = $1', [w.trip.id])).status, 'requested', 'inside its window: released, not "missed"');
+  await pool.query(`UPDATE trips SET requested_at = now() - interval '30 minutes' WHERE id = $1`, [w.trip.id]);
+  await dispatchTick();
+  assert.equal((await one('SELECT status FROM trips WHERE id = $1', [w.trip.id])).status, 'requested', 'still searching until the window closes');
+  for (const id of [w.trip.id, plain.trip.id]) await call('POST', `/trips/${id}/cancel`, 'rider', {});
+});
+
+let runTrips: any[] = [];
+test('multi-drop run: priced by leg, offered once to one driver with the whole run; every parcel collected together, recipients texted an ETA', async () => {
+  await onlyD1Online();
+  const drops = [{ dropoff: BRAITLING, size: 'S' }, { dropoff: YEPERENYE, size: 'S' }, { dropoff: ARALUEN, size: 'M' }];
+  const qr = await call('POST', '/courier/runs/quote', 'rider', { pickup: TODD_MALL, drops });
+  assert.equal(qr.status, 200, JSON.stringify(qr));
+  assert.deepEqual(qr.stops.map((s: any) => s.index), [1, 2, 0], 'nearest drop first');
+  assert.ok(qr.stops[1].quote.lines.some((l: any) => l.label.startsWith('Extra stop')));
+  assert.ok(!qr.stops[1].quote.lines.some((l: any) => l.label === 'Booking fee'), 'booking fee once per run');
+  const single = await call('POST', '/quotes', 'rider', { service: 'courier_s', pickup: TODD_MALL, dropoff: BRAITLING });
+  assert.ok(qr.stops[2].quote.trip_cents < single.quote.trip_cents, 'a later drop costs less than sending it on its own');
+
+  const body = { pickup: TODD_MALL, sender_name: 'Central Pharmacy', sender_phone: '08 8950 1234', payment_method: 'wallet', prohibited_items: ALL_ITEMS,
+    drops: [{ dropoff: BRAITLING, parcel: drop('Far Away') }, { dropoff: YEPERENYE, parcel: drop('Close By', { customer_ref: 'RX-7' }) }, { dropoff: ARALUEN, parcel: drop('Middle', { size: 'M', requires_signature: true }) }] };
+  assert.equal((await call('POST', '/courier/runs', 'rider', { ...body, drops: [body.drops[0], { ...body.drops[1], parcel: drop('Bad', { weight_kg: 9 }) }] })).error, 'parcel_too_heavy');
+  const before = await wallet();
+  const r = await call('POST', '/courier/runs', 'rider', body);
+  assert.equal(r.status, 201, JSON.stringify(r));
+  runTrips = r.trips;
+  assert.deepEqual(r.trips.map((t: any) => [t.batch_seq, t.parcel.recipient_name]), [[1, 'Close By'], [2, 'Middle'], [3, 'Far Away']]);
+  assert.equal(await wallet(), before - r.trips.reduce((n: number, t: any) => n + t.quote_cents, 0), 'each drop paid from credit');
+  assert.match(r.batch.ref, /^RUN-/);
+
+  const offer = await waitForOffer('d1');
+  assert.equal(offer.trip_id, r.trips[0].id, 'only the first drop is offered');
+  assert.equal(offer.run.stops, 3);
+  assert.ok(offer.run.pay_cents > offer.driver_pay.total_cents, 'offer shows the pay for the whole run');
+  await dispatchTick();
+  assert.equal((await call('GET', '/driver/offers', 'd1')).offers.length, 1, 'later drops are never offered on their own');
+  assert.equal((await call('POST', `/driver/offers/${r.trips[0].id}/accept`, 'd1')).trip.status, 'accepted');
+  const st = await q('SELECT status, driver_id FROM trips WHERE batch_id = $1 ORDER BY batch_seq', [r.batch.id]);
+  assert.ok(st.every((x: any) => x.status === 'accepted' && x.driver_id === st[0].driver_id), 'the whole run goes to the driver');
+  const active = await call('GET', '/driver/trips/active', 'd1');
+  assert.equal(active.trip.id, r.trips[0].id);
+  assert.equal(active.trip.batch.stops.length, 3);
+  await call('POST', `/driver/trips/${r.trips[0].id}/arrive`, 'd1');
+  assert.equal((await call('POST', `/driver/trips/${r.trips[0].id}/start`, 'd1')).trip.status, 'in_progress');
+  const ps = await q('SELECT p.eta_at, p.picked_up_at FROM parcels p JOIN trips t ON t.id = p.trip_id WHERE t.batch_id = $1 ORDER BY t.batch_seq', [r.batch.id]);
+  assert.ok(ps.every((p: any) => p.picked_up_at && p.eta_at), 'every parcel collected, each with an ETA');
+  assert.ok(ps[0].eta_at < ps[1].eta_at && ps[1].eta_at < ps[2].eta_at, 'later drops later');
+  for (const t of r.trips) assert.equal(await smsCount(t.id, 'parcel_on_way'), 1, 'each recipient texted once');
+  const track = await call('GET', `/public/track/${(await one('SELECT share_token FROM trips WHERE id = $1', [r.trips[1].id])).share_token}`);
+  assert.ok(track.trip.parcel.eta_at && track.live, 'recipient sees the ETA');
+  assert.equal(track.trip.batch, undefined, 'no other drops on a share link');
+  assert.equal(JSON.stringify(track).includes('Far Away'), false);
+});
+
+test('failed delivery: parcel goes back to the sender with a return fee; run continues; return needs a handover; another try can be booked once', async () => {
+  const [first, second, third] = runTrips;
+  const pin = async (id: string) => (await one('SELECT delivery_pin FROM parcels WHERE trip_id = $1', [id])).delivery_pin;
+  assert.equal((await call('POST', `/driver/trips/${first.id}/complete`, 'd1', { delivery_pin: await pin(first.id), lat: YEPERENYE.lat, lng: YEPERENYE.lng })).trip.status, 'completed');
+  assert.equal((await call('GET', '/driver/trips/active', 'd1')).trip.id, second.id, 'next drop');
+  assert.equal((await call('POST', `/driver/trips/${second.id}/delivery-failed`, 'd1', { reason: 'other' })).error, 'validation_error', 'say what happened');
+  const f = await call('POST', `/driver/trips/${second.id}/delivery-failed`, 'd1', { reason: 'no_one_home', note: 'Knocked twice' });
+  assert.equal(f.status, 200, JSON.stringify(f));
+  assert.equal(f.trip.parcel.outcome, 'returning');
+  const fee = f.trip.fare_breakdown.lines.find((l: any) => l.label === 'Return to sender').cents;
+  assert.ok(fee >= 500, `return fee ${fee}`);
+  assert.equal((await call('POST', `/driver/trips/${second.id}/delivery-failed`, 'd1', { reason: 'no_one_home' })).status, 200, 'a repeat is harmless');
+  assert.equal(await smsCount(second.id, 'parcel_failed_recipient'), 1);
+  assert.equal(await smsCount(second.id, 'parcel_failed_sender'), 1, 'sender phone (not the booking login) texted');
+  assert.equal((await call('GET', '/driver/trips/active', 'd1')).trip.id, third.id, 'returns go last');
+  assert.equal((await call('POST', `/driver/trips/${third.id}/complete`, 'd1', { delivery_pin: await pin(third.id) })).trip.status, 'completed');
+  assert.equal((await call('GET', '/driver/trips/active', 'd1')).trip.id, second.id, 'then back to the sender');
+  assert.equal((await call('POST', `/driver/trips/${second.id}/complete`, 'd1', { delivery_pin: await pin(second.id) })).error, 'return_pod_required');
+  const balance = await wallet();
+  const back = await call('POST', `/driver/trips/${second.id}/complete`, 'd1', { pod_signature: 'data:image/png;base64,AAAA', pod_received_by: 'Pharmacist' });
+  assert.equal(back.trip.status, 'completed');
+  assert.equal(back.trip.parcel.outcome, 'returned');
+  assert.equal(back.trip.final_cents, second.quote_cents + fee);
+  assert.equal(await wallet(), balance - fee, 'return fee taken from credit');
+  const led = await one<{ n: number }>(`SELECT sum(amount_cents)::int n FROM driver_ledger WHERE trip_id = $1 AND kind = 'fare'`, [second.id]);
+  assert.equal(led!.n, second.fare_breakdown.trip_cents + fee, 'driver is paid for the return');
+  assert.equal(await smsCount(second.id, 'parcel_delivered_sender'), 0, 'no "delivered" text for a return');
+  assert.equal(await one(`SELECT 1 FROM trips WHERE driver_id = (SELECT id FROM users WHERE phone = '+61400000011') AND status IN ('accepted','arrived','in_progress')`), null);
+
+  // Engaged time for the run is counted once, not once per drop.
+  const from = await engagedFromSql('t');
+  const e = await one(`SELECT sum(extract(epoch FROM t.completed_at - ${from}))::int s, extract(epoch FROM max(t.completed_at) - min(t.accepted_at))::int wall
+                       FROM trips t WHERE t.batch_id = $1`, [first.batch_id]);
+  assert.ok(e.s <= e.wall + 1, `engaged ${e.s}s within ${e.wall}s`);
+
+  assert.equal((await call('POST', `/trips/${first.id}/reattempt`, 'rider', {})).error, 'not_returned');
+  const again = await call('POST', `/trips/${second.id}/reattempt`, 'rider', { leave_unattended: true, safe_place: 'Front porch' });
+  assert.equal(again.status, 201, JSON.stringify(again));
+  assert.deepEqual([again.trip.dropoff_address, again.trip.parcel.recipient_name, again.trip.parcel.safe_place, again.trip.parcel.requires_signature],
+    [second.dropoff_address, 'Middle', 'Front porch', false]);
+  assert.equal((await call('POST', `/trips/${second.id}/reattempt`, 'rider', {})).error, 'already_rebooked');
+  await call('POST', `/trips/${again.trip.id}/cancel`, 'rider', {});
+});
+
+test('recipient: adds a safe place from the tracking link (not when a signature is needed, not after delivery); photo drop shows where it was left; far drops flagged', async () => {
+  await onlyD1Online();
+  const parcel = { size: 'S', description: 'Book', sender_name: 'Library', sender_phone: '08 8950 1234', recipient_name: 'Jo Bloggs', recipient_phone: '0400 000 555', prohibited_items: ALL_ITEMS };
+  const sig = await call('POST', '/trips', 'rider', { kind: 'courier', service: 'courier_s', pickup: TODD_MALL, dropoff: HOSPITAL, payment_method: 'wallet', parcel: { ...parcel, requires_signature: true } });
+  const sigTok = (await one('SELECT share_token FROM trips WHERE id = $1', [sig.trip.id])).share_token;
+  assert.equal((await call('POST', `/public/track/${sigTok}/instructions`, undefined, { safe_place: 'Porch' }, '10.77.0.1')).error, 'signature_required');
+  await call('POST', `/trips/${sig.trip.id}/cancel`, 'rider', {});
+
+  const t = await call('POST', '/trips', 'rider', { kind: 'courier', service: 'courier_s', pickup: TODD_MALL, dropoff: HOSPITAL, payment_method: 'wallet', parcel });
+  const tok = (await one('SELECT share_token FROM trips WHERE id = $1', [t.trip.id])).share_token;
+  assert.equal((await call('GET', `/public/track/${tok}`)).trip.parcel.can_add_instructions, true);
+  const ins = await call('POST', `/public/track/${tok}/instructions`, undefined, { notes: 'Blue door', safe_place: 'Under the verandah' }, '10.77.0.1');
+  assert.equal(ins.status, 200, JSON.stringify(ins));
+  assert.deepEqual([ins.parcel.leave_unattended, ins.parcel.safe_place, ins.parcel.recipient_notes], [true, 'Under the verandah', 'Blue door']);
+  await driveToArrived(t.trip.id);
+  await call('POST', `/driver/trips/${t.trip.id}/start`, 'd1');
+  const up = await call('POST', '/uploads', 'd1', { data_url: PNG, purpose: 'pod' });
+  assert.ok(up.url, JSON.stringify(up));
+  // 2 km from the address with only a photo: delivered, but checked by ops.
+  const done = await call('POST', `/driver/trips/${t.trip.id}/complete`, 'd1', { pod_photo_url: up.url, lat: -23.69, lng: 133.86 });
+  assert.equal(done.trip.parcel.outcome, 'delivered');
+  assert.ok(done.trip.parcel.pod_distance_m > 1000);
+  assert.ok(await one(`SELECT 1 FROM compliance_flags WHERE trip_id = $1 AND kind = 'delivery_far_from_address'`, [t.trip.id]));
+  const tr = await call('GET', `/public/track/${tok}`);
+  assert.equal(tr.trip.parcel.outcome, 'delivered');
+  assert.match(tr.trip.parcel.left_photo_url, /^\/uploads\/pod-.*sig=/, 'recipient sees where it was left (signed link)');
+  assert.equal(tr.trip.parcel.can_add_instructions, false);
+  assert.equal((await call('POST', `/public/track/${tok}/instructions`, undefined, { notes: 'late' }, '10.77.0.1')).status, 409);
+});
+
+test('business deliveries: managers see the account, members their own; CSV export without phones; CSV import checks every row, then books runs', async () => {
+  const me = await call('GET', '/me', 'rider');
+  const acct = me.corporate_accounts[0];
+  // Signed in directly (the OTP per-number limits are covered elsewhere).
+  const boss = (await one(`INSERT INTO users (phone, name, role, referral_code) VALUES ('+61400000977', 'Biz Manager', 'rider', 'BIZMGR977') ON CONFLICT (phone) DO UPDATE SET name = 'Biz Manager' RETURNING id`)).id;
+  tokens.bizboss = signToken({ id: boss, role: 'rider' });
+  assert.equal((await call('GET', `/business/deliveries?account_id=${acct.id}`, 'bizboss')).status, 403, 'not a member yet');
+  await q(`INSERT INTO corporate_members (account_id, user_id, role) VALUES ($1, $2, 'manager')`, [acct.id, boss]);
+
+  const parcel = { size: 'S', description: 'Order', sender_name: 'Desert Conference Centre', sender_phone: '08 8950 1234', recipient_name: 'Guest One', recipient_phone: '0400 000 555', prohibited_items: ALL_ITEMS, customer_ref: 'INV-55' };
+  const t = await call('POST', '/trips', 'rider', { kind: 'courier', service: 'courier_s', pickup: TODD_MALL, dropoff: HOSPITAL, payment_method: 'corporate', corporate_account_id: acct.id, parcel,
+    scheduled_for: new Date(Date.now() + 2 * 3600_000).toISOString() });
+  assert.equal(t.status, 201, JSON.stringify(t));
+  const mine = await call('GET', `/business/deliveries?account_id=${acct.id}`, 'rider');
+  assert.equal(mine.manager, false);
+  assert.ok(mine.deliveries.some((d: any) => d.ref === t.trip.ref && d.customer_ref === 'INV-55'));
+  const all = await call('GET', `/business/deliveries?account_id=${acct.id}&status=active&q=INV-55`, 'bizboss');
+  assert.equal(all.manager, true);
+  assert.deepEqual(all.deliveries.map((d: any) => d.ref), [t.trip.ref], 'manager sees deliveries booked by others on the account');
+  assert.equal((await call('GET', `/business/deliveries?account_id=${acct.id}`, 'bizboss')).deliveries.some((d: any) => d.rider_id === boss), false);
+  const res = await app.inject({ method: 'GET', url: `/business/deliveries.csv?account_id=${acct.id}`, headers: { authorization: `Bearer ${tokens.bizboss}` } });
+  assert.equal(res.statusCode, 200);
+  assert.match(String(res.headers['content-type']), /text\/csv/);
+  assert.match(res.body, /Ref,Run,Your reference,Booked by/);
+  assert.ok(res.body.includes('INV-55') && !res.body.includes('0400') && !res.body.includes('+61'), 'no phone numbers in the export');
+  // Previous-round runs show up as problems (the returned parcel).
+  assert.ok((await call('GET', '/business/deliveries?status=problem', 'rider')).deliveries.some((d: any) => d.outcome === 'returned'));
+
+  const base = { pickup: TODD_MALL, sender_name: 'Desert Conference Centre', sender_phone: '08 8950 1234', payment_method: 'corporate', corporate_account_id: acct.id, prohibited_items: ALL_ITEMS,
+    scheduled_for: new Date(Date.now() + 3 * 3600_000).toISOString() };
+  const bad = await call('POST', '/business/deliveries/import', 'bizboss', { ...base, csv: 'name,mobile,address\nA,0400000561,Todd Mall\nB,123,Araluen Arts Centre', dry_run: false });
+  assert.equal(bad.error, 'csv_errors');
+  assert.equal(await one(`SELECT 1 FROM trips WHERE rider_id = $1`, [boss]), null, 'nothing booked when a row is wrong');
+  const csv = 'name,mobile,address,size,reference\nA One,0400000561,Araluen Arts Centre,S,E-1\nB Two,0400000562,Braitling,M,E-2\nC Three,0400000563,Alice Springs Hospital,S,E-3';
+  const dry = await call('POST', '/business/deliveries/import', 'bizboss', { ...base, csv });
+  assert.equal(dry.booked, false);
+  assert.equal(dry.runs.length, 1);
+  assert.ok(dry.total_cents > 0);
+  const booked = await call('POST', '/business/deliveries/import', 'bizboss', { ...base, csv, dry_run: false });
+  assert.equal(booked.status, 201, JSON.stringify(booked));
+  assert.equal(booked.runs[0].trips.length, 3);
+  const b = await one(`SELECT source, stops FROM courier_batches WHERE id = $1`, [booked.runs[0].batch.id]);
+  assert.deepEqual(b, { source: 'csv', stops: 3 });
+  assert.equal((await call('GET', `/business/deliveries?account_id=${acct.id}&q=E-2`, 'bizboss')).deliveries[0].run_ref, booked.runs[0].batch.ref);
+  for (const x of booked.runs[0].trips) await call('POST', `/trips/${x.id}/cancel`, 'bizboss', {});
+  await call('POST', `/trips/${t.trip.id}/cancel`, 'rider', {});
+});
+
+test('multi-drop run: driver pulling out passes the whole run on; sender no-show at the pickup ends every drop', async () => {
+  await onlyD1Online();
+  await call('POST', '/driver/online', 'd2', { online: true, lat: TODD_MALL.lat + 0.01, lng: TODD_MALL.lng, battery_pct: 90 });
+  const body = { pickup: TODD_MALL, sender_name: 'Shop', sender_phone: '08 8950 1234', payment_method: 'wallet', prohibited_items: ALL_ITEMS,
+    drops: [{ dropoff: YEPERENYE, parcel: drop('One') }, { dropoff: HOSPITAL, parcel: drop('Two') }] };
+  const r = await call('POST', '/courier/runs', 'rider', body);
+  assert.equal(r.status, 201, JSON.stringify(r));
+  await waitForOffer('d1');
+  await call('POST', `/driver/offers/${r.trips[0].id}/accept`, 'd1');
+  const c = await call('POST', `/driver/trips/${r.trips[0].id}/cancel`, 'd1', { reason: 'vehicle_issue' });
+  assert.equal(c.trip.released, true);
+  const st = await q('SELECT status, driver_id FROM trips WHERE batch_id = $1 ORDER BY batch_seq', [r.batch.id]);
+  assert.ok(st.every((x: any) => x.status === 'requested' && !x.driver_id), 'the whole run is searching again');
+  const o2 = await waitForOffer('d2');
+  assert.equal(o2.trip_id, r.trips[0].id);
+  assert.equal(o2.run.stops, 2);
+  await call('POST', `/driver/offers/${r.trips[0].id}/accept`, 'd2');
+  await call('POST', `/driver/trips/${r.trips[0].id}/arrive`, 'd2');
+  await call('POST', `/driver/trips/${r.trips[0].id}/cancel`, 'd2', { reason: 'rider_no_show' });
+  const end = await q('SELECT status FROM trips WHERE batch_id = $1', [r.batch.id]);
+  assert.ok(end.every((x: any) => x.status === 'cancelled_driver'), JSON.stringify(end));
+  await call('POST', '/driver/online', 'd2', { online: false });
+});
+
+test('before migration 016: single parcels, tracking, dispatch and earnings still work; runs, windows and returns say migration_pending', async () => {
+  const cols: [string, string][] = [['trips', 'batch_id'], ['trips', 'batch_seq'], ['trips', 'pickup_window_end'], ['parcels', 'outcome'], ['parcels', 'safe_place'], ['parcels', 'pod_distance_m'],
+    ['parcels', 'eta_at'], ['parcels', 'customer_ref'], ['parcels', 'prohibited_checklist'], ['parcels', 'recipient_notes'], ['parcels', 'failed_reason']];
+  for (const [tb, c] of cols) await q(`ALTER TABLE ${tb} RENAME COLUMN ${c} TO ${c}_off`);
+  resetCourierReady();
+  try {
+    await onlyD1Online();
+    const parcel = { size: 'S', description: 'Keys', sender_name: 'Demo', sender_phone: '0400000100', recipient_name: 'Nan', recipient_phone: '0400000555', prohibited_items: ALL_ITEMS, safe_place: 'x', leave_unattended: true };
+    const t = await call('POST', '/trips', 'rider', { kind: 'courier', service: 'courier_s', pickup: TODD_MALL, dropoff: HOSPITAL, payment_method: 'wallet', parcel });
+    assert.equal(t.status, 201, JSON.stringify(t));
+    await driveToArrived(t.trip.id);
+    assert.equal((await call('GET', '/driver/trips/active', 'd1')).trip.id, t.trip.id);
+    await call('POST', `/driver/trips/${t.trip.id}/start`, 'd1');
+    await call('POST', '/driver/location', 'd1', { lat: HOSPITAL.lat, lng: HOSPITAL.lng });
+    assert.equal(await smsCount(t.trip.id, 'parcel_on_way'), 1, 'ETA text still goes');
+    const tok = (await one('SELECT share_token FROM trips WHERE id = $1', [t.trip.id])).share_token;
+    const tr = await call('GET', `/public/track/${tok}`);
+    assert.deepEqual([tr.status, tr.trip.parcel.can_add_instructions], [200, false]);
+    assert.equal((await call('POST', `/driver/trips/${t.trip.id}/delivery-failed`, 'd1', { reason: 'refused' })).error, 'migration_pending');
+    const pin = (await one('SELECT delivery_pin FROM parcels WHERE trip_id = $1', [t.trip.id])).delivery_pin;
+    assert.equal((await call('POST', `/driver/trips/${t.trip.id}/complete`, 'd1', { delivery_pin: pin })).trip.status, 'completed');
+    assert.equal((await call('POST', '/courier/runs', 'rider', { pickup: TODD_MALL, sender_name: 'S', sender_phone: '0889501234', payment_method: 'wallet', prohibited_items: ALL_ITEMS,
+      drops: [{ dropoff: YEPERENYE, parcel: drop('A') }, { dropoff: HOSPITAL, parcel: drop('B') }] })).error, 'migration_pending');
+    assert.equal((await call('POST', '/trips', 'rider', { kind: 'courier', service: 'courier_s', pickup: TODD_MALL, dropoff: HOSPITAL, payment_method: 'wallet', parcel,
+      scheduled_for: new Date(Date.now() + 3600_000).toISOString(), pickup_window_end: new Date(Date.now() + 7200_000).toISOString() })).error, 'migration_pending');
+    await dispatchTick();
+    assert.equal((await call('GET', '/driver/earnings', 'd1')).status, 200);
+    assert.equal((await call('GET', '/business/deliveries', 'rider')).status, 200);
+    assert.equal((await call('GET', '/driver/offers', 'd1')).status, 200);
+    assert.equal((await call('GET', '/public/config')).courier.runs, false);
+  } finally {
+    for (const [tb, c] of cols) await q(`ALTER TABLE ${tb} RENAME COLUMN ${c}_off TO ${c}`);
+    resetCourierReady();
+  }
+});

@@ -1,3 +1,6 @@
+import { engagedFromSql, failDelivery, type FailInput } from '../services/courier.js';
+import { FAIL_REASONS } from '../lib/courier.js';
+import { courierReady } from '../lib/courierSchema.js';
 import type { FastifyInstance } from 'fastify';
 import { config } from '../config.js';
 import { one, pool, q } from '../db.js';
@@ -353,8 +356,15 @@ export default async function driverRoutes(app: FastifyInstance) {
        WHERE o.driver_id = $1 AND o.status = 'offered' AND o.expires_at > now()`, [me.id]);
     // Same pay and distances as the realtime offer (the live site polls: realtime is off on serverless).
     const rules = offers.length ? await loadDriverPay() : undefined;
+    const runs = offers.length && await courierReady();
     for (const o of offers) {
       o.driver_pay = await trips.offerPay(pool, o, me.id, o.pickup_m, rules);
+      // Multi-drop run and pickup window (migration 016), same as the realtime offer.
+      if (runs) {
+        const x = await one('SELECT id, batch_id, batch_seq, est_distance_m, dropoff_address, scheduled_for, pickup_window_end FROM trips WHERE id = $1', [o.trip_id]);
+        o.run = x?.batch_id ? await trips.offerRun(pool, x, me.id, o.driver_pay) : null;
+        o.pickup_window = x?.pickup_window_end ? { from: x.scheduled_for, to: x.pickup_window_end } : null;
+      }
       o.total_m = (o.pickup_m ?? 0) + o.est_distance_m;
       o.rider_needs = trips.riderNeeds(o.rider_accessibility, o.kind);
       delete o.fare_breakdown; delete o.rider_accessibility;
@@ -373,7 +383,11 @@ export default async function driverRoutes(app: FastifyInstance) {
 
   app.get('/driver/trips/active', async (req) => {
     const me = await requireUser(req, 'driver');
-    const t = await one(`SELECT id FROM trips WHERE driver_id = $1 AND status IN ('accepted','arrived','in_progress') LIMIT 1`, [me.id]);
+    // A multi-drop run has several live trips: the current one is the next drop in order; parcels going back to the sender last.
+    const order = await courierReady()
+      ? `ORDER BY coalesce(p.outcome = 'returning', false), t.batch_seq NULLS FIRST, t.accepted_at` : 'ORDER BY t.accepted_at';
+    const t = await one(`SELECT t.id FROM trips t LEFT JOIN parcels p ON p.trip_id = t.id
+                         WHERE t.driver_id = $1 AND t.status IN ('accepted','arrived','in_progress') ${order} LIMIT 1`, [me.id]);
     return { trip: t ? trips.viewFor(await trips.getTrip(t.id), me) : null };
   });
 
@@ -411,6 +425,17 @@ export default async function driverRoutes(app: FastifyInstance) {
     if (b.pod_photo_url) b.pod_photo_url = await ownUpload(b.pod_photo_url, me.id, 'pod');
     return { trip: trips.viewFor(await trips.completeTrip(me.id, (req.params as any).id, b, replay), me) };
   });
+  /** Couldn't deliver: the parcel goes back to the sender (the trip's next stop becomes the pickup). Photo optional. */
+  app.post('/driver/trips/:id/delivery-failed', async (req) => {
+    const me = await requireUser(req, 'driver');
+    const b = parse(z.object({
+      reason: z.enum(Object.keys(FAIL_REASONS) as [FailInput['reason'], ...FailInput['reason'][]]), note: z.string().max(300).optional(),
+      photo_url: z.string().max(500).optional(), lat: z.number().min(-90).max(90).optional(), lng: z.number().min(-180).max(180).optional(),
+    }), req.body ?? {});
+    if (b.reason === 'other' && !b.note?.trim()) throw bad('validation_error', 'Say what happened');
+    if (b.photo_url) b.photo_url = await ownUpload(b.photo_url, me.id, 'pod');
+    return { trip: trips.viewFor(await failDelivery(me.id, (req.params as any).id, b), me) };
+  });
   app.post('/driver/trips/:id/cancel', async (req) => {
     const me = await requireUser(req, 'driver');
     const b = parse(z.object({ reason: z.enum(['rider_no_show', 'unsafe', 'rider_requested', 'vehicle_issue', 'parcel_prohibited', 'other']), note: z.string().max(200).optional() }), req.body);
@@ -433,10 +458,11 @@ export default async function driverRoutes(app: FastifyInstance) {
        FROM driver_ledger WHERE driver_id = $1 AND kind <> 'payout' AND created_at > now() - ($2 || ' days')::interval GROUP BY 1 ORDER BY 1`, [me.id, String(n)]);
     const balance = await one('SELECT coalesce(sum(amount_cents),0)::int cents FROM driver_ledger WHERE driver_id = $1', [me.id]);
     const ledger = await q('SELECT * FROM driver_ledger WHERE driver_id = $1 ORDER BY created_at DESC LIMIT 50', [me.id]);
+    const from = await engagedFromSql('trips');
     const engaged = await one(
       `SELECT count(*) FILTER (WHERE status = 'completed')::int trips,
               coalesce(sum(coalesce(actual_distance_m, est_distance_m)) FILTER (WHERE status = 'completed'), 0)::int trip_m,
-              coalesce(sum(least(extract(epoch FROM coalesce(completed_at, cancelled_at) - accepted_at), est_duration_s * 2 + 2700))
+              coalesce(sum(greatest(0, least(extract(epoch FROM coalesce(completed_at, cancelled_at) - ${from}), est_duration_s * 2 + 2700)))
                 FILTER (WHERE status IN ('completed','cancelled_rider','cancelled_admin')), 0)::int engaged_s
        FROM trips WHERE driver_id = $1 AND accepted_at IS NOT NULL AND coalesce(completed_at, cancelled_at) > now() - ($2 || ' days')::interval`,
       [me.id, String(n)]);

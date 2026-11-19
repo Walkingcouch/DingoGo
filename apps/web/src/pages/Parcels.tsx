@@ -4,16 +4,10 @@ import { PageHead } from '../Layout';
 import { rule, useConfig } from '../config';
 import { useMeta } from '../meta';
 import { FareTable } from './Rides';
+import { PROHIBITED_ITEMS } from '@dingogo/shared';
 
-export const PROHIBITED = [
-  ['Alcohol of any kind', 'Takeaway alcohol in Alice Springs is restricted and needs photo ID at the point of sale, so we don\'t carry it.'],
-  ['Illegal drugs, or medicines that aren\'t yours', 'Pharmacy orders in the recipient\'s name are fine.'],
-  ['Weapons and ammunition', 'Including replicas, knives sold as weapons and fireworks.'],
-  ['Dangerous goods', 'Fuel, gas bottles, batteries over 100 Wh, chemicals, paint and anything flammable or corrosive.'],
-  ['Cash, jewellery or items worth more than $1,000', 'We can\'t insure these in transit.'],
-  ['Live animals', 'Book a pet-friendly ride with the owner instead.'],
-  ['Food deliveries from restaurants', 'We don\'t carry hot food. Packaged groceries are fine.'],
-];
+/** Wording lives in packages/shared (the rider app shows the same list as a checklist; the API checks the same keys). */
+export const PROHIBITED: [string, string][] = PROHIBITED_ITEMS.map((i) => [i.title, i.detail]);
 
 export default function Parcels() {
   useMeta('Send a parcel', 'Same-day parcel delivery around Alice Springs by local drivers, with a delivery PIN or signature on every handover.');

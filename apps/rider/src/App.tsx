@@ -5,6 +5,7 @@ import { MeCtx, type Me, ACTIVE } from './ctx';
 import { RideScreen } from './screens/Ride';
 import { TripScreen, clearCachedTrip, readCachedTrip } from './screens/Trip';
 import { TripsScreen } from './screens/Trips';
+import { BusinessScreen } from './screens/Business';
 import { RewardsScreen } from './screens/Rewards';
 import { AccountScreen } from './screens/Account';
 import { Toast, toast } from './components/Toast';
@@ -71,6 +72,7 @@ export function App() {
             <Route path="/trips" element={<TripsScreen />} />
             <Route path="/trips/:id" element={<TripScreen />} />
             <Route path="/rewards" element={<RewardsScreen />} />
+            <Route path="/business" element={<BusinessScreen />} />
             <Route path="/account/*" element={<AccountScreen />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>

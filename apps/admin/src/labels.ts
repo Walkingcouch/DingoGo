@@ -38,7 +38,9 @@ export const VERIFIED_SOURCE: Map = { vin: 'VIN', compliance_plate: 'Compliance 
 export const DOC_STATUS: Map = { pending: 'Waiting for review', approved: 'Approved', rejected: 'Rejected', expired: 'Expired' };
 export const docTone = (s: string) => (s === 'approved' ? 'green' : s === 'pending' ? 'ochre' : 'red');
 
-export const FLAG_KIND: Map = { assistance_animal_refusal: 'Assistance animal refusal', doc_expired: 'Document expired', route_deviation: 'Route deviation', levy: 'Passenger levy', repeat_cancellation: 'Repeated cancellations after accepting' };
+export const FLAG_KIND: Map = { assistance_animal_refusal: 'Assistance animal refusal', doc_expired: 'Document expired', route_deviation: 'Route deviation', levy: 'Passenger levy', repeat_cancellation: 'Repeated cancellations after accepting', delivery_far_from_address: 'Parcel left far from the address' };
+export const PARCEL_OUTCOME: Map = { delivered: 'Delivered', returning: 'Coming back to the sender', returned: 'Returned to the sender', accepted: 'Accepted', arrived: 'At pickup', in_progress: 'On its way', requested: 'Searching', scheduled: 'Booked', completed: 'Completed' };
+export const FAIL_REASON: Map = { no_one_home: 'Nobody home', no_safe_place: 'No safe place', refused: 'Refused', wrong_address: 'Wrong address', no_access: 'No access', unsafe: 'Unsafe', other: 'Other' };
 export const FLAG_STATUS: Map = { open: 'Open', reviewing: 'Reviewing', reviewed: 'Reviewed', actioned: 'Action taken', resolved: 'Resolved', dismissed: 'Dismissed' };
 export const SOS_STATUS: Map = { open: 'Open', acknowledged: 'Acknowledged', resolved: 'Resolved' };
 export const TICKET_STATUS: Map = { open: 'Open', pending: 'Waiting on customer', resolved: 'Resolved', closed: 'Closed', new: 'New', contacted: 'Contacted', quoted: 'Quoted', booked: 'Booked', confirmed: 'Confirmed', replied: 'Replied', declined: 'Declined' };
@@ -87,7 +89,7 @@ export function complianceText(issue: string): string {
 
 /** Round 9: texts, calls and push logged for a trip (comms_log). */
 export const COMMS_TEMPLATE: Map = {
-  otp: 'Sign-in code', sos_contact: 'SOS text to emergency contact', parcel_recipient: 'Parcel PIN to recipient', parcel_delivered_sender: 'Delivered text to sender',
+  otp: 'Sign-in code', sos_contact: 'SOS text to emergency contact', parcel_recipient: 'Parcel PIN to recipient', parcel_delivered_sender: 'Delivered text to sender', parcel_recipient_booked: 'Parcel booked text to recipient', parcel_on_way: 'Parcel ETA to recipient', parcel_failed_recipient: 'Not delivered text to recipient', parcel_failed_sender: 'Not delivered text to sender', parcel_returned_sender: 'Returned text to sender',
   driver_on_way: 'Driver on the way', driver_here: 'Driver is here', no_drivers: 'No drivers', booking_card_declined: 'Booking cancelled: card',
   finding_another_driver: 'Finding another driver', driver_cancelled: 'Driver cancelled', chat_relay_sms: 'Message passed on by text', relay_call: 'Call through DingoGo number',
   promo: 'Offer',

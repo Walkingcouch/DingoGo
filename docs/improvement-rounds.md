@@ -607,3 +607,71 @@ Ideas for next rounds:
 - Privacy retention job (still open from Rounds 2 and 9): purge OTP/rate events, old GPS tracks, chat and comms logs on a schedule shown in admin.
 - Admin "maintenance mode" switch (read-only banner and bookings paused with a clear message) for planned database work.
 - Run `scripts/a11y-check.mjs` and the ops tests in CI with a Postgres service (CI already runs `npm test`, which now includes the bootstrap tests).
+
+### Round 11 — courier and delivery business
+Scan: read the parcel booking schema and `createTrip`, dispatch/accept/arrive/start/complete for couriers, `settle`, the share-link tracking
+endpoint, the driver app's courier screens, the rider booking form, the website prohibited-items page and business accounts. Found: no way to send
+several parcels with one driver (a pharmacy round meant N separate bookings, N drivers, N booking fees); scheduled pickups were a single time;
+parcel weight never checked against the size (25 kg allowed on a Small) and recipient numbers never checked as mobiles (the PIN text silently
+failed for landlines); the prohibited-items "check" was one tick box that didn't match the website list; "leave it" had no place to say where, and
+the recipient couldn't see where it was left; recipients got no ETA; **a parcel that couldn't be delivered had no path at all** (in-progress
+trips can't be cancelled, so it was stuck until ops intervened); no business dashboard or bulk booking; latent: a card charged afresh at settle
+(lapsed hold) left the original hold on the card; `/driver/trips/active` took an arbitrary live trip.
+
+Suggested:
+1. [fix] Parcel validation: weight within the size (S 5 / M 15 / L 25 kg), recipient must be an Australian mobile, sender any Australian number
+   (stored +61), declared value ≤ $1,000, signature and safe place exclusive; prohibited-items checklist (every line, keys shared by API, rider app
+   and website, stored with a version), old single tick still accepted.
+2. [add] Safe place and handover location: `safe_place` text, recipient-visible photo of where it was left (signed link on the tracking page),
+   `pod_distance_m` recorded and a `delivery_far_from_address` flag for photo-only drops > 400 m away; sender's own reference (`customer_ref`).
+3. [add] Scheduled pickup windows (30 min–4 h): released at the window start, searched until it closes, shown on offers, tracking and the
+   booking text to the recipient.
+4. [add] Recipient ETA text at pickup (`parcel_on_way`, cumulative for runs) and tracking page with ETA, outcome, where it was left, and a form for
+   the recipient to add a note or safe place (not for signature parcels, not after the driver has been; per-IP limit).
+5. [add] Failed delivery → return to sender: driver "Couldn't deliver" with reasons/note/photo, parcel `returning` with a return fee (courier policy,
+   50% of the trip fare, min $5, paid to the driver less the fee), sender and recipient texted, return handover needs name + signature/photo,
+   one-tap "Book another try" for the sender (once).
+6. [add] Multi-drop runs: one pickup, 2–10 drops, nearest-first order, later drops priced on the leg with no base fare/booking fee ($6 minimum),
+   offered once with the whole run's pay, all drops assigned/arrived/collected together, delivered one by one, returns last; releases and pickup
+   no-shows apply to the whole run; engaged time not double counted for the earnings floor.
+7. [add] Business deliveries: `GET /business/deliveries` (managers see the account, members their own) with summary and CSV export (no phones);
+   CSV import with per-row errors (dry run first; nothing booked if any row is wrong) booked as runs of up to 10.
+8. [add] Apps: rider booking form (checklist, weight, reference, safe place, pickup window), trip screen (outcome, run, ETA, "Send it again"),
+   new Business deliveries screen (list/filters/CSV, run form, CSV import); driver offer (run, window), live trip (run chip, parcels to collect,
+   recipient notes, safe place, "Couldn't deliver" sheet, return to sender stage and handover, "Next: …" after each drop); website tracking page;
+   admin trip drawer (reference, run, window, safe place/notes, outcome, failure photo, handover distance) and labels.
+9. [fix] Settle releases the original card hold when the fare is charged afresh; the driver's active trip is chosen in run order; docs.
+
+Done (all 9). Migration: `services/api/migrations/016_courier_business.sql` (new table `courier_batches`; columns `trips.batch_id/batch_seq/
+pickup_window_end`, `parcels.customer_ref/safe_place/recipient_notes/prohibited_checklist/eta_at/outcome/failed_*/returned_at/pod_distance_m`;
+indexes; additive). Before it is applied (`lib/courierSchema.ts` checks once a minute): single parcels, tracking, dispatch, ETA texts and earnings
+work as before; runs, windows, returns and recipient instructions answer 503 `migration_pending`; `/public/config` `courier.runs: false`.
+Tests: 90 → 100 (courier rules unit test — sizes, mobiles, checklist incl. shared list in step, CSV parser and row errors, drop order, pickup-time
+text, window search; parcel booking validation and stored fields; pickup window release/search; multi-drop run pricing, single offer, whole-run
+accept/arrive/start, ETAs and texts, no batch on share links; failed delivery → return fee → run continues → return handover → driver pay → credit
+→ engaged time once → re-attempt once; recipient safe place/notes, signature refusal, photo drop shown signed, far-drop flag; business dashboard
+scopes, CSV export without phones, CSV import errors/dry run/booking; run release and pickup no-show; everything with the 016 columns renamed away).
+- API: new `src/lib/courier.ts`, `src/lib/courierSchema.ts`, `src/services/courier.ts`, `src/routes/business.ts`; `services/trips.ts`
+  (`precheck`/`insertTrip`/`createRun`/`quoteRun`, run-aware dispatch/accept/arrive/start/complete/release/cancel/location, windows in the tick,
+  returns at completion, hold release in settle); `routes/driver.ts` (`delivery-failed`, run offers, active ordering), `routes/rider.ts`
+  (`parcelSchema`, `reattempt`), `routes/public.ts` (parcel tracking, instructions, `courier` config), `lib/messages.ts` (5 templates; render keeps
+  texts GSM-7), `services/earningsFloor.ts` + driver earnings (engaged time).
+- Shared: new `courier.ts` (checklist wording, size limits, fail reasons, outcome labels); website prohibited-items page uses it.
+- Behaviour changes to note: landline recipient numbers and over-weight parcels are refused (400); rides/existing apps unchanged; recipients now get a
+  second text at pickup (ETA); a returned parcel's invoice includes "Return to sender"; card trips charged afresh no longer leave the hold behind.
+- Deploy: apply migration 016 (AUTO_MIGRATE does it at cold start). No env vars. Optional setting `courier_policy` (defaults in code). No data fix.
+
+Deferred:
+- One card hold per run (each drop holds its own amount today; fine in mock mode and small runs, but ten holds on one card in Stripe mode is noisy).
+- Route optimisation beyond nearest-neighbour (OSRM trip/TSP endpoint) and re-ordering drops on the road; drivers deliver in the booked order.
+- Admin editor for `courier_policy` (generic settings PUT works; no form yet) and ops "reassign one drop" from a run.
+- Geocoding CSV addresses beyond the local place list (needs a geocoder key); rows without a match need lat/lng.
+- Pharmacy rules (S4/S8 medicines: signature + ID check, no safe place) — needs pharmacist/AHPRA advice before encoding.
+- Partner-portal view for businesses without app logins; driver app offline queue for "Couldn't deliver" (needs signal today).
+
+Ideas for next rounds:
+- Business accounts self-service: invite staff, manager/member roles, monthly spend limits enforced, statement PDF with each delivery and proof.
+- Recurring deliveries (weekly pharmacy round, community food parcels) from a saved run template, and a scheduled "run" view for ops.
+- Proof-of-delivery pack: emailed/SMS link to the sender with photo, signature and time; dispute handling for "not received".
+- Return-to-depot option for parcels after hours (DingoGo office holds it) and a second-attempt slot chosen by the recipient from the tracking link.
+- Driver app: native photo capture with compression and an offline queue for POD photos and failed-delivery reports.

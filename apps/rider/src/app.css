@@ -307,3 +307,10 @@ li.row { padding: .8rem 0; }
 /* Stripe card form (Round 8) */
 .addcard { margin-top: 12px; padding: 14px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface, transparent); }
 .addcard__element { min-height: 120px; margin: 8px 0 12px; }
+.prohibited-list { border: 2px solid var(--earth); border-radius: var(--r-md); padding: .75rem; margin-top: .6rem; background: var(--earth-soft); display: grid; gap: .35rem; }
+.prohibited-list.is-ok { border-color: var(--saltbush); background: var(--saltbush-soft); }
+.prohibited-list legend { padding: 0 .25rem; }
+.biz-table { width: 100%; border-collapse: collapse; font-size: var(--fs-sm); }
+.biz-table th, .biz-table td { text-align: left; padding: .45rem .35rem; border-bottom: 1px solid var(--line, rgba(0,0,0,.12)); vertical-align: top; }
+.biz-drop { border: 1px solid var(--line, rgba(0,0,0,.15)); border-radius: var(--r-md); padding: .6rem; margin-bottom: .6rem; }
+.biz-sum { display: flex; flex-wrap: wrap; gap: .5rem; margin: .5rem 0 1rem; }

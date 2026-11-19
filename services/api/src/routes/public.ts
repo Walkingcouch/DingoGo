@@ -10,12 +10,39 @@ import { searchPlaces } from '../lib/places.js';
 import { latLng, parse, z } from '../lib/validate.js';
 import { toOps } from '../realtime.js';
 import { shareLinkExpired, zoneFor } from '../services/trips.js';
+import { recipientInstructions } from '../services/courier.js';
+import { courierReady } from '../lib/courierSchema.js';
+import { FAIL_REASONS, MAX_DECLARED_CENTS, MAX_DROPS, PROHIBITED_KEYS, PROHIBITED_VERSION, SIZE_MAX_KG } from '../lib/courier.js';
 
 /** Website forms are open to anyone: cap them per IP so a bot can't flood the ops inbox. */
 const formLimit = (req: { ip: string }) =>
   limit('public_form_ip', req.ip, config.rateLimits.publicFormPerIp, 3600, 'Thanks — we’ve had a lot of messages from this connection. Please try again in an hour, or call us.');
 import { FUEL_TYPES, vehicleAgeRule } from '../lib/vehicles.js';
 import { DOCUMENT_TYPES, listJurisdictions } from '../lib/jurisdictions.js';
+
+/** What a parcel's tracking link shows: progress, the delivery estimate, where it was left (with the photo), or why it is going
+ *  back. No PIN, phone numbers, sender address details beyond the pickup already shown, or other drops on the run. */
+async function parcelForTracking(tripId: string) {
+  const ready = await courierReady();
+  const p = await one(
+    `SELECT p.size, p.picked_up_at, p.delivered_at, p.leave_unattended, p.requires_signature, split_part(p.recipient_name, ' ', 1) AS recipient_first_name,
+            p.sender_name, p.pod_received_by IS NOT NULL AS signed, p.pod_photo_url, t.scheduled_for
+            ${ready ? ', p.outcome, p.eta_at, p.safe_place, p.recipient_notes, p.failed_reason, t.pickup_window_end' : ''}
+     FROM parcels p JOIN trips t ON t.id = p.trip_id WHERE p.trip_id = $1`, [tripId]);
+  if (!p) return null;
+  const photoDrop = !!p.pod_photo_url && !p.signed;
+  return {
+    size: p.size, sender_name: p.sender_name, recipient_first_name: p.recipient_first_name,
+    picked_up_at: p.picked_up_at, delivered_at: p.delivered_at, outcome: p.outcome ?? (p.delivered_at ? 'delivered' : null),
+    eta_at: p.eta_at ?? null, pickup_window: p.pickup_window_end ? { from: p.scheduled_for, to: p.pickup_window_end } : null,
+    leave_unattended: p.leave_unattended, requires_signature: p.requires_signature, safe_place: p.safe_place ?? null,
+    recipient_notes: p.recipient_notes ?? null,
+    // Left in a safe place: the photo shows where (signed link, like every private upload).
+    left_photo_url: photoDrop ? p.pod_photo_url : null,
+    failed_reason: p.failed_reason ? (FAIL_REASONS as Record<string, string>)[p.failed_reason] ?? 'Could not be delivered' : null,
+    can_add_instructions: ready && !p.delivered_at && !p.outcome,
+  };
+}
 
 export default async function publicRoutes(app: FastifyInstance) {
   app.get('/health', async () => {
@@ -44,6 +71,12 @@ export default async function publicRoutes(app: FastifyInstance) {
     // Round 9: which push services the apps can register with, and whether masked calls (relay number) are on.
     push: { web_push_key: config.push.vapidPublicKey || null, fcm: pushProviders().fcm },
     comms: { relay: !!(config.twilio.relayNumber && config.twilio.sid && config.twilio.token), chat: true },
+    // Round 11: parcel limits and the prohibited items checklist keys (wording in the apps), and what's switched on.
+    courier: {
+      size_max_kg: SIZE_MAX_KG, max_declared_cents: MAX_DECLARED_CENTS, max_drops: MAX_DROPS,
+      prohibited: { version: PROHIBITED_VERSION, keys: PROHIBITED_KEYS }, fail_reasons: FAIL_REASONS,
+      runs: await courierReady(), windows: await courierReady(),
+    },
   }));
 
   app.get('/public/places', async (req) => ({ places: searchPlaces(String((req.query as any).q ?? '').slice(0, 100)) }));
@@ -84,7 +117,14 @@ export default async function publicRoutes(app: FastifyInstance) {
     if (!live) { delete t.driver_lat; delete t.driver_lng; }
     const track = live ? await q('SELECT lat, lng FROM trip_track WHERE trip_id = $1 ORDER BY at DESC LIMIT 200', [t.id]) : [];
     const { id, cancelled_at, ...rest } = t;
+    if (t.kind === 'courier') (rest as any).parcel = await parcelForTracking(t.id);
     return { trip: rest, track: track.reverse(), live };
+  });
+
+  /** The recipient adds delivery instructions or a safe place from their tracking link. */
+  app.post('/public/track/:token/instructions', async (req) => {
+    const b = parse(z.object({ notes: z.string().max(300).optional(), safe_place: z.string().max(120).optional() }), req.body);
+    return recipientInstructions(String((req.params as any).token), req.ip, b);
   });
 
   app.post('/public/driver-applications', async (req, reply) => {

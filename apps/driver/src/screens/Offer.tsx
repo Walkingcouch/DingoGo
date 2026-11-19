@@ -18,7 +18,9 @@ export function Offer() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [prefs] = usePrefs();
-  const earn = estimateEarnings(offer, Number(me?.driver?.commission_pct ?? 25));
+  // A multi-drop run is one job: the big number is the pay for every drop.
+  const run = offer.run as { stops: number; trip_m: number; pay_cents: number; last_drop: string } | null | undefined;
+  const earn = run ? run.pay_cents : estimateEarnings(offer, Number(me?.driver?.commission_pct ?? 25));
   const box = useRef<HTMLDivElement>(null);
   useModal(box); // no Escape: a stray key must not decline a trip
 
@@ -91,7 +93,9 @@ export function Offer() {
           <div className="offer-earn">{money(earn)}<span className="sr-only"> {pay ? 'your pay' : 'estimated pay'}.</span></div>
           <dl className="offer-facts">
             <div><dt>Pickup</dt><dd>{pickupBits}</dd><dd className="offer-place">{shortPlace(offer.pickup?.address)}</dd></div>
-            <div><dt>{isCourier ? 'Delivery' : 'Trip'}</dt><dd>{km(offer.est_distance_m)}, {mins(offer.est_duration_s)}</dd><dd className="offer-place">{shortPlace(offer.dropoff?.address)}</dd></div>
+            {run
+              ? <div><dt>Run</dt><dd>{run.stops} drops, {km(run.trip_m)}</dd><dd className="offer-place">Last: {shortPlace(run.last_drop)}</dd></div>
+              : <div><dt>{isCourier ? 'Delivery' : 'Trip'}</dt><dd>{km(offer.est_distance_m)}, {mins(offer.est_duration_s)}</dd><dd className="offer-place">{shortPlace(offer.dropoff?.address)}</dd></div>}
           </dl>
         </div>
         <div className="offer-sub">
@@ -99,6 +103,8 @@ export function Offer() {
             ? <>: {km(offer.total_m ?? offer.pickup_m + offer.est_distance_m)} in all, including the drive to the pickup</>
             : null}
         </div>
+        {run && <p className="offer-sub"><strong>Multi-drop run:</strong> collect {run.stops} parcels at one pickup, then deliver in order. Pay for every drop: {money(run.pay_cents)}. The breakdown below is the first drop.</p>}
+        {offer.pickup_window && <p className="offer-sub"><strong>Pickup window:</strong> collect by {new Date(offer.pickup_window.to).toLocaleTimeString('en-AU', { hour: 'numeric', minute: '2-digit' })}.</p>}
         {pay && (
           <ul className="offer-pay" aria-label="How your pay adds up">
             <li><span>Fare</span><span>{money(pay.fare_cents)}</span></li>

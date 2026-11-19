@@ -3,7 +3,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom';
 import {
   Icon,
   ApiError, ChatThread, REALTIME, COURIER_STATUS_LABEL, useTripChat, STATUS_LABEL, ago, connectRealtime, date, dateTime, get, km, money, onNetworkChange, post, statusTone, time, useInterval, Ranges,
-  isTemporary,
+  isTemporary, DELIVERY_FAIL_REASONS, PARCEL_OUTCOME_LABEL,
 } from '@dingogo/shared';
 import { DgMap, type MapMarker } from '@dingogo/shared/map';
 import { ACTIVE, shareUrl, useMe } from '../ctx';
@@ -241,7 +241,10 @@ function LiveTrip({ trip, carPos, reload, onClose, net }: { trip: any; carPos: a
 
         {trip.kind === 'courier' && trip.parcel && (
           <div className="callout callout--dusk" style={{ marginTop: '.8rem' }}>
-            <strong>{trip.parcel.description}</strong> for {trip.parcel.recipient_name}. We've texted them a tracking link and a delivery PIN.
+            {trip.parcel.outcome === 'returning'
+              ? <><strong>Couldn't be delivered.</strong> The driver is bringing {trip.parcel.description} back to you{trip.parcel.failed_reason ? ` (${failLabel(trip.parcel.failed_reason)})` : ''}.</>
+              : <><strong>{trip.parcel.description}</strong> for {trip.parcel.recipient_name}. We've texted them a tracking link and a delivery PIN{trip.parcel.eta_at ? `. Arriving about ${time(trip.parcel.eta_at)}` : ''}.</>}
+            {trip.batch && <> Drop {trip.batch_seq} of {trip.batch.stops.length} on run {trip.batch.ref}.</>}
           </div>
         )}
 
@@ -387,7 +390,11 @@ function TripDetail({ trip, reload, net }: { trip: any; reload: () => Promise<vo
         <div><dt>From</dt><dd>{trip.pickup_address}</dd></div>
         {trip.service !== 'tour' && <div><dt>To</dt><dd>{trip.dropoff_address}</dd></div>}
         {trip.driver && <div><dt>Driver</dt><dd>{trip.driver.name}{trip.vehicle ? `, ${trip.vehicle.rego}` : ''} {trip.vehicle && <FuelChip v={trip.vehicle} />}</dd></div>}
-        {trip.parcel?.pod_received_by && <div><dt>Received by</dt><dd>{trip.parcel.pod_received_by}, {time(trip.parcel.delivered_at)}</dd></div>}
+        {trip.parcel?.pod_received_by && <div><dt>{trip.parcel.outcome === 'returned' ? 'Taken back by' : 'Received by'}</dt><dd>{trip.parcel.pod_received_by}, {time(trip.parcel.returned_at ?? trip.parcel.delivered_at)}</dd></div>}
+        {trip.parcel?.customer_ref && <div><dt>Your reference</dt><dd>{trip.parcel.customer_ref}</dd></div>}
+        {trip.parcel?.safe_place && <div><dt>Safe place</dt><dd>{trip.parcel.safe_place}</dd></div>}
+        {trip.parcel?.outcome && <div><dt>Outcome</dt><dd>{PARCEL_OUTCOME_LABEL[trip.parcel.outcome] ?? trip.parcel.outcome}{trip.parcel.failed_reason ? `: ${failLabel(trip.parcel.failed_reason)}` : ''}</dd></div>}
+        {trip.batch && <div><dt>Run</dt><dd>{trip.batch.ref}, drop {trip.batch_seq} of {trip.batch.stops.length}</dd></div>}
         <div><dt>{done ? 'Paid' : 'Price'}</dt><dd className="dg-money">{money(trip.final_cents ?? trip.quote_cents)} <span className="dg-muted">({payLabel(trip.payment_method)})</span></dd></div>
         {trip.cancel_fee_cents > 0 && <div><dt>Cancellation fee</dt><dd className="dg-money">{money(trip.cancel_fee_cents)}</dd></div>}
       </dl>
@@ -401,7 +408,8 @@ function TripDetail({ trip, reload, net }: { trip: any; reload: () => Promise<vo
       )}
       {trip.status === 'no_drivers' && <div className="callout callout--earth">No car was free for this trip, so you haven't been charged. Try again in a few minutes, or call us to book ahead.</div>}
       {trip.status === 'cancelled_driver' && <div className="callout callout--earth">Your driver had to cancel, so you haven't been charged. Book again and we'll find you another car.</div>}
-      {done && <AfterTrip trip={trip} reload={reload} />}
+      {done && trip.parcel?.outcome === 'returned' && <Reattempt trip={trip} />}
+      {done && trip.parcel?.outcome !== 'returned' && <AfterTrip trip={trip} reload={reload} />}
       {(done || trip.cancel_fee_cents > 0) && <Receipt tripId={trip.id} vehicle={trip.vehicle} />}
       <Link className="dg-btn dg-btn--ghost dg-btn--block" style={{ marginTop: 16 }} to={`/account/help?trip=${trip.id}`}>Get help with this trip</Link>
       {trip.kind === 'ride' && (trip.assistance_animal || trip.status === 'cancelled_driver') && (
@@ -410,6 +418,36 @@ function TripDetail({ trip, reload, net }: { trip: any; reload: () => Promise<vo
         </Link>
       )}
     </div>
+  );
+}
+
+const failLabel = (k: string) => (DELIVERY_FAIL_REASONS.find(([key]) => key === k)?.[1] ?? 'could not be delivered').toLowerCase();
+
+/** A parcel that came back: book another try (same parcel and addresses, normal fare), optionally allowing a safe place. */
+function Reattempt({ trip }: { trip: any }) {
+  const nav = useNavigate();
+  const [leave, setLeave] = useState(!!trip.parcel.leave_unattended);
+  const [place, setPlace] = useState(trip.parcel.safe_place ?? '');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  async function go() {
+    setBusy(true); setErr(null);
+    try {
+      const r = await post(`/trips/${trip.id}/reattempt`, { leave_unattended: leave, safe_place: leave ? place.trim() || undefined : undefined });
+      nav(`/trip/${r.trip.id}`);
+    } catch (e) { setErr(e instanceof ApiError ? e.message : 'Could not book. Try again.'); } finally { setBusy(false); }
+  }
+  return (
+    <section className="block" aria-labelledby="re-h" style={{ marginTop: 12 }}>
+      <h2 id="re-h">Send it again</h2>
+      <p className="dg-muted">Same parcel and address. The recipient gets a new PIN. Priced as a normal delivery.</p>
+      {!trip.parcel.requires_signature && (
+        <label className="dg-check"><input type="checkbox" checked={leave} onChange={(e) => setLeave(e.target.checked)} /><span>OK to leave it if nobody's home</span></label>
+      )}
+      {leave && <label className="dg-field"><span>Where to leave it</span><input className="dg-input" value={place} maxLength={120} onChange={(e) => setPlace(e.target.value)} /></label>}
+      {err && <p className="dg-error" role="alert">{err}</p>}
+      <button className="dg-btn dg-btn--block" disabled={busy} onClick={go}>{busy ? 'Booking…' : 'Book another try'}</button>
+    </section>
   );
 }
 
