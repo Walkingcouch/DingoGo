@@ -2280,3 +2280,43 @@ Suggested:
    rider), accounts and keys, settings to confirm with the accountant, NT Government/lawyer, owners and communities, nice-to-have — with where
    each lives in admin; OPERATIONS, README and API.md point to it.
 9. [add] Tests: `test/golive.test.ts` on its own bootstrapped scratch database.
+
+Done (all 9). No migration (the closed community routes are a base-data setting; code defaults unchanged). Tests: 274 → 279
+(`golive.test.ts` on its own bootstrapped scratch database: staff sign-in with the code from the log before SMS (admin and dispatcher yes,
+blocked staff and new riders 503, no code in the response, 000000 refused); bootstrap stores every community route closed and roof screens
+off, business details check (TBC, spaces, ATO check, name, email, other fields kept); launch checks in `/health/deep` (details only, never
+a secret, never changes `status`), ABN and legal name flip after a save, rider sees no routes and a long metered trip is still refused;
+launch checks unit test (every unsafe setting flagged, a fully set-up deploy has none); config in child processes (on Vercel no dev codes and
+mock cards for test accounts only, missing/placeholder JWT secret refused, local development unchanged, explicit `OTP_DEV_MODE` still wins)).
+Browser checks on the final build: smoke 10 steps pass; a11y 0 violations; tour on demo data 548 views and on a freshly bootstrapped
+database 500 views, 0 problems; `scripts/first-day.mjs` 11 steps pass on an empty database (AUTO_MIGRATE through the built function, now
+also in CI). Screenshots: `/tmp/claude-0/r29/{before,final,fresh2,fd}`.
+- API: `src/routes/auth.ts` (`isStaffPhone`, `code_in_log`), `src/config.ts` (`production`, `PLACEHOLDER_SECRETS`), `src/routes/admin.ts`
+  (`checkBusinessDetails`), new `src/lib/readiness.ts`, `src/routes/health.ts` (`launch`), `src/lib/baseSeed.ts` (`REGIONAL_POLICY_CLOSED`),
+  `scripts/seed.ts` (demo opens the routes).
+- Apps: shared `Login.tsx` (server-log hint); admin `Dashboard.tsx` (not-ready note), `Reports.tsx` (Go-live checks), `Regional.tsx`
+  (closed routes), `Drivers.tsx` + `labels.ts` (approve-the-application text), `Settings.tsx` (roof off), `admin.css`; rider `Community.tsx`.
+- Scripts/CI/docs: new `scripts/first-day.mjs`, `scripts/ui-tour.mjs` (phones, `SKIP_ROLES`, empty-safe), `.github/workflows/ci.yml`,
+  new `docs/GO-LIVE-CHECKLIST.md`, OPERATIONS 1 and 2, README, API.md "Go-live hardening (Round 29)".
+- Behaviour changes to note: on Vercel the API refuses to start without a real `JWT_SECRET` and ignores a missing `NODE_ENV` (no dev codes,
+  mock cards for test accounts only) — check the live variables before deploying; staff can sign in with the logged code while Twilio isn't
+  set up; `PUT /admin/settings/business` is validated (400 `invalid_abn` / `invalid_business`); a new database has the community routes
+  closed; `/health/deep` details carry `launch`.
+- Deploy: nothing to apply (no migration). Make sure Vercel has `JWT_SECRET` (32+ random characters, not the example), then follow
+  `docs/GO-LIVE-CHECKLIST.md` section 1a.
+
+Deferred:
+- Admin screens for the `cash_payments` and `cancellation_policy` settings (no UI since the early rounds; writable through the settings API) —
+  listed in the checklist; worth doing with the owners' answers on cash.
+- Driver documents through the driver app's own upload sheets in the first-day walk (the walk uses the API the app calls; the sheets are
+  covered by the tour and a11y check, not by a click-through with files).
+- Failing `status` on launch checks: kept separate on purpose so uptime monitors only alert on faults; a monitor can read `launch.ready`.
+- Logging every SMS body to the server log when Twilio isn't configured (riders' codes too, though unusable without the screen): fine before
+  launch, but a "log only staff codes" switch would be tidier once Twilio is in.
+
+Ideas for next rounds:
+- Owner onboarding wizard in admin: the go-live checks as steps (business details, fares, first driver, test ride) with links into each page.
+- Admin pages for cash and cancellation policy, and the decisions still open (no-show fee, refund reversals, dispatcher money access).
+- A "test ride" mode for owners before Twilio/Stripe: a staff-only rider and driver pair that can book without SMS or cards, kept out of reports.
+- Run `first-day.mjs` and the fresh-database tour in a nightly job against a Supabase branch (real pooler, real RLS) rather than local Postgres.
+- Twilio stand-in reused by the smoke test so every browser check runs in production sign-in mode.
