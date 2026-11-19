@@ -1,6 +1,6 @@
 import { Suspense, useCallback, useEffect, useState } from 'react';
 import { Link, NavLink, Navigate, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom';
-import { Icon, Login, readHandoff, takeHandoff, get, getToken, initAuth, setToken, connectRealtime, useOnline, disablePush, refreshPush, ServiceNotice, lazyWithRetry, onAppLink } from '@dingogo/shared';
+import { Icon, Login, readHandoff, takeHandoff, get, getToken, initAuth, setToken, connectRealtime, useOnline, disablePush, refreshPush, ServiceNotice, lazyWithRetry, onAppLink, onBackButton } from '@dingogo/shared';
 import { MeCtx, type Me, ACTIVE, WEB_URL } from './ctx';
 import { RideScreen } from './screens/Ride';
 import { TripScreen, clearCachedTrip, readCachedTrip } from './screens/Trip';
@@ -45,6 +45,9 @@ export function App() {
     if (route.startsWith('/track/')) nav(route);
     else window.location.assign(route);
   }), [nav]);
+
+  // Round 23: Android Back goes back a screen, and on the first screen puts the app in the background.
+  useEffect(() => onBackButton(), []);
 
   useEffect(() => {
     if (!authed) return;

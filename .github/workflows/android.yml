@@ -4,6 +4,8 @@ name: Android apps
 #            "android-latest" pre-release so testers can install over the last one.
 #  - bundle: Google Play AABs, only when run by hand (Actions > Android apps > Run workflow, "Build Google Play bundles"),
 #            signed with the private upload key from GitHub Actions secrets. Never uses the test key.
+# Toolchain (Round 23): Capacitor 8, compile/target API 36 (Android 16, required by Google Play since 31 Aug 2026), min API 24,
+# Android Gradle Plugin 8.13.0, Gradle 8.14.3, Java 21, Node 22.
 on:
   push:
     branches: [dingogo, main]
@@ -41,15 +43,18 @@ jobs:
     env:
       ANDROID_VERSION_SUFFIX: -test.${{ github.run_number }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
         with:
-          node-version: 22
+          node-version-file: .nvmrc
           cache: npm
-      - uses: actions/setup-java@v4
+      # Capacitor 8 / Android Gradle Plugin 8.13 compile with Java 21 (Gradle 8.14.3 from the wrapper).
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
-          java-version: 17
+          java-version: 21
+      # The committed Gradle wrapper jars must be the official ones (they run with the upload key in the bundle job).
+      - uses: gradle/actions/wrapper-validation@v5
       - run: npm ci --include=dev
       - name: Build web bundle
         working-directory: apps/${{ matrix.app }}
@@ -62,7 +67,7 @@ jobs:
         run: chmod +x gradlew && ./gradlew --no-daemon assembleRelease
       - name: Rename APK
         run: cp apps/${{ matrix.app }}/android/app/build/outputs/apk/release/app-release.apk dingogo-${{ matrix.app }}.apk
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: dingogo-${{ matrix.app }}-apk
           path: dingogo-${{ matrix.app }}.apk
@@ -93,15 +98,18 @@ jobs:
       # The public test key's certificate (android-signing/dingogo-test.keystore): a Play bundle signed with it is refused.
       TEST_KEY_SHA256: C5:C8:FE:E0:A1:7C:DF:1D:4B:00:53:CF:0F:0C:33:B4:20:BF:6F:7F:34:85:99:C3:BB:E9:CA:64:6A:1C:E7:20
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
         with:
-          node-version: 22
+          node-version-file: .nvmrc
           cache: npm
-      - uses: actions/setup-java@v4
+      # Capacitor 8 / Android Gradle Plugin 8.13 compile with Java 21 (Gradle 8.14.3 from the wrapper).
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
-          java-version: 17
+          java-version: 21
+      # The committed Gradle wrapper jars must be the official ones (they run with the upload key in the bundle job).
+      - uses: gradle/actions/wrapper-validation@v5
       - name: Check the upload key secrets
         env:
           ANDROID_UPLOAD_KEYSTORE_BASE64: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_BASE64 }}
@@ -156,7 +164,7 @@ jobs:
             exit 1
           fi
           cp "$aab" dingogo-${{ matrix.app }}-${{ github.run_number }}.aab
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: dingogo-${{ matrix.app }}-aab
           path: dingogo-${{ matrix.app }}-${{ github.run_number }}.aab

@@ -304,9 +304,18 @@ work the old way (one message, reply as a notification) and the lost property an
 Store copy, the Data safety draft and iOS notes are in `docs/store/`. Test APKs keep coming from every push (shared test key,
 `android-latest` release). Play builds are separate and signed with a private **upload key**.
 
-**Blocker first:** Google Play has required **target API 36** (Android 16) for new apps and updates since 31 Aug 2026. The apps
-target 34 (Capacitor 6), so Play will refuse the bundles until the Capacitor upgrade (planned next; see the round log). Everything
-below can be set up now.
+**Target API:** Google Play has required **target API 36** (Android 16) for new apps and updates since 31 Aug 2026. Since Round 23
+the apps are on Capacitor 8 and target and compile against API 36 (minimum Android 7.0, API 24), built with Android Gradle Plugin
+8.13.0, Gradle 8.14.3 and Java 21 (`apps/<app>/android/variables.gradle`, `build.gradle`, `gradle/wrapper/`, the workflow).
+`services/api/test/toolchain.test.ts` fails if these drift from the installed Capacitor. Before the first Play upload, install a
+test APK on an Android 15 or 16 phone and check the status bar area (edge-to-edge), the keyboard over sign-in and chat, and that
+Back steps back through screens and on the first screen puts the app in the background.
+
+**Capacitor upgrades:** bump every `@capacitor/*` in `apps/rider` and `apps/driver` to the same major, `npm install`, then follow
+the official migration guide (capacitorjs.com/docs/updating) for `variables.gradle`, the AGP/Gradle/Java versions and the
+manifest, copy the new Gradle wrapper (`gradlew`, `gradlew.bat`, `gradle/wrapper/*`) from `node_modules/@capacitor/cli/assets/
+android-template.tar.gz`, run `npx cap sync android` in both apps and commit the regenerated `capacitor.build.gradle` and
+`capacitor.settings.gradle`. The Android workflow checks the wrapper jars (`gradle/actions/wrapper-validation`).
 
 **One-time setup (owner):**
 1. Google Play developer account (organisation account, D-U-N-S number) and two apps in Play Console: `au.com.dingogo.rider`

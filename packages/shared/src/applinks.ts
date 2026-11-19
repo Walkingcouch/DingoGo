@@ -32,3 +32,18 @@ export function onAppLink(go: (route: string) => void): () => void {
   });
   return () => { void Promise.resolve(handle).then((h: any) => h?.remove?.()).catch(() => undefined); };
 }
+
+/** Round 23: the Android Back button / back gesture in the Capacitor apps. Capacitor's App plugin catches Back (predictive back,
+ *  target API 36) and on its own only steps back through the WebView's history, so on the app's first screen Back did nothing.
+ *  With this listener: back a page while there is one, otherwise the app goes to the background like Home (never closed, so a
+ *  driver who is online keeps their session and the trip on screen). Does nothing in a browser. Returns a function that stops it. */
+export function onBackButton(back: () => void = () => window.history.back()): () => void {
+  const c = typeof window !== 'undefined' ? (window as any).Capacitor : undefined;
+  if (!c?.isNativePlatform?.() || !c.isPluginAvailable?.('App')) return () => undefined;
+  const app = c.Plugins.App;
+  const handle = app.addListener('backButton', (e: { canGoBack?: boolean }) => {
+    if (e?.canGoBack) back();
+    else void Promise.resolve(app.minimizeApp?.()).catch(() => undefined);
+  });
+  return () => { void Promise.resolve(handle).then((h: any) => h?.remove?.()).catch(() => undefined); };
+}

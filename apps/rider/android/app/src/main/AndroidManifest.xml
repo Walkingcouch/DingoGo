@@ -3,6 +3,11 @@
 
     <!-- Round 21: no backups. The sign-in session lives in the app's storage and must not be copied to cloud backups or a new
          phone (people sign in again with a text code). -->
+    <!-- Round 23 (Capacitor 8, target API 36 / Android 16): edge-to-edge is always on, and Capacitor's SystemBars plugin pads
+         the WebView or passes the insets to CSS (env(safe-area-inset-*), viewport-fit=cover in index.html). Predictive back is on
+         (enableOnBackInvokedCallback): the App plugin handles Back through the OnBackPressedDispatcher, so it still goes back a
+         page in the app before leaving it. "navigation|density" in configChanges keep the WebView from reloading on keyboard
+         changes and display-size changes (resizable windows on Android 16 tablets and foldables). -->
     <application
         android:allowBackup="false"
         android:fullBackupContent="@xml/backup_rules"
@@ -11,10 +16,11 @@
         android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
+        android:enableOnBackInvokedCallback="true"
         android:theme="@style/AppTheme">
 
         <activity
-            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode"
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode|navigation|density"
             android:name=".MainActivity"
             android:label="@string/title_activity_main"
             android:theme="@style/AppTheme.NoActionBarLaunch"

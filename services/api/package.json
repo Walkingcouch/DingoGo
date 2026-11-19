@@ -21,9 +21,8 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "@fastify/cors": "^11.4.0",
-    "@fastify/static": "^10.1.8",
-    "@fastify/websocket": "^11.3.6",
+    "@fastify/cors": "^11.4.3",
+    "@fastify/websocket": "^11.3.7",
     "fastify": "^5.12.8",
     "jsonwebtoken": "^9.0.3",
     "nanoid": "^5.1.16",
@@ -35,6 +34,7 @@
     "@types/jsonwebtoken": "^9.0.10",
     "@types/node": "^26.6.6",
     "@types/pg": "^8.23.1",
+    "@types/ws": "^8.18.2",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2"
   },

@@ -1682,3 +1682,85 @@ Ideas for next rounds:
   on-call phone.
 - Lost property: driver-delivered returns with a fixed return fee paid to the driver, and an unclaimed-items register with the
   30-day hold.
+
+### Round 23 — platform upgrades and dependency hygiene
+Scan: read Round 21's deferred target-API note, both Capacitor projects (variables, root and app Gradle files, wrapper, manifests,
+styles, generated `capacitor.build.gradle`), the Capacitor 7 and 8 migration guides, the Capacitor 8.6 Android library, SystemBars
+and App plugin sources and the CLI's Android template, both workflows, `npm audit`/`npm outdated`, every workspace's imports
+against its `package.json`, and where the Node version is set. Found: the apps target API 34 on Capacitor 6 (AGP 8.2.1, Gradle
+8.2.1, Java 17), so Google Play refuses every bundle (target API 36 required since 31 Aug 2026); `npm audit` 11 issues (1 critical
+`tar` and high `rimraf`/`glob` through `@capacitor/cli` 6, high React Router open redirects in 6.28, Vite 5.4.11 dev-server file
+reads, `@fastify/static` → `glob`); `@fastify/static` isn't used by the API at all; `packages/shared` declares the Capacitor runtime,
+Android platform, CLI, `qrcode`, `react-dom`, `react-router-dom`, Vite and the React plugin without importing any of them (shared
+only reads `window.Capacitor`), while driver, admin, partner and roof-display import React, React Router, Vite and the React plugin
+without declaring them (they worked by hoisting), web imports `qrcode` undeclared, rider and web list Leaflet they don't import,
+and the API's `ws` socket type was silently `any` (no type package); workflows on `actions/*@v4` (Node 20 runtime, retired by
+GitHub) and the Gradle wrapper jar is never checked; Node 22 set in four places with no `.nvmrc`; and on Android Back on the
+first screen of either app did nothing (Capacitor's App plugin only steps back through WebView history).
+
+Suggested:
+1. [fix] Capacitor 6 → 8.6 in both apps (`@capacitor/core`/`android`/`cli` 8.6.2, `app` 8.1.2, `push-notifications` 8.1.3) via
+   the 7.0 and 8.0 guides: `variables.gradle` to Capacitor 8's values (compile/target 36, min 24, AndroidX versions), AGP 8.13.0,
+   google-services 4.4.4, Gradle wrapper 8.14.3 (wrapper jar and scripts from the CLI template), `=` assignments in `app/build.gradle`,
+   `navigation|density` in `configChanges`, `npx cap sync android` (Java 21 in `capacitor.build.gradle`).
+2. [add] Android 16 behaviour: predictive back on (`enableOnBackInvokedCallback`, the App plugin uses the back dispatcher);
+   edge-to-edge through Capacitor's SystemBars (default `css` insets; the apps already pad with `env(safe-area-inset-*)` and
+   `viewport-fit=cover`); no orientation lock or edge-to-edge opt-out (ignored on API 36).
+3. [fix] Android Back: `onBackButton()` in shared — back a screen while there is one, otherwise the app goes to the background like
+   Home (never closed, so an online driver stays online); used by both apps from the first screen (incl. sign-in).
+4. [fix] Android workflow: Java 21 (Capacitor 8 / AGP 8.13), `gradle/actions/wrapper-validation` before Gradle runs in both jobs
+   (the bundle job runs the wrapper with the upload key), first-party actions on Node 24 majors (checkout v6, setup-node v6,
+   setup-java v5, upload-artifact v6) in both workflows.
+5. [fix] `npm audit`: Capacitor CLI 8 (drops vulnerable `tar`/`rimraf`/`glob`), React Router 6.30.6, Vite 6.4.6 with
+   `@vitejs/plugin-react` 4.7.0 (React 18 kept), Fastify plugin patch releases; 11 issues → 2 moderate (see Deferred).
+6. [fix] Unused and undeclared dependencies: remove `@fastify/static` (API) and shared's Capacitor/CLI/qrcode/react-dom/router/Vite;
+   each app declares React, React DOM, React Router, Vite, the React plugin, TypeScript and `@types/react*` it uses; `qrcode` +
+   `@types/qrcode` where imported; Leaflet only in shared; `@types/ws` so the realtime socket type is real; Capacitor packages
+   hoisted once at the root (`npm dedupe`).
+7. [add] Node 22 everywhere from one place: `.nvmrc` (22) used by every `setup-node` step (`node-version-file`), root engines
+   `22.x` (Vercel), the Vercel function `nodejs22.x`, Docker `node:22-alpine`, Capacitor CLI 8's `>=22` — all checked by a test.
+8. [add] `toolchain.test.ts`: target/compile 36, min 24, `variables.gradle` equal to the installed Capacitor library's defaults, AGP
+   equal to Capacitor's, Gradle 8.14.3, Java in `capacitor.build.gradle` equal to the workflow's, manifest config changes and
+   predictive back, removed config options, every `@capacitor/*` on one major; Back button behaviour; Node 22 sources; Actions
+   majors and pinned third-party actions; every workspace declares what it imports (type-only imports may use `@types`), nothing
+   declared unused, one React/React DOM/Router/Vite range.
+9. [add] Docs: OPERATIONS 11 (blocker replaced by the toolchain, what to check on an Android 15/16 phone, how to do the next
+   Capacitor upgrade), README (Capacitor 8 and toolchain, Node from `.nvmrc`, test count).
+
+Done (all 9). No migration, no env vars, no API behaviour change. Tests: 225 → 230 (`toolchain.test.ts` 5: Android toolchain vs the
+installed Capacitor and the workflow, Back button with a fake native bridge, Node 22 sources, Actions majors, dependency
+declarations — checked to fail on a removed `qrcode` and an unused extra package). `npx tsc --noEmit` passes in every workspace;
+`node scripts/build-vercel.mjs` builds on Vite 6.4.6; browser smoke test passes on the Vite 6 build; workflow YAML parsed by the
+tests; `npx cap sync android` and `npx cap doctor` clean in both apps (2 plugins each); every Gradle script parsed with Gradle
+8.14.3's Groovy (the Android SDK and Google's Maven aren't reachable here, so the APK/AAB build itself is verified by the Android
+workflow on push).
+- Android (both apps): `variables.gradle`, `build.gradle`, `gradle/wrapper/{gradle-wrapper.jar,gradle-wrapper.properties}`,
+  `gradlew`, `gradlew.bat`, `app/build.gradle`, `app/capacitor.build.gradle` (generated), `AndroidManifest.xml`.
+- Workflows: `android.yml` (Java 21, wrapper validation, action majors, `.nvmrc`), `ci.yml` (action majors, `.nvmrc`).
+- Packages: every workspace `package.json`, `package-lock.json`, new `.nvmrc`. Shared `applinks.ts` (`onBackButton`), rider and
+  driver `App.tsx`.
+- Behaviour changes to note: Android 7.0 (API 24) is now the oldest supported phone (was 5.1, API 22) — Capacitor 8's floor; Back on
+  the first screen puts the app in the background (was: nothing); on Android 15+ the apps draw edge to edge (status bar over the
+  app's own padded header). The web apps are unchanged apart from the Vite 6 build.
+- Deploy: nothing to apply. Test APKs from the next push are the first API 36 builds; owners can now run "Build Google Play bundles".
+
+Deferred:
+- React Router 7: two moderate advisories remain on 6.30.6 (backslash open redirect in `<Link>`/`navigate` with untrusted paths;
+  SSR error deserialising — no SSR here). Every `to`/`navigate` target in the apps is a constant or built from ids, and App Links go
+  through `appLinkRoute`, which rejects `//`, `..` and other hosts (backslashes become `/` in URL parsing). v7 changes relative
+  links inside splat routes (`/account/*` in the rider app) and wraps updates in transitions, so it needs its own careful round.
+- Vite 7/8 and React 19: Vite 6.4.6 clears every Vite advisory; later majors bring Rolldown/new plugin versions for no security gain.
+- An Android emulator smoke test in CI (install the APK, open both apps, sign in against a test API) — still the best way to catch
+  native regressions before release; needs a KVM-enabled runner step (`reactivecircus/android-emulator-runner`) and ~10 minutes.
+- ESLint: not added (no lint config existed; adding it across six apps would be a large, noisy change). The new dependency test
+  covers the hygiene rules that mattered; `noUnusedLocals` could be the next step.
+
+Ideas for next rounds:
+- Emulator smoke test job (above), plus Play's pre-launch report on the internal track.
+- Dependabot (or Renovate) for npm, Gradle and GitHub Actions with grouped weekly updates, so the next target-API year doesn't
+  arrive as one big jump.
+- React Router 7 upgrade with the future flags turned on first in v6 (`v7_relativeSplatPath`, `v7_startTransition`) and a test of
+  the rider Account links.
+- In-app update prompt (Play In-App Updates) and a minimum app version in `/public/config` so old APKs are told to update.
+- `noUnusedLocals`/`noUnusedParameters` in `tsconfig.base.json` and a small ESLint config for hooks rules (`react-hooks`) only.
+- iOS project on Capacitor 8 (SPM template) with the strings in `docs/store/ios-usage-strings.md`.

@@ -13,22 +13,23 @@
     "typecheck": "tsc --noEmit -p ."
   },
   "dependencies": {
-    "@capacitor/android": "^6.2.3",
-    "@capacitor/app": "^6.0.3",
-    "@capacitor/core": "^6.2.3",
-    "@capacitor/push-notifications": "^6.0.5",
+    "@capacitor/android": "^8.6.2",
+    "@capacitor/app": "^8.1.2",
+    "@capacitor/core": "^8.6.2",
+    "@capacitor/push-notifications": "^8.1.3",
     "@dingogo/shared": "*",
-    "leaflet": "^1.9.4",
     "qrcode": "^1.5.4",
     "react": "18.3.1",
     "react-dom": "18.3.1",
-    "react-leaflet": "^4.2.1",
-    "react-router-dom": "^6.28.0"
+    "react-router-dom": "^6.30.6"
   },
   "devDependencies": {
-    "@capacitor/cli": "^6.0.0",
-    "@vitejs/plugin-react": "^4.3.4",
-    "typescript": "*",
-    "vite": "^5.4.11"
+    "@capacitor/cli": "^8.6.2",
+    "@types/qrcode": "^1.5.6",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.7.0",
+    "typescript": "^7.0.2",
+    "vite": "^6.4.6"
   }
 }

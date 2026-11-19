@@ -30,7 +30,7 @@ data, first admin from `BOOTSTRAP_ADMIN_PHONE`; no demo data) — see `docs/OPER
 
 ## Quick start (local)
 
-Needs Node 22+ and PostgreSQL 14+ (or `docker compose` — see Deploy).
+Needs Node 22 (`.nvmrc`; `nvm use`) and PostgreSQL 14+ (or `docker compose` — see Deploy).
 
 ```bash
 createdb dingogo                                   # or use any Postgres URL
@@ -39,7 +39,7 @@ npm install
 npm run db:setup                                   # migrations + demo data (local databases only)
 npm run dev:api                                    # http://localhost:4000
 npm run dev:web    # and/or dev:rider, dev:driver, dev:admin, dev:partner, dev:roof
-npm test                                           # 225 API, money, tax, loyalty, tours, fleet, support, website and store-readiness tests (needs a throwaway DB: they reset it, and create/drop scratch databases)
+npm test                                           # 230 API, money, tax, loyalty, tours, fleet, support, website, store-readiness and toolchain tests (needs a throwaway DB: they reset it, and create/drop scratch databases)
 node scripts/build-vercel.mjs && npm run db:reset -w services/api && npm run smoke   # browser smoke test: rider books, driver completes, admin approves a car (built apps + serverless API; Playwright)
 node scripts/a11y-check.mjs                        # WCAG 2.2 AA check (axe-core + Playwright) of the website and rider app; needs api, web and rider running
 ```
@@ -86,7 +86,7 @@ All partner businesses, advertisers and people in the demo data are fictional.
 
 ## Mobile apps (iOS / Android)
 
-Rider and driver apps are React + Vite wrapped with **Capacitor 6**:
+Rider and driver apps are React + Vite wrapped with **Capacitor 8** (Android: target and compile API 36, minimum API 24; AGP 8.13, Gradle 8.14.3, Java 21):
 
 ```bash
 cd apps/rider            # or apps/driver

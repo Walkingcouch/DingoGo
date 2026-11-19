@@ -12,9 +12,9 @@ jobs:
     env:
       DATABASE_URL: postgres://dingogo:dingogo@localhost:5432/dingogo
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: 22, cache: npm }
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with: { node-version-file: .nvmrc, cache: npm }
       - run: npm ci
       - run: npm run typecheck --workspaces --if-present
       - run: npm run db:reset -w services/api
@@ -29,5 +29,5 @@ jobs:
       - run: npm run smoke
         env: { SMOKE_SHOTS: smoke-shots }
       - if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with: { name: smoke-screenshots, path: smoke-shots, if-no-files-found: ignore }

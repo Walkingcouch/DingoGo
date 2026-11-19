@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { NavLink, Navigate, Route, Routes } from 'react-router-dom';
-import { DISCLOSURES, Icon, Login, PermissionPrimer, answerDisclosure, disablePush, disclosureAnswer, enablePush, get, getToken, initAuth, pushKind, pushState, refreshPush, setToken, useServiceUp } from '@dingogo/shared';
+import { DISCLOSURES, Icon, Login, PermissionPrimer, answerDisclosure, disablePush, disclosureAnswer, enablePush, get, getToken, initAuth, pushKind, pushState, onBackButton, refreshPush, setToken, useServiceUp } from '@dingogo/shared';
 import { DriverProvider, useDriver } from './state';
 import { Drive } from './screens/Drive';
 import { Offer } from './screens/Offer';
@@ -18,6 +18,8 @@ initAuth('driver');
 
 export function App() {
   const [token, setTok] = useState(getToken());
+  // Round 23: Android Back goes back a screen, and on the first screen puts the app in the background (still online).
+  useEffect(() => onBackButton(), []);
   if (!token) {
     return <Login title="Drive with DingoGo" subtitle="Sign in with the mobile number you applied with." onDone={(r) => setTok(r.token)} askName />;
   }
