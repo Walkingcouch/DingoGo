@@ -1,7 +1,8 @@
 # DingoGo Rideshare & Courier — platform
 
 Aboriginal-owned rideshare and courier for Alice Springs (Mparntwe), NT. Local drivers in their own cars; electric and hybrid cars get trips first, and an electric fleet is the goal.
-This repository is the whole platform: one API and database, five apps and the public website.
+This repository is the whole platform: one API and database, five apps and the public website (with a low-data booking page).
+**Owners: start with `docs/PLATFORM-OVERVIEW.md`** (what each app does, the business rules and where to change them, what is switched off, what needs accounts).
 
 | Part | Folder | Dev port | Who uses it |
 | --- | --- | --- | --- |
@@ -39,14 +40,14 @@ npm install
 npm run db:setup                                   # migrations + demo data (local databases only)
 npm run dev:api                                    # http://localhost:4000
 npm run dev:web    # and/or dev:rider, dev:driver, dev:admin, dev:partner, dev:roof
-npm test                                           # 274 API, authorisation matrix, insights, money, tax, loyalty, tours, fleet, support, business, website, store-readiness and toolchain tests (needs a throwaway DB: they reset it, and create/drop scratch databases)
+npm test                                           # 283 API, authorisation matrix, insights, money, tax, loyalty, tours, fleet, support, business, website, store-readiness and toolchain tests (needs a throwaway DB: they reset it, and create/drop scratch databases)
 node scripts/build-vercel.mjs && npm run db:reset -w services/api && npm run smoke   # browser smoke test: rider books, driver completes, admin approves a car (built apps + serverless API; Playwright)
 npm run a11y                                       # WCAG 2.2 AA check (axe-core + Playwright) of every screen and tab, light and dark, on the built apps (same setup as smoke)
 node scripts/first-day.mjs                         # the first day on an EMPTY database (DATABASE_URL): auto-migrate, admin set-up, driver approved, first ride, payout
 npm run tour                                       # screen-by-screen tour: screenshots at phone and desktop sizes, light and dark, with layout/console/API checks
 ```
 
-Demo sign-ins (development only — any SMS code is shown on screen, and `000000` always works):
+Demo sign-ins (local and demo databases only — any SMS code is shown on screen, and `000000` works for demo/test accounts; never in production):
 
 | Role | Mobile |
 | --- | --- |
@@ -70,7 +71,7 @@ All partner businesses, advertisers and people in the demo data are fictional.
 
 **Dispatch:** nearest eligible driver, 20-second offers, automatic re-offer; if a driver pulls out before pickup the trip goes to the next driver (repeat cancellers flagged), and ops are alerted when a driver on a trip goes silent. EV-aware: skips cars whose battery (rated range × charge × 0.7 heat derate) can't cover pickup + trip + 40 km reserve. Scheduled trips released 15 minutes ahead. Route-deviation safety alerts.
 
-**Admin:** live map, dashboard, trips with timeline/refunds, phone bookings for customers without smartphones, drivers & document review, fleet & expiries, charging reimbursement (home at a per-kWh rate, public at cost up to a limit, monthly cap), payouts & weekly lease deductions, fleet programme (off until the fleet launches: weekly-lease and rent-to-own agreements that never take a driver below zero with arrears, pauses and buy-out; maintenance schedule with heat battery checks, downtime and spare cars; insurance and claims; profit per car; investor shares), pricing/zones/promos/plans/holidays/tours, community trips (routes with permit and coverage notes, shuttle timetable and manifests, bookings for callers with a caller lookup, long trips on the road with missed check-in and overdue alerts, community store cash), tours & hire (bookings, heat/closure advisories, Aboriginal guides and their payments, hotel and visitor-centre commissions, deposit and hire policy, hire quotes), loyalty programme (expiry, tiers, bonuses, referral rules), win-back offers to lapsed riders, partner settlement with paid statements, vouchers (QR cards, sold-before-use shop cards), roof ad campaigns & billing, business/NDIS/government/community accounts (website applications approved in admin, monthly numbered tax invoices with PDF, paid/void, overdue reminders, Xero and MYOB exports; community, health and NDIS organisations book rides for clients with recorded consent), concession fares and the card queue, SOS & compliance flags, safety reports, check-ins, driver hours, photo checks, account standing and appeals, safety policy, support desk (ticket threads with owners, priorities and due times, internal notes, canned replies, satisfaction scores, lost property cases, automatic fare checks with refunds within set limits, chargeback evidence packs), inbound enquiries, NT levy and GST reports, broadcast (opt-in only), settings, audit log.
+**Admin:** live map, dashboard, trips with timeline/refunds, phone bookings for customers without smartphones, drivers & document review, fleet & expiries, charging reimbursement (home at a per-kWh rate, public at cost up to a limit, monthly cap), payouts & weekly lease deductions, fleet programme (off until the fleet launches: weekly-lease and rent-to-own agreements that never take a driver below zero with arrears, pauses and buy-out; maintenance schedule with heat battery checks, downtime and spare cars; insurance and claims; profit per car; investor shares), pricing/zones/promos/plans/holidays/tours, community trips (routes with permit and coverage notes, shuttle timetable and manifests, bookings for callers with a caller lookup, long trips on the road with missed check-in and overdue alerts, community store cash), tours & hire (bookings, heat/closure advisories, Aboriginal guides and their payments, hotel and visitor-centre commissions, deposit and hire policy, hire quotes), loyalty programme (expiry, tiers, bonuses, referral rules), win-back offers to lapsed riders, partner settlement with paid statements, vouchers (QR cards, sold-before-use shop cards), roof ad campaigns & billing, business/NDIS/government/community accounts (website applications approved in admin, monthly numbered tax invoices with PDF, paid/void, overdue reminders, Xero and MYOB exports; community, health and NDIS organisations book rides for clients with recorded consent), concession fares and the card queue, SOS & compliance flags, safety reports, check-ins, driver hours, photo checks, account standing and appeals, safety policy, support desk (ticket threads with owners, priorities and due times, internal notes, canned replies, satisfaction scores, lost property cases, automatic fare checks with refunds within set limits, chargeback evidence packs), inbound enquiries, NT levy, GST, BAS and SERR reports, owner insights (business health after GST, card fees and refunds, unit economics per trip, supply vs demand by hour, demand forecast with drivers needed, pricing simulator, weekly owner summary), go-live checks, broadcast (opt-in only), settings (business details, support contact, levy, cash and cancellation policy, roof screens), users and roles, audit log.
 
 ## Business rules (all editable in admin → Pricing / Settings)
 
@@ -79,8 +80,8 @@ All partner businesses, advertisers and people in the demo data are fictional.
 | Ride fare | $3.00 + $1.60/km + $0.25/min + $1 booking + $1 NT levy; min $10; 20% 10pm–5am | set under taxi day tariff ($5.50 + $2.45/km, gazette S53 from 1 July 2026) |
 | Platform fee | 25% of trip fare (driver keeps 75%; 100% of tips). Admin → Pricing → Driver pay can set a lower rate for own cars and for electric/hybrid cars (both 25% until changed) | March 2026 business plan |
 | Driver pay extras | Off until switched on: pickup pay after the first 2 km (funded by a rider "Long pickup" charge), fuel surcharge (all to the driver), weekly earnings floor ($32 per hour on trips) | Nov 2026 owner direction |
-| Cancellation | free within 2 min, then $3; tours free until 48 h before (and 10 min after booking, and on advisory days), then 50%, 20% card deposit counted first; hire 24 h | March 2026 draft rider terms |
-| Cash | off for rides, on for parcels | draft terms say rides are in-app only — confirm with NT |
+| Cancellation | free within 2 min, then $3 (Settings → Cash and cancellations; the fee per service under Pricing → Fares); tours free until 48 h before (and 10 min after booking, and on advisory days), then 50%, 20% card deposit counted first; hire 24 h | March 2026 draft rider terms |
+| Cash | off for rides, on for parcels (Settings → Cash and cancellations) | draft terms say rides are in-app only — confirm with NT |
 | Points | earn 10 per $1 (1.25x Silver, 1.5x Gold); 100 points = $1 off (max 50% of a fare); expire after 12 months with no activity, after a warning | |
 | Car agreements | weekly lease $113.33/wk (EV Direct Finance estimate) or rent-to-own; taken each Monday, never below the driver's balance, catch-up up to 150% a week, flagged after 2 weeks owing | Round 20 |
 | Charging paid back | DingoGo cars only: home 30c/kWh, public at cost up to 80c/kWh, depot not paid back, max $250/month | Round 20 |
@@ -107,6 +108,8 @@ owner's checklist: `docs/OPERATIONS.md` section 11.
 ## Deploy
 
 - **Docker (everything on one server):** `npm run build`, then `cd deploy && docker compose up --build`. Postgres, API on :4000 and the six apps on :8080–8085 behind Caddy.
+- **Vercel (live):** `scripts/build-vercel.mjs` builds the website, the apps and the API as one serverless function (realtime off, dispatch runs on
+  requests, `AUTO_MIGRATE=true` applies new migrations at cold start). The coordinator pushes, applies migrations and deploys.
 - **Managed:** Postgres on Supabase (paste its connection string into `DATABASE_URL`), API on any Node host (Render, Fly, Railway, a VPS — it needs WebSockets and a long-running process for dispatch), static apps on Vercel/Netlify/Cloudflare Pages with `VITE_API_URL` set.
 - CI: `.github/workflows/ci.yml` runs typecheck, API tests, builds and the browser smoke test (`scripts/smoke-e2e.mjs`: rider books a ride, driver accepts and
   completes it, admin approves a car, plus the business account, help, partner portal and admin tabs, against the Vercel build with the bundled
@@ -118,8 +121,8 @@ owner's checklist: `docs/OPERATIONS.md` section 11.
 owners and communities, with where each lives in admin); admin → Reports → Go-live checks shows what the running system can check itself.
 
 1. **Accounts & keys** (`services/api/.env.example`): Stripe (card payments; mock until set), Twilio (SMS codes, parcel PINs, SOS texts, a relay number for masked rider/driver calls and texts, STOP handling — see `docs/API.md` → Notifications), a commercial map tile provider (`VITE_TILE_URL` — OpenStreetMap's servers aren't for production), a self-hosted OSRM routing server (`OSRM_URL`; otherwise distance is estimated), push: `FCM_SERVICE_ACCOUNT` for the Android apps (build them with `google-services.json` and `VITE_FCM_ENABLED=true`) and a VAPID pair for the web apps (`npm run vapid -w services/api`).
-2. Set `OTP_DEV_MODE=false` and a long random `JWT_SECRET`.
-3. Move uploads (`UPLOAD_DIR`) to Supabase Storage or S3.
+2. A long random `JWT_SECRET` (on Vercel the API refuses to start without one, and never uses dev sign-in codes); leave `OTP_DEV_MODE` unset.
+3. Uploads (drivers' papers, delivery photos) live in the database: keep backups, and consider moving them to Supabase Storage.
 4. Stripe: set `STRIPE_SECRET_KEY`, `STRIPE_PUBLISHABLE_KEY` and `STRIPE_WEBHOOK_SECRET`, apply migration 014, and add the webhook endpoint
    `/api/payments/stripe/webhook` in the Stripe dashboard (events listed in `docs/API.md` → Payments). Without Stripe, only demo/test accounts can pay by
    card (test payments); everyone else is shown "card payments coming soon". Register push tokens.
@@ -129,10 +132,12 @@ owners and communities, with where each lives in admin); admin → Reports → G
 
 ## Docs
 
-- `docs/API.md` — every endpoint and realtime event.
+- `docs/PLATFORM-OVERVIEW.md` — plain-English guide for the owners (Round 30).
+- `docs/API.md` — every endpoint and realtime event (a test fails when a route is missing from it).
+- `docs/improvement-rounds.md` — the 30 improvement rounds: what changed, why, what was deferred, and the remaining backlog.
 - Website SEO and growth: page list, structured data and sitemap in `apps/web/src/seo.ts`, FAQs in `apps/web/src/faqs.ts`; optional
   cookie-free analytics with `VITE_ANALYTICS_DOMAIN` (see `docs/API.md` → Website, SEO and growth).
 - `docs/GO-LIVE-CHECKLIST.md` — everything to do, set up or confirm before real riders (Round 29).
-- `docs/OPERATIONS.md` — bootstrap a new database, migrations, health checks, logs and error reporting, backups and restore.
+- `docs/OPERATIONS.md` — bootstrap a new database, migrations, the full verification before a release, health checks, logs and error reporting, backups and restore.
 - `docs/screenshots/` — cross-app run (driver accepts in-app, rider sees it live, admin map, website tracking, roof screen).
 - `apps/*/screenshots/` — every screen of every app.

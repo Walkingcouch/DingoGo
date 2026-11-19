@@ -2320,3 +2320,107 @@ Ideas for next rounds:
 - A "test ride" mode for owners before Twilio/Stripe: a staff-only rider and driver pair that can book without SMS or cards, kept out of reports.
 - Run `first-day.mjs` and the fresh-database tour in a nightly job against a Supabase branch (real pooler, real RLS) rather than local Postgres.
 - Twilio stand-in reused by the smoke test so every browser check runs in production sign-in mode.
+
+### Round 30 — final consolidation (fresh-eyes fixes, owner docs, last full verification)
+Scan: read the whole log, the go-live checklist, README, API.md and OPERATIONS.md, then probed the running API with every GET route
+(443 routes registered) as its owning role with odd query values (impossible dates like `2026-02-31`, month `2026-13`, negative limits,
+fake UUIDs, quotes) and every mutating route with empty, wrong-typed and impossible-date bodies, looking for 500s; re-read the plain
+settings write path, the roof screen player, the SMS dev log, the shared money formatter and the rider business screens' remaining
+`confirm()`/`prompt()` (Round 25's deferred item). Found: (1) **nine routes answered 500 to an impossible date or month** — the date
+regex let `2026-02-31` through (JavaScript's `Date.parse` rolls it to 3 March, Postgres refuses it): admin trips, GST report, daily summary,
+audit log, fleet profitability, insights health, and the community store top-ups (admin and partner) with month `13`; the same gap was in
+body dates (owner weekly week, tour commission and store settlement months, date of birth, insights policy dates, earnings-floor weeks);
+(2) `GET /admin/trips?limit=-5` was a 500 and `rider_id=` accepted 36 dashes; (3) the plain settings (`nt_levy_cents`, home charging
+tariff, oldest car, support contact, roof screens, `cash_payments`, `cancellation_policy`) were saved as given — a levy of `"abc"`, a roof
+mode of `"on"`, a free window of `-5` — and read by pricing, the player and cancellations; (4) cash and cancellation policy still had no
+admin screen (Round 29 deferral, two "No admin screen yet" rows in the checklist); (5) the roof screen player treated a missing setting as
+`ads`; (6) **pressing Cancel on the rider's "Reason" prompt still declined the business trip** (`prompt() ?? null`), and Stop/Remove used the
+browser's confirm; (7) money over $999 had no thousands separator (Round 25 and 27 deferrals; CSVs turned out to use raw cents or their
+own formatter, so the screen formatter could change safely); (8) before Twilio, every text — riders' sign-in codes, delivery PINs,
+collection codes — went to the production log in full (Round 29 deferral). The mutating-route probe found nothing else (only `/lite/book`
+answers 503 by design when booking texts are off).
+
+Suggested and done (all 8):
+1. [fix] Real calendar dates and months: `isIsoDay`/`isIsoMonth` and zod `isoDay()`/`isoMonth()` in `src/lib/validate.ts`, used by report
+   filters (fall back to the default period), fleet profitability and store top-ups (400), and every body date listed above.
+2. [fix] Admin trips `limit` kept to 1–500; rider/driver filters must be real UUIDs.
+3. [fix] `checkPlainSetting` for every plain key the Settings page writes (400 `invalid_setting` with the reason); cash and cancellation
+   saves merge onto what is saved now.
+4. [add] Admin → Settings → Cash and cancellations: cash for rides (with the NT note) and parcels, free minutes after accept, tour and hire
+   free-until hours, late percentage, with a pointer to the per-service fee under Fares.
+5. [fix] Roof screen player: missing setting means off.
+6. [fix] Rider business account: the app's own dialog (focus-trapped `Dialog`) for decline with an optional reason, stopping regular trips
+   and removing a person; Go back really goes back.
+7. [fix] `money()` shows `$1,234.50` on every screen (CSV exports unchanged).
+8. [fix] `[sms:dev]` log in production masks every run of 4–8 digits except an admin's or dispatcher's own sign-in code (`logCodes`).
+
+Docs: new `docs/PLATFORM-OVERVIEW.md` for the owners (the apps, business rules and where they live in admin, built-but-off, accounts and
+keys, where to look each day); README brought up to date (owner guide first, test count, admin insights/settings, Vercel deploy, accurate
+go-live items, docs list); API.md "Final consolidation (Round 30)" and spot-check (the docs test already fails on any missing route);
+OPERATIONS "Full verification before a release" and the masked SMS log; GO-LIVE-CHECKLIST rows for cash and cancellations now point to
+Settings, two nice-to-haves done.
+
+No migration, no env vars. Tests: 279 → 283 (`consolidation.test.ts`: calendar days and months; impossible dates and bad limits/ids on
+the 9 routes never a 500 (default period or 400); every plain setting check incl. partial merges and pass-through of other keys, and
+through the API — refused with nothing saved, partial saves keep the rest, `/public/config` follows; texts logged in production mask
+codes, staff sign-in codes kept). Verification on the final tree: `tsc --noEmit` for all 7 workspaces; reset + 283 tests pass;
+`node scripts/build-vercel.mjs` builds; smoke 10 steps pass; a11y 0 violations on every screen and tab; `scripts/first-day.mjs` 11 steps pass on an empty database (AUTO_MIGRATE through the built function).
+- API: `src/lib/validate.ts`, `src/services/reports.ts`, `services/fleet.ts`, `services/insights.ts`, `services/regional.ts`,
+  `services/earningsFloor.ts`, `lib/insights.ts`, `routes/{admin,insights,tours,regional,tax,display,auth}.ts`, `services/sms.ts`.
+- Apps: admin `pages/Settings.tsx`; rider `screens/BusinessAccount.tsx`; shared `format.ts`.
+- Behaviour changes to note: impossible dates in report filters now give the default period (were 500s); bad values for plain settings are
+  refused with 400 `invalid_setting`; money on screens has commas; production logs no longer show riders' codes or PINs.
+- Deploy: nothing to apply (no migration, no env vars).
+
+Deferred:
+- `/lite/book` answers 503 (HTML) to an empty form when booking texts are off: correct, but a 400 for a missing number would be tidier.
+- The remaining `confirm()`/`prompt()` in admin pages (fleet programme, loyalty settlement, broadcast): staff-only, they handle Cancel
+  correctly; worth moving to the admin modal with the fleet programme launch.
+- `wallet_cents >= 0` CHECK constraint (Round 26): still needs a look at live rows first.
+
+## Summary of 30 rounds
+
+**What the rounds did.** Thirty rounds of scan → suggest → implement → verify on an already working pilot, each committed on `main`:
+
+| Theme | Rounds |
+|-------|--------|
+| Money correctness, payments readiness (Stripe behind config), driver pay fairness, tax (GST, BAS, SERR, levy), owner insights | 1, 4, 8, 16, 27 |
+| Security and privacy (private uploads, rate limits, OTP hardening, realtime auth, headers, authorisation matrix of every route) | 2, 26 |
+| Trip lifecycle and dispatch (re-offers, silent drivers, offer races, scheduled trips, serverless background work) | 3 |
+| Rider experience, accessibility (WCAG 2.2 AA on every screen), simple mode, community and cultural fit (Arrernte/Kriol drafts, Sorry Business leave, organisations booking for clients, concessions) | 5, 12 |
+| Driver app in the car (glanceable offers, navigation, poor-signal queue, papers and expiries) | 6 |
+| Admin and operations tooling, customer support desk and disputes | 7, 22 |
+| Notifications and communications (SMS templates, STOP, masked relay, push) | 9 |
+| Operability (fresh-database bootstrap, safe auto-migrations, health, logs, Sentry, backups, performance on serverless) | 10, 18 |
+| Commercial lines: courier business, tours and hire, fleet and EV programme, business and government accounts, loyalty and growth, website and SEO | 11, 13, 17, 19, 20, 24 |
+| Safety and trust (check-ins, SOS, trusted contacts, reports, standing and appeals, fatigue) | 14 |
+| Remote and regional reach (community routes, long trips, shuttles, parcel runs, booking by text, low-data page, community stores) | 28 |
+| Consolidation, platform upgrades, app store readiness, end-to-end UI verification, go-live hardening | 15, 21, 23, 25, 29, 30 |
+
+**Tests:** 30 before Round 1 → **283** after Round 30 (API end-to-end, unit, authorisation matrix over 443 routes, docs drift, migrations
+re-runnable, store readiness, toolchain, screen list), plus browser checks added along the way: smoke test (Round 15), accessibility check
+of every screen and tab (Round 25), screen tour (Round 25) and the first day on an empty database (Round 29), all in CI except the tour.
+
+**Migrations added (all additive, re-runnable, and the code degrades gracefully without them):**
+011 `rate_limits`, 012 `driver_pay_weeks`, 013 `ops_indexes`, 014 `payments_stripe`, 015 `comms`, 016 `courier_business`, 017 `community`,
+018 `growth`, 019 `safety`, 020 `tax_compliance`, 021 `loyalty`, 022 `hot_path_indexes`, 023 `tours`, 024 `fleet`,
+025 `permission_disclosures`, 026 `support`, 027 `business_billing`, 028 `regional`. Rounds 23, 25, 26, 27, 29 and 30 needed none.
+
+**Remaining backlog, ranked by value** (decisions for the owners are marked):
+1. **Uploads out of the database** (Supabase Storage, private bucket, presigned links) plus a nightly off-site backup and a restore drill:
+   today a lost database loses drivers' papers, and the free Supabase plan has no backups.
+2. **Sessions:** 7-day access tokens with refresh, a token version per user and "sign out everywhere" (tokens last 30 days; blocks and role
+   changes are already caught on every request).
+3. **Native background location in the driver app,** then silent-driver auto-reassign on and "last signal" shown to riders.
+4. **Owner decisions turned into features:** rider no-show fee with driver waiting pay; driver pay, tip and points reversal on refunds;
+   who funds pickup pay on late cancellations; what dispatchers may see (the authorisation matrix makes it one line per route).
+5. **Card and business-account payment for shuttle seats and parcels,** with seats on monthly invoices and the GST report.
+6. **Stripe fee sync** (actual card fees per charge) and a monthly management P&L for the owners; forecast accuracy tracking once there
+   are a few months of trips.
+7. **Driver supply tools:** opt-in "busy hours" nudges and a busy-hour bonus tried in the pricing simulator first.
+8. **Content-Security-Policy** in report-only mode for the apps, then enforced (the tour can check every screen).
+9. **Nightly first-day walk and tour against a Supabase branch** (real pooler and RLS), with the Twilio stand-in reused by the smoke test.
+10. **Owner onboarding wizard** in admin: the go-live checks as steps with links into each page.
+11. Community-language booking texts and low-data page (Arrernte, Luritja, Warlpiri) once reviewed by speakers; regional demand view to
+    choose new routes with communities.
+12. Visual regression on the tour screenshots; `wallet_cents >= 0` constraint after checking live rows.
