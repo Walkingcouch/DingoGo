@@ -76,7 +76,7 @@ function Footer() {
           </div>
           <div>
             <h2>Policies</h2>
-            <ul><li><Link to="/legal/privacy">Privacy</Link></li><li><Link to="/legal/terms">Terms</Link></li><li><Link to="/legal/cancellations">Cancellations and refunds</Link></li><li><Link to="/legal/prohibited-items">Prohibited items</Link></li></ul>
+            <ul><li><Link to="/legal/privacy">Privacy</Link></li><li><Link to="/legal/terms">Terms</Link></li><li><Link to="/legal/cancellations">Cancellations and refunds</Link></li><li><Link to="/legal/prohibited-items">Prohibited items</Link></li><li><Link to="/delete-account">Delete your account</Link></li></ul>
           </div>
         </div>
         <div className="foot-base">

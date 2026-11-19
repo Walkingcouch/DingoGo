@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
-import { ApiError, connectRealtime, get, onNetworkChange, post, useGeolocation, useOnline, usePoll } from '@dingogo/shared';
+import { ApiError, DISCLOSURES, connectRealtime, disclosureAnswer, get, onNetworkChange, post, useGeolocation, useOnline, usePoll } from '@dingogo/shared';
 import { flushGps, flushTaps, isNoSignal, onOutboxChange, pendingGps, pendingTaps, queueGps, sendTap, tapsFor, type Step } from './lib/outbox';
 import { applyTheme, resolvedTheme, usePrefs } from './lib/prefs';
 import { hasPlug, minYearFallback } from './vehicle';
@@ -44,6 +44,10 @@ interface Ctx {
   connected: boolean;
   /** Trip taps and GPS points kept on the phone, waiting for signal. */
   waiting: { taps: number; gps: number };
+  /** Round 21: the driver agreed to the location explanation on this phone (until then the app doesn't read the location). */
+  locationOk: boolean; setLocationOk: (v: boolean) => void;
+  /** Show the location explanation again (from "Turn on location"). */
+  locationAsk: boolean; setLocationAsk: (v: boolean) => void;
 }
 const C = createContext<Ctx>(null as any);
 export const useDriver = () => useContext(C);
@@ -62,7 +66,10 @@ export function DriverProvider({ children }: { children: React.ReactNode }) {
   const [trip, setTrip] = useState<any>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [statePick, setStatePick] = useState<string | null>(null);
-  const geo = useGeolocation(true);
+  // Round 21: Google Play's prominent disclosure. Location is read only after the driver has seen why (PermissionGate in App.tsx).
+  const [locationOk, setLocationOk] = useState(() => disclosureAnswer(DISCLOSURES.driverLocation)?.accepted === true);
+  const [locationAsk, setLocationAsk] = useState(false);
+  const geo = useGeolocation(locationOk);
   const connected = useOnline();
   const [waiting, setWaiting] = useState({ taps: pendingTaps().length, gps: pendingGps() });
   useEffect(() => onOutboxChange(() => setWaiting({ taps: pendingTaps().length, gps: pendingGps() })), []);
@@ -238,7 +245,7 @@ export function DriverProvider({ children }: { children: React.ReactNode }) {
   const clearOffer = () => setOffer(null);
 
   return <C.Provider value={{ me, reloadMe, cars, states, myState, setStatePick, online, setOnline, battery, setBattery, pos, simulated, setSimulated, geoDenied: geo.denied || !geo.pos,
-    offer, clearOffer, trip, reloadTrip, setTrip, toast, showToast, tripAction, connected, waiting }}>{children}</C.Provider>;
+    offer, clearOffer, trip, reloadTrip, setTrip, toast, showToast, tripAction, connected, waiting, locationOk, setLocationOk, locationAsk, setLocationAsk }}>{children}</C.Provider>;
 }
 
 /** What the driver earns from an offer. The API sends `driver_pay` (fare less the DingoGo fee for this car, plus pickup pay and

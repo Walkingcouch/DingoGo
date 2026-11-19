@@ -1,5 +1,20 @@
 apply plugin: 'com.android.application'
 
+// Round 21: one place for versions and signing (see docs/OPERATIONS.md, "Google Play releases").
+//  - Version name: "version" in apps/APP/package.json, plus ANDROID_VERSION_SUFFIX (test builds: "-test.<run>").
+//  - Version code: ANDROID_VERSION_CODE, else the GitHub Actions run number (always rising within the Android workflow).
+//  - Signing: the private upload key when DINGOGO_UPLOAD_STORE_FILE is set (GitHub Actions secrets, never in the repo),
+//    otherwise the shared TEST key so test APKs keep installing over each other. DINGOGO_REQUIRE_UPLOAD_KEY=true (the Play
+//    bundle job) stops the build instead of falling back to the test key.
+def envOr = { String k -> def v = System.getenv(k); v ? v : null }
+def appPackage = new groovy.json.JsonSlurper().parse(rootProject.file('../package.json'))
+def appVersionCode = Integer.parseInt(envOr('ANDROID_VERSION_CODE') ?: envOr('GITHUB_RUN_NUMBER') ?: '1')
+def appVersionName = appPackage.version + (envOr('ANDROID_VERSION_SUFFIX') ?: '')
+def uploadStoreFile = envOr('DINGOGO_UPLOAD_STORE_FILE')
+if (!uploadStoreFile && envOr('DINGOGO_REQUIRE_UPLOAD_KEY') == 'true') {
+    throw new GradleException('DINGOGO_REQUIRE_UPLOAD_KEY is set but DINGOGO_UPLOAD_STORE_FILE is not: refusing to sign a Play build with the test key.')
+}
+
 android {
     namespace "au.com.dingogo.rider"
     compileSdk rootProject.ext.compileSdkVersion
@@ -7,9 +22,10 @@ android {
         applicationId "au.com.dingogo.rider"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        // CI sets the build number so each new APK installs over the last one.
-        versionCode Integer.parseInt(System.getenv("GITHUB_RUN_NUMBER") ?: "1")
-        versionName "1.0." + (System.getenv("GITHUB_RUN_NUMBER") ?: "0")
+        versionCode appVersionCode
+        versionName appVersionName
+        // Android App Links: the website's share-trip (/track/...) and booking (/rider/...) links open the app (see AndroidManifest.xml).
+        manifestPlaceholders = [appLinkHost: envOr('DINGOGO_APP_LINK_HOST') ?: 'dingogo-steel.vercel.app']
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
@@ -18,7 +34,7 @@ android {
         }
     }
     // Shared TEST signing key (committed on purpose, see android-signing/README.md) so test builds update in place.
-    // Google Play releases must use a private upload key kept out of the repo.
+    // Google Play releases use the private upload key from the environment (never committed).
     signingConfigs {
         test {
             storeFile rootProject.file('../../../android-signing/dingogo-test.keystore')
@@ -26,13 +42,21 @@ android {
             keyAlias 'dingogo-test'
             keyPassword 'dingogo-test'
         }
+        if (uploadStoreFile) {
+            upload {
+                storeFile file(uploadStoreFile)
+                storePassword envOr('DINGOGO_UPLOAD_STORE_PASSWORD')
+                keyAlias envOr('DINGOGO_UPLOAD_KEY_ALIAS')
+                keyPassword envOr('DINGOGO_UPLOAD_KEY_PASSWORD') ?: envOr('DINGOGO_UPLOAD_STORE_PASSWORD')
+            }
+        }
     }
     buildTypes {
         debug {
             signingConfig signingConfigs.test
         }
         release {
-            signingConfig signingConfigs.test
+            signingConfig uploadStoreFile ? signingConfigs.upload : signingConfigs.test
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }

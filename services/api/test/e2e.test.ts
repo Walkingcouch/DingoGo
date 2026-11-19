@@ -5090,3 +5090,115 @@ test('before migration 024: the old lease run (capped at the balance, once a wee
     resetFleetReady();
   }
 });
+
+// ───────────── Round 21: app store readiness ─────────────
+test('round 21: /.well-known/assetlinks.json lists the rider app\'s certificates from ANDROID_APP_LINK_CERTS, never the public test key', async () => {
+  const { TEST_KEY_SHA256 } = await import('../src/lib/store.js');
+  const prev = config.android.appLinkCerts;
+  try {
+    config.android.appLinkCerts = '';
+    let r = await app.inject({ method: 'GET', url: '/.well-known/assetlinks.json' });
+    assert.equal(r.statusCode, 200);
+    assert.match(String(r.headers['content-type']), /^application\/json/);
+    assert.deepEqual(JSON.parse(r.body), [], 'no certificates: no app claims the links');
+    const fp = Array(32).fill('AB').join(':');
+    config.android.appLinkCerts = `${fp.toLowerCase()}, ${TEST_KEY_SHA256}`;
+    r = await app.inject({ method: 'GET', url: '/.well-known/assetlinks.json' });
+    const body = JSON.parse(r.body);
+    assert.equal(body.length, 1);
+    assert.deepEqual(body[0].relation, ['delegate_permission/common.handle_all_urls']);
+    assert.deepEqual(body[0].target, { namespace: 'android_app', package_name: 'au.com.dingogo.rider', sha256_cert_fingerprints: [fp] });
+    assert.match(String(r.headers['cache-control']), /public, max-age=3600/);
+    assert.equal(r.headers.location, undefined, 'Android refuses redirects');
+  } finally { config.android.appLinkCerts = prev; }
+});
+
+test('round 21: permission explanations recorded per answer, listed and in the data export; before migration 025 the app carries on', async () => {
+  const ok = await call('POST', '/me/disclosures', 'd2', { app: 'driver', kind: 'location', version: '2026-11-location-1', accepted: true, platform: 'android', app_version: '1.1.0 (57)' });
+  assert.equal(ok.status, 200, JSON.stringify(ok));
+  assert.deepEqual([ok.recorded, ok.disclosure.kind, ok.disclosure.accepted, ok.disclosure.platform], [true, 'location', true, 'android']);
+  assert.equal((await call('POST', '/me/disclosures', 'd2', { app: 'driver', kind: 'notifications', version: '2026-11-notify-1', accepted: false })).disclosure.platform, 'web');
+  assert.equal((await call('POST', '/me/disclosures', 'd2', { app: 'driver', kind: 'contacts', version: 'x', accepted: true })).status, 400);
+  assert.equal((await call('POST', '/me/disclosures', 'd2', { app: 'admin', kind: 'location', version: 'x', accepted: true })).status, 400);
+  assert.equal((await call('POST', '/me/disclosures', undefined, { app: 'driver', kind: 'location', version: 'x', accepted: true })).status, 401);
+  const list = await call('GET', '/me/disclosures', 'd2');
+  assert.equal(list.ready, true);
+  assert.deepEqual(list.items.slice(0, 2).map((i: any) => [i.kind, i.accepted]), [['notifications', false], ['location', true]]);
+  assert.equal((await call('GET', '/me/disclosures', 'rider')).items.length, 0, 'only my own answers');
+  const exp = await call('GET', '/me/export', 'd2');
+  assert.ok(exp.permission_disclosures.some((d: any) => d.kind === 'location' && d.version === '2026-11-location-1' && d.app_version === '1.1.0 (57)'));
+
+  await q('ALTER TABLE permission_disclosures RENAME TO permission_disclosures_off');
+  try {
+    const r = await call('POST', '/me/disclosures', 'd2', { app: 'driver', kind: 'location', version: '2026-11-location-1', accepted: true });
+    assert.deepEqual([r.status, r.recorded], [200, false]);
+    assert.deepEqual(await call('GET', '/me/disclosures', 'd2').then((x) => [x.ready, x.items.length]), [false, 0]);
+    assert.deepEqual((await call('GET', '/me/export', 'd2')).permission_disclosures, []);
+  } finally { await q('ALTER TABLE permission_disclosures_off RENAME TO permission_disclosures'); }
+});
+
+test('round 21: account page sign-in never creates an account or changes a role; deleting there works like the app', async () => {
+  const ip = '10.251.1.1';
+  // Codes can be asked for once per 30 s per number (other tests just signed these in): the test-mode code stands in for the text.
+  const signIn = (phone: string) => call('POST', '/auth/otp/verify', undefined, { phone, code: '000000', app: 'account' }, ip);
+  const none = await signIn('+61400002101');
+  assert.deepEqual([none.status, none.error], [404, 'no_account']);
+  assert.equal(await one('SELECT 1 FROM users WHERE phone = $1', ['+61400002101']), null, 'no account created');
+  const rider = await signIn('+61400000100');
+  assert.equal(rider.status, 200);
+  assert.equal(rider.user.role, 'rider', 'not turned into a driver or anything else');
+
+  // A rider made in the app deletes the account from the website.
+  await login('webdel', '+61400002102');
+  const id = await uidOf('+61400002102');
+  const web = await signIn('+61400002102');
+  const res = await app.inject({ method: 'DELETE', url: '/me', headers: { authorization: `Bearer ${web.token}` }, remoteAddress: ip });
+  assert.equal(res.statusCode, 200, res.body);
+  const u = await one('SELECT deleted_at, phone, name FROM users WHERE id = $1', [id]);
+  assert.ok(u.deleted_at);
+  assert.equal(u.name, 'Deleted user');
+  assert.ok(await one(`SELECT 1 FROM privacy_requests WHERE user_id = $1 AND kind = 'deletion' AND status = 'completed'`, [id]));
+  assert.equal((await signIn('+61400002102')).error, 'no_account', 'gone for good');
+});
+
+test('round 21: "can\'t sign in" deletion requests go to the privacy register (30 days), same answer whether or not the number has an account; limited per IP', async () => {
+  const ip = '10.251.2.1';
+  const a = await call('POST', '/public/deletion-requests', undefined, { name: 'Pat Example', phone: '0400 002 103', email: '', role: 'driver', details: 'Lost my old phone' }, ip);
+  assert.equal(a.status, 200, JSON.stringify(a));
+  assert.match(a.ref, /^PR-/);
+  assert.equal(a.due_days, 30);
+  const row = await one(`SELECT * FROM privacy_requests WHERE ref = $1`, [a.ref]);
+  assert.deepEqual([row.kind, row.channel, row.status, row.user_id], ['deletion', 'website', 'open', null]);
+  assert.match(row.requester, /^Pat Example, \+61400002103 \(website form\)$/);
+  assert.match(row.details, /Account type: driver\. Lost my old phone/);
+  assert.ok(new Date(row.due_at).getTime() - Date.now() > 29 * 86400e3);
+  // An existing account is linked for the team, but the caller sees the same answer.
+  const b = await call('POST', '/public/deletion-requests', undefined, { name: 'Amy Rider', phone: '0400 000 100', email: 'amy@example.com' }, ip);
+  assert.deepEqual(Object.keys(b).filter((k) => k !== 'status' && k !== 'headers').sort(), Object.keys(a).filter((k) => k !== 'status' && k !== 'headers').sort());
+  assert.equal((await one(`SELECT user_id FROM privacy_requests WHERE ref = $1`, [b.ref])).user_id, await uidOf('+61400000100'));
+  assert.equal((await call('POST', '/public/deletion-requests', undefined, { name: '', phone: '0400 002 103' }, ip)).status, 400);
+  assert.equal((await call('POST', '/public/deletion-requests', undefined, { name: 'Pat', phone: 'abc' }, ip)).status, 400);
+  // Website forms share the per-IP limit.
+  let limited = false;
+  for (let i = 0; i < config.rateLimits.publicFormPerIp + 2 && !limited; i++) {
+    limited = (await call('POST', '/public/deletion-requests', undefined, { name: 'Flood Test', phone: '0400 002 104' }, '10.251.2.9')).status === 429;
+  }
+  assert.ok(limited, 'rate limited');
+  await q(`DELETE FROM privacy_requests WHERE requester LIKE 'Flood Test%'`);
+});
+
+test('round 21: an idle database connection closed by the server is logged, not a crash; the next query opens a new one', async () => {
+  // Two of the pool's own connections, left idle in the pool; then Postgres ends exactly those (as a pooler restart would).
+  const a = await pool.connect(); const b = await pool.connect();
+  const pids = [(await a.query('SELECT pg_backend_pid() AS p')).rows[0].p, (await b.query('SELECT pg_backend_pid() AS p')).rows[0].p];
+  a.release(); b.release();
+  const admin = new (await import('pg')).default.Client({ connectionString: process.env.DATABASE_URL ?? 'postgres://dingogo:dingogo@localhost:5432/dingogo_test' });
+  await admin.connect();
+  try {
+    const r = await admin.query('SELECT count(*) FILTER (WHERE pg_terminate_backend(pid))::int AS n FROM unnest($1::int[]) AS pid', [pids]);
+    assert.equal(r.rows[0].n, 2, 'both idle connections ended');
+  } finally { await admin.end(); }
+  await wait(300);   // the pool sees them close: 'error' on the pool (before Round 21 an uncaught exception)
+  assert.equal((await one<{ ok: number }>('SELECT 1 AS ok'))?.ok, 1);
+  assert.ok(pool.listenerCount('error') >= 1);
+});

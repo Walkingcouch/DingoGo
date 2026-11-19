@@ -70,7 +70,7 @@ export default async function authRoutes(app: FastifyInstance) {
   app.post('/auth/otp/verify', async (req) => {
     const body = parse(z.object({
       phone, code: z.string().regex(/^\d{6}$/), name: z.string().max(80).optional(),
-      referral_code: z.string().max(20).optional(), app: z.enum(['rider', 'driver', 'admin', 'partner']).default('rider'),
+      referral_code: z.string().max(20).optional(), app: z.enum(['rider', 'driver', 'admin', 'partner', 'account']).default('rider'),
     }), req.body);
 
     if (await tooMany('otp_verify_fail_ip', req.ip, config.rateLimits.otpVerifyFailPerIp, 3600)) {
@@ -97,6 +97,8 @@ export default async function authRoutes(app: FastifyInstance) {
     const user = await tx(async (c) => {
       let u = await one('SELECT * FROM users WHERE phone = $1 AND deleted_at IS NULL', [body.phone], c);
       let isNew = false;
+      // Round 21: the website's account page (delete my account) signs in existing accounts only: it never creates one.
+      if (!u && body.app === 'account') throw new ApiError(404, 'no_account', 'There’s no DingoGo account for this number.');
       if (!u) {
         isNew = true;
         const name = body.name?.trim() || '';
@@ -232,9 +234,12 @@ export default async function authRoutes(app: FastifyInstance) {
     const loyalty_profile = await opt(one('SELECT birthday_md, birthday_opt_in, streak_opt_in, updated_at FROM loyalty_profiles WHERE user_id = $1', [me.id]), null);
     const gift_vouchers_bought = await opt(q(`SELECT value_cents, from_name, recipient_name, message, created_at, expires_at, redeemed_at IS NOT NULL AS used
       FROM gift_vouchers WHERE purchased_by = $1 ORDER BY created_at`, [me.id]), []);
+    // Round 21: what the apps explained before asking for location, notifications or the camera, and the answers (migration 025).
+    const permission_disclosures = await opt(q(`SELECT app, kind, version, accepted, platform, app_version, created_at FROM permission_disclosures
+      WHERE user_id = $1 ORDER BY created_at`, [me.id]), []);
     await recordPrivacyRequest({ user_id: me.id, kind: 'access', channel: 'app', status: 'completed' }).catch((e) => logError('privacy request', e));
     return { exported_at: new Date().toISOString(), user: publicUser(user), trips, loyalty, messages, marketing_consents, notification_prefs, booking_consents,
-      safety_reports, check_ins, account_actions, driver, loyalty_profile, gift_vouchers_bought };
+      safety_reports, check_ins, account_actions, driver, loyalty_profile, gift_vouchers_bought, permission_disclosures };
   });
 
   app.post('/me/push-token', async (req) => {

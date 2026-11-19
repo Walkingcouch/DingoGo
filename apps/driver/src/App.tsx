@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { NavLink, Navigate, Route, Routes } from 'react-router-dom';
-import { Icon, Login, disablePush, get, getToken, initAuth, refreshPush, setToken, useServiceUp } from '@dingogo/shared';
+import { DISCLOSURES, Icon, Login, PermissionPrimer, answerDisclosure, disablePush, disclosureAnswer, enablePush, get, getToken, initAuth, pushKind, pushState, refreshPush, setToken, useServiceUp } from '@dingogo/shared';
 import { DriverProvider, useDriver } from './state';
 import { Drive } from './screens/Drive';
 import { Offer } from './screens/Offer';
@@ -20,12 +20,50 @@ export function App() {
   if (!token) {
     return <Login title="Drive with DingoGo" subtitle="Sign in with the mobile number you applied with." onDone={(r) => setTok(r.token)} askName />;
   }
-  return <DriverProvider><PushRefresh /><Shell onSignOut={async () => { await disablePush('driver'); clearOutbox(); setToken(null); setTok(null); }} /></DriverProvider>;
+  return <DriverProvider><PushRefresh /><PermissionGate /><Shell onSignOut={async () => { await disablePush('driver'); clearOutbox(); setToken(null); setTok(null); }} /></DriverProvider>;
 }
 
 /** If this phone already allowed notifications, register again quietly on start (tokens change). Never prompts. */
 function PushRefresh() {
   useEffect(() => { get('/public/config').then((c) => refreshPush('driver', c.push?.web_push_key)).catch(() => undefined); }, []);
+  return null;
+}
+
+/**
+ * Round 21: before the phone asks for a permission, say why (Google Play's prominent disclosure). First location (the app reads
+ * nothing until the driver taps Continue), then notifications for trip offers where this phone can get them. Asked once per
+ * phone per wording; "Not now" keeps the app usable (location can be typed in, and turned on later from the Drive screen).
+ */
+function PermissionGate() {
+  const { setLocationOk, locationAsk, setLocationAsk, me } = useDriver();
+  const [locAnswered, setLocAnswered] = useState(() => disclosureAnswer(DISCLOSURES.driverLocation) != null);
+  const [notify, setNotify] = useState<{ key: string | null } | null>(null);
+  const [busy, setBusy] = useState(false);
+  // Notifications: only once location has been answered, only where push works here and isn't on or blocked already.
+  useEffect(() => {
+    if (!locAnswered || !me || disclosureAnswer(DISCLOSURES.driverNotifications)) return;
+    let gone = false;
+    get('/public/config').then(async (c) => {
+      const key = c.push?.web_push_key ?? null;
+      if (!pushKind(key) || (await pushState('driver', key)) !== 'off') return;
+      if (!gone) setNotify({ key });
+    }).catch(() => undefined);
+    return () => { gone = true; };
+  }, [locAnswered, me]);
+
+  if (!locAnswered || locationAsk) {
+    const answer = (ok: boolean) => { answerDisclosure(DISCLOSURES.driverLocation, ok); setLocAnswered(true); setLocationAsk(false); setLocationOk(ok); };
+    return <PermissionPrimer d={DISCLOSURES.driverLocation} icon="locate" onAccept={() => answer(true)} onDecline={() => answer(false)} />;
+  }
+  if (notify) {
+    const done = () => setNotify(null);
+    return <PermissionPrimer d={DISCLOSURES.driverNotifications} icon="bell" busy={busy}
+      onAccept={async () => {
+        setBusy(true); answerDisclosure(DISCLOSURES.driverNotifications, true);
+        try { await enablePush('driver', notify.key); } catch { /* settings in Profile show the state */ } finally { setBusy(false); done(); }
+      }}
+      onDecline={() => { answerDisclosure(DISCLOSURES.driverNotifications, false); done(); }} />;
+  }
   return null;
 }
 

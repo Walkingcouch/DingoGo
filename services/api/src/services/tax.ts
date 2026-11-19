@@ -474,7 +474,7 @@ export async function runRetentionIfDue() {
 
 // ───────────── Privacy (APP) requests ─────────────
 export const PRIVACY_KINDS = ['access', 'correction', 'deletion', 'complaint'] as const;
-export const PRIVACY_CHANNELS = ['app', 'email', 'phone', 'letter', 'in_person'] as const;
+export const PRIVACY_CHANNELS = ['app', 'website', 'email', 'phone', 'letter', 'in_person'] as const;
 /** Record a request; self-service ones (export, delete) are recorded as completed straight away. Never fails the caller. */
 export async function recordPrivacyRequest(r: { user_id?: string | null; kind: string; channel?: string; status?: string; requester?: string; details?: string; handled_by?: string | null }, c: Q = pool) {
   if (!(await taxReady())) return null;

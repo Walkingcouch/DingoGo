@@ -1458,3 +1458,123 @@ Ideas for next rounds:
 - Spare-car calendar and roster for shift drivers sharing one car (two agreements on one car split by hours).
 - EV transition offer for own-car drivers: estimate their fuel versus a lease's weekly cost from their own trips, shown in the driver app.
 - Fleet dashboard tiles on the admin home (cars off road, overdue checks, arrears total, this month's profit) once the programme is on.
+
+### Round 21 — mobile app store readiness (Android / Google Play)
+Scan: read both Capacitor projects (configs, manifests, Gradle files, resources), the Android workflow, the committed test key, the
+shared push code, how the apps ask for location and camera, the website's tracking page, privacy policy and `DELETE /me`. Found: the
+driver app's `package.json` lists no Capacitor plugins, so `cap sync` registered none and the driver APK can never use native push
+(trip offers); the rider app ships three plugins it never calls (geolocation, preferences; camera sits unused in shared) while the
+WebView already gets location and camera through Capacitor core; the rider manifest asks for CAMERA it never uses and the driver one
+for FOREGROUND_SERVICE/WAKE_LOCK with no service (Play would ask for a foreground-service declaration); `allowBackup` is on, so the
+session token in WebView storage goes into cloud backups; release builds are signed only with the public test key and there is no
+AAB; the version is just the CI run number; no themed (monochrome) icon or Android 12 splash settings, no Play graphics; the driver
+app starts watching location the moment it opens, with no prominent disclosure (Play requirement) and no record of consent; trip
+share links never open the app (no App Links, no assetlinks.json, no in-app tracking screen); no web page to delete an account
+without the app (Play requirement); no Data safety draft, store listing, screenshots or iOS usage strings. Also: Play has required
+target API 36 for new apps and updates since 31 Aug 2026; the apps target 34 (Capacitor 6) — see Deferred.
+
+Suggested:
+1. [fix] Capacitor plugin hygiene: both apps declare exactly the plugins they use (core, android, push notifications, app) so the
+   driver APK gets native push; unused geolocation/preferences/camera plugins removed; manifests trimmed (rider: no CAMERA; driver:
+   no FOREGROUND_SERVICE/WAKE_LOCK); `allowBackup` off with backup/data-extraction rules that exclude everything.
+2. [add] Release signing and an AAB job: Gradle `upload` signing config from environment variables (falls back to the test key, so
+   test APKs are unchanged); a `bundle` job (manual run or `android-v*` tag) that decodes the upload key from GitHub Actions secrets,
+   builds signed AABs for both apps, refuses one signed with the test key, keeps them as artifacts and, when a Play service account
+   is set, uploads to the internal testing track.
+3. [add] Versioning: version name from each app's `package.json`, version code from the CI run number (or `ANDROID_VERSION_CODE`),
+   test builds marked `-test.N`; the version is shown in the apps (rider Account, driver Profile) for support.
+4. [add] Icons and splash: monochrome (themed icon) layer at all five densities generated from the foreground by a script; adaptive
+   icons reference it; Android 12+ splash settings (brand background, icon, post-splash theme); Play hi-res icon and feature
+   graphic generated per app.
+5. [add] Permission rationale screens: shared `PermissionPrimer`; driver location prominent disclosure before the system prompt (the
+   location watch waits for it, "Not now" keeps the app usable with a typed location), driver notifications primer for trip offers
+   (only where push is available), camera explained before the selfie check and delivery photos; each answer recorded with
+   `POST /me/disclosures` (migration 025), in `/me/export`, and still works before the migration.
+6. [add] Deep links: Android App Links in the rider app for the website's `/track/*` and `/rider/*` links (autoVerify, host from the
+   build), `GET /.well-known/assetlinks.json` from `ANDROID_APP_LINK_CERTS` (the public test key is never trusted), Vercel route; the
+   rider app opens shared trips without signing in (tracking screen moved to shared) and website hand-offs.
+7. [add] Account deletion URL: website page `/delete-account` — sign in with mobile and code (existing accounts only, never creates
+   one) and delete with the same rules as the app, or ask by form when the number is lost (`POST /public/deletion-requests` → privacy
+   request register, rate-limited); linked from the privacy policy, Help and the footer; in the sitemap.
+8. [add] Store docs: `docs/store/listing.json` (rider and driver listing copy within Play limits), `docs/store/data-safety.md` (Play
+   Data safety draft per app), `docs/store/ios-usage-strings.md` (Info.plist keys for later), Play release runbook in OPERATIONS.md.
+9. [add] Store screenshot generator `scripts/store-screenshots.mjs` (Playwright, 1080×1920 phone shots of both apps on demo data, plus
+   the feature graphic and hi-res icon).
+10. [add] Store readiness test (`store.test.ts`): manifests against the allowed permissions and the Data safety draft, plugins
+   declared, icon densities and monochrome layers, splash, signing names shared by Gradle and the workflow, workflow YAML parsed,
+   listing limits and wording, iOS strings cover the features.
+11. [fix] (found while verifying) The database pool had no `error` handler: an idle connection closed by the server (pooler
+   restart, failover, "terminating connection due to administrator command") emitted an unhandled `error` and crashed the whole
+   process. Now logged and reported, and the next query opens a new connection. Also the cause of the ops test's intermittent
+   "asynchronous activity after the test ended" failure.
+
+Done (all 11). Migration: `services/api/migrations/025_permission_disclosures.sql` (table `permission_disclosures`; additive, IF NOT
+EXISTS). Before it: `POST /me/disclosures` answers `{ recorded: false }` (the answer stays on the phone), `GET` → `{ ready: false }`,
+export `[]`; nothing else needs it. Tests: 198 → 211 (`store.test.ts` 8 tests — manifests and permissions vs the Data safety draft,
+backups off, App Links filter, plugins declared and synced, icon sizes at every density with monochrome layers up to date, splash
+settings, Gradle/workflow signing names, Play job never with the test key, workflow YAML parsed, listing limits and wording, website
+pages the listing points at, iOS strings, disclosure wording, app-link routing and the asset-links statement; 5 e2e — assetlinks.json
+from the env without the test key, disclosures recorded/listed/exported and before migration 025, account-only sign-in never creates
+an account or changes a role and deletes like the app, the "can't sign in" form into the privacy register with the per-IP limit, an
+idle connection killed by Postgres no longer crashes the process). Gradle scripts parsed with Groovy and the version/signing header
+run with Gradle 8.14 (version name/code, test-key fallback, refusal when the upload key is required); no Android SDK in the
+container, so the APK/AAB build itself is verified by the workflow on push. Browser: smoke test passes with the new location screen;
+`npm run store:screenshots` produced 10 phone screenshots (1080×1920), 2 feature graphics (1024×500) and 2 icons (512×512); axe 0
+violations on the location explanation and `/delete-account`.
+- Android: both `app/build.gradle` (version from `package.json` + run number, `upload` signing config from `DINGOGO_UPLOAD_*`,
+  `DINGOGO_REQUIRE_UPLOAD_KEY`, rider `appLinkHost` placeholder), manifests (permissions, backups off, rider App Links filter),
+  `res/xml/{backup_rules,data_extraction_rules}.xml`, `mipmap-*/ic_launcher_monochrome.png` + adaptive icon XMLs, splash attributes in
+  `values/styles.xml`, regenerated `capacitor.settings.gradle`/`capacitor.build.gradle`; `.github/workflows/android.yml` (`build` test
+  APKs as before plus version suffix; manual `bundle` job: secrets check, key decode, optional Firebase config, `bundleRelease`,
+  `jarsigner`/`keytool` check against the test key, AAB artifacts, optional internal-track upload as a draft, key removed);
+  `scripts/android-assets.mjs` (`npm run android:assets`, `--check`).
+- API: new `src/lib/store.ts` (test-key fingerprint, `parseCertList`, `assetLinks`), `src/routes/store.ts` (`/.well-known/assetlinks.json`,
+  `/me/disclosures`, `/public/deletion-requests`); `routes/auth.ts` (`app: 'account'` sign-in, export `permission_disclosures`);
+  `services/tax.ts` (`website` channel); `db.ts` (pool `error` handler); `config.ts` + `.env.example` (`ANDROID_APP_LINK_CERTS`,
+  `ANDROID_RIDER_PACKAGE`); `scripts/build-vercel.mjs` (route for assetlinks.json, `VITE_APP_VERSION` per app).
+- Shared: `permissions.ts` (disclosure wording + versions, answers on the phone and recorded, `appPlatform`, `appVersion`),
+  `PermissionPrimer.tsx`, `applinks.ts` (`appLinkRoute`, `onAppLink`), `SharedTrack.tsx` (tracking moved from the website, own entry
+  `@dingogo/shared/track`), styles in `brand.css`. Removed the camera/geolocation/preferences plugins.
+- Apps: driver — location explanation before anything reads the location ("Not now" keeps the app usable; "Turn on location" on the
+  Drive screen asks again), trip-offer notifications screen where push works, camera notes on the photo check and delivery photo,
+  Profile "Privacy and your data" (privacy policy, download my data, delete my account — the driver app had no way to delete an
+  account, which Play requires), version. Rider — website links open the app (`/track/…` without signing in, `/rider/…` hand-offs),
+  privacy policy link, version, privacy text said trip records are kept 7 years (policy says 5). Website — `/delete-account`
+  (sign in and delete, or ask by form), footer link, privacy policy "Permissions on your phone" and the deletion page, sitemap.
+- Scripts and docs: `scripts/store-screenshots.mjs` (`npm run store:screenshots`), browser harness moved to
+  `scripts/lib/vercel-harness.mjs` (smoke test uses it, taps through the location screen), `docs/store/{listing.json,data-safety.md,
+  ios-usage-strings.md}`, OPERATIONS.md section 11 (Google Play releases), API.md, README, `android-signing/README.md`.
+- Behaviour changes to note: the driver app shows a location explanation once per phone before reading the location (and a
+  notifications one where push works); rider APKs no longer ask for the camera, driver APKs no longer declare a foreground service;
+  app data is no longer backed up (people sign in again on a new phone); test APK version names are now `1.1.0-test.<run>` (codes
+  unchanged, so they still install over older ones); `POST /auth/otp/verify` accepts `app: 'account'`; privacy request channels
+  include `website`.
+- Deploy: apply migration 025 (AUTO_MIGRATE does it). Optional env `ANDROID_APP_LINK_CERTS` once Play App Signing exists. Owner
+  checklist for Google Play in OPERATIONS.md section 11 (developer account, upload key and four GitHub secrets, optional
+  `GOOGLE_SERVICES_JSON` and `PLAY_SERVICE_ACCOUNT_JSON`, App content forms with the URLs and the Data safety draft).
+
+Deferred:
+- **Target API 36 (blocks Play uploads):** Google Play has required target API 36 for new apps and updates since 31 Aug 2026; the
+  apps target 34 on Capacitor 6 (AGP 8.2, Gradle 8.2). Needs the Capacitor 8 upgrade (AGP/Gradle/JDK 21, compile/target 36,
+  edge-to-edge is enforced: the apps already pad for safe areas), which can't be built or tested without the Android SDK (not
+  reachable from this container); do it as its own round, verified by the Android workflow.
+- Background location for drivers (pings while Google Maps/Waze is in front): still deferred (Round 3/6). It would need a
+  foreground-service plugin, the Play location and foreground-service declarations with a video, and a disclosure update (the
+  `background_location` kind and the iOS wording are ready).
+- iOS projects, Apple's `apple-app-site-association` for universal links and APNs push (strings prepared in
+  `docs/store/ios-usage-strings.md`).
+- Store screenshots with map tiles and real-looking demo names: the generator works offline but the map area is blank without
+  internet; run it on a laptop before submitting.
+- Play Integrity API / app attestation on sign-in (abuse protection) — needs a Google Cloud project and the Play app first.
+
+Ideas for next rounds:
+- Capacitor 8 upgrade to target API 36 (above), with an Android emulator smoke test in CI (install the APK, open the rider app,
+  book against a test API) so native changes are verified before release.
+- Native background location for drivers with the foreground-service declaration and the `background_location` disclosure; then
+  turn on silent-driver auto-reassign (Round 3).
+- In-app update prompts (Play In-App Updates) and a minimum supported app version from `/public/config` so old APKs are told to
+  update when the API changes.
+- Crash reporting from the apps (Sentry browser SDK with no personal data, or a tiny `/client-errors` endpoint), linked to
+  `VITE_APP_VERSION`.
+- Store listing translations for visitors (de, fr, ja…) reusing the Round 19 flagged machine translations, and Arrernte words in
+  the listing reviewed by the language centre.

@@ -1,7 +1,7 @@
 {
   "name": "@dingogo/driver",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.1.0",
   "type": "module",
   "scripts": {
     "dev": "vite --port 5175",
@@ -11,6 +11,13 @@
     "typecheck": "tsc --noEmit -p ."
   },
   "dependencies": {
+    "@capacitor/android": "^6.2.3",
+    "@capacitor/app": "^6.0.3",
+    "@capacitor/core": "^6.2.3",
+    "@capacitor/push-notifications": "^6.0.5",
     "@dingogo/shared": "*"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^6.2.3"
   }
 }

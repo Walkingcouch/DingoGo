@@ -272,3 +272,44 @@ Before the migration, "Run weekly lease deductions" (Payouts & leases) still wor
   ```
   `DB_LATENCY_MS` adds a round trip to every query, like a database a few milliseconds away; the report shows requests/s,
   p50/p95/p99, 304s, bytes and queries per request. Round 18's numbers are in `docs/improvement-rounds.md`.
+
+## 11. Google Play releases (Round 21)
+Store copy, the Data safety draft and iOS notes are in `docs/store/`. Test APKs keep coming from every push (shared test key,
+`android-latest` release). Play builds are separate and signed with a private **upload key**.
+
+**Blocker first:** Google Play has required **target API 36** (Android 16) for new apps and updates since 31 Aug 2026. The apps
+target 34 (Capacitor 6), so Play will refuse the bundles until the Capacitor upgrade (planned next; see the round log). Everything
+below can be set up now.
+
+**One-time setup (owner):**
+1. Google Play developer account (organisation account, D-U-N-S number) and two apps in Play Console: `au.com.dingogo.rider`
+   ("DingoGo: Rides & Parcels") and `au.com.dingogo.driver` ("DingoGo Driver"). New personal accounts must run a closed test
+   with 12 testers for 14 days before production; organisation accounts don't.
+2. Make the upload key (once, keep two safe copies offline; never commit it):
+   `keytool -genkeypair -v -keystore dingogo-upload.jks -alias dingogo-upload -keyalg RSA -keysize 4096 -validity 10000`
+3. GitHub > Settings > Secrets and variables > Actions (or the `google-play` environment, which can require an approver):
+   `ANDROID_UPLOAD_KEYSTORE_BASE64` (`base64 -w0 dingogo-upload.jks`), `ANDROID_UPLOAD_STORE_PASSWORD`,
+   `ANDROID_UPLOAD_KEY_ALIAS` (`dingogo-upload`), `ANDROID_UPLOAD_KEY_PASSWORD` (if different from the store password).
+   Optional: `GOOGLE_SERVICES_JSON` (Firebase config with both apps, turns on native push in the bundles) and
+   `PLAY_SERVICE_ACCOUNT_JSON` (Play Console > Users and permissions > a service account with "Release to testing tracks").
+4. First upload by hand: run the workflow (Actions > Android apps > Run workflow > "Build Google Play bundles"), download the
+   `dingogo-<app>-aab` artifacts and upload them in Play Console (this enrols Play App Signing). Later runs can upload to the
+   internal track as drafts by choosing `internal`.
+5. App Links: Play Console > Test and release > App integrity > App signing: copy the **app signing key** SHA-256 for the rider
+   app (and the upload key's, for internal testing) into Vercel `ANDROID_APP_LINK_CERTS` (comma separated), redeploy, and check
+   `https://<site>/.well-known/assetlinks.json`. Test APKs (public test key) are never trusted: links open in the browser there.
+6. Play Console > App content: privacy policy `https://<site>/legal/privacy`, account deletion `https://<site>/delete-account`,
+   Data safety (answers in `docs/store/data-safety.md`), content rating questionnaire, target audience 18+, app access (demo
+   accounts), ads: none. Store listing: `docs/store/listing.json`; graphics: `npm run store:screenshots` (below).
+
+**Each release:** bump `version` in `apps/rider/package.json` / `apps/driver/package.json` (the version name), run the workflow
+with "Build Google Play bundles" (the version code is the workflow's run number, so it always rises), check the job's
+"Check the signature" step printed the upload key's SHA-256, then promote internal > closed > production in Play Console.
+
+**Store graphics:** `node scripts/build-vercel.mjs && npm run db:reset -w services/api && npm run store:screenshots` writes
+1080×1920 screenshots of both apps on demo data, the 1024×500 feature graphics and 512×512 icons to `store-shots/` (needs
+Playwright; map tiles need internet). Icons' themed (monochrome) layers come from `npm run android:assets` after artwork changes.
+
+**Permission explanations:** the driver app explains location (Google Play's prominent disclosure) and trip-offer
+notifications before the phone asks; answers are stored on the phone and recorded (`permission_disclosures`, migration 025,
+in each person's data export). Changing the wording in `packages/shared/src/permissions.ts` needs a new `version` (asked again).

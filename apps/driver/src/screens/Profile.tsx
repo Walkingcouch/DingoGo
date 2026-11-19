@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { usePrefs, type Prefs, type Theme } from '../lib/prefs';
 import { NAV_APPS } from '../lib/nav';
-import { ApiError, Icon, date, patch, post } from '@dingogo/shared';
+import { ApiError, Icon, appVersion, date, del, get, patch, post } from '@dingogo/shared';
 import { Acknowledgement, MyReports, NotifySettings, SafetyReportForm, TrustedContacts } from '@dingogo/shared';
 import { Link } from 'react-router-dom';
 import { useDriver } from '../state';
@@ -136,6 +136,8 @@ export function Profile({ onSignOut }: { onSignOut: () => void }) {
 
       <InCar prefs={prefs} setPrefs={setPrefs} />
 
+      <PrivacySection online={online} onDeleted={onSignOut} />
+
       <button className="dg-btn dg-btn--dark dg-btn--block btn-xl" style={{ marginTop: 16 }} onClick={onSignOut} disabled={online || waiting.taps > 0}>Sign out</button>
       {online && <p className="dg-muted" style={{ textAlign: 'center', fontSize: 'var(--fs-sm)' }}>Go offline before signing out.</p>}
       {!online && waiting.taps > 0 && <p className="dg-muted" style={{ textAlign: 'center', fontSize: 'var(--fs-sm)' }}>Trip updates are still waiting for signal. Sign out once they have sent.</p>}
@@ -162,6 +164,53 @@ export function Profile({ onSignOut }: { onSignOut: () => void }) {
 }
 
 /** Settings for driving: kept on this phone. */
+const WEB_URL: string = (((import.meta as any).env?.VITE_WEB_URL as string | undefined) || (typeof location !== 'undefined' ? location.origin : '')).replace(/\/$/, '');
+
+/** Round 21: privacy policy, download my data and delete my account in the app (Google Play requires deletion in the app). */
+function PrivacySection({ online, onDeleted }: { online: boolean; onDeleted: () => void }) {
+  const [confirm, setConfirm] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  async function download() {
+    setErr(null);
+    try {
+      const data = await get('/me/export');
+      const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
+      const a = document.createElement('a'); a.href = url; a.download = 'dingogo-my-data.json'; a.click(); URL.revokeObjectURL(url);
+    } catch (e) { setErr(e instanceof ApiError ? e.message : 'Could not download. Try again.'); }
+  }
+  async function remove() {
+    setBusy(true); setErr(null);
+    try { await del('/me'); setConfirm(false); onDeleted(); }
+    catch (e) { setErr(e instanceof ApiError ? e.message : 'Could not delete. Try again.'); setConfirm(false); }
+    finally { setBusy(false); }
+  }
+  return (
+    <section className="panel" aria-labelledby="privacy-h">
+      <h2 id="privacy-h" style={{ marginTop: 0 }}>Privacy and your data</h2>
+      <p className="dg-muted" style={{ marginTop: 0 }}>
+        <a href={`${WEB_URL}/legal/privacy`} target="_blank" rel="noopener noreferrer">Read the privacy policy</a>
+      </p>
+      <button className="dg-btn dg-btn--ghost dg-btn--block" onClick={download}>Download my data</button>
+      <button className="dg-btn dg-btn--danger dg-btn--block" style={{ marginTop: 10 }} onClick={() => setConfirm(true)} disabled={online}>Delete my account</button>
+      {online && <p className="dg-muted" style={{ fontSize: 'var(--fs-sm)' }}>Go offline before deleting your account.</p>}
+      {err && <p className="dg-error" role="alert">{err}</p>}
+      <p className="dg-muted" style={{ fontSize: 'var(--fs-xs)', textAlign: 'center', marginBottom: 0 }}>Version {appVersion()}</p>
+      {confirm && (
+        <Sheet onClose={() => setConfirm(false)} labelledBy="del-h">
+          <h2 id="del-h">Delete your account?</h2>
+          <p>This removes your name, contacts, bank details and cars from DingoGo, and you can't drive with this account again. The tax office needs us to keep what we paid you, with your ABN, for 5 years. This can't be undone.</p>
+          <p className="dg-muted">If you have earnings still to be paid, ask DingoGo for your payout first.</p>
+          <div className="btn-row" style={{ marginTop: 14 }}>
+            <button className="dg-btn dg-btn--ghost btn-xl" onClick={() => setConfirm(false)} disabled={busy}>Keep my account</button>
+            <button className="dg-btn dg-btn--danger btn-xl" onClick={remove} disabled={busy}>{busy ? 'Deleting…' : 'Delete'}</button>
+          </div>
+        </Sheet>
+      )}
+    </section>
+  );
+}
+
 function InCar({ prefs, setPrefs }: { prefs: Prefs; setPrefs: (p: Partial<Prefs>) => void }) {
   const seg = <K extends keyof Prefs>(label: string, key: K, opts: [Prefs[K], string][]) => (
     <fieldset className="choice-set">

@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link, Route, Routes, useNavigate, useSearchParams } from 'react-router-dom';
-import { Acknowledgement, ApiError, DraftNotice, Icon, downloadFile, MyReports, NotifySettings, SafetyReportForm, TrustedContacts, ago, date, del, get, langInfo, money, normaliseLang, patch, post, put, t, useLoad, Ranges } from '@dingogo/shared';
+import { Acknowledgement, ApiError, DraftNotice, Icon, appVersion, downloadFile, MyReports, NotifySettings, SafetyReportForm, TrustedContacts, ago, date, del, get, langInfo, money, normaliseLang, patch, post, put, t, useLoad, Ranges } from '@dingogo/shared';
 import { Dialog, Page, Spinner } from '../components/ui';
-import { CLIENT_KINDS, useMe } from '../ctx';
+import { CLIENT_KINDS, WEB_URL, useMe } from '../ctx';
 
 export function AccountScreen() {
   return (
@@ -53,6 +53,7 @@ function Menu() {
       <button className="dg-btn dg-btn--ghost dg-btn--block" style={{ marginTop: 20 }} onClick={signOut}>Sign out</button>
       <Ranges height={40} fill="var(--ochre-soft)" style={{ marginTop: 28 }} />
       <p className="dg-muted" style={{ fontSize: 'var(--fs-xs)', textAlign: 'center' }}>DingoGo Rideshare & Courier. Aboriginal-owned, Mparntwe (Alice Springs).</p>
+      <p className="dg-muted" style={{ fontSize: 'var(--fs-xs)', textAlign: 'center' }}>Version {appVersion()}</p>
       <Acknowledgement style={{ textAlign: 'center', fontSize: 'var(--fs-xs)' }} />
     </Page>
   );
@@ -420,7 +421,8 @@ function Privacy() {
   return (
     <Page title="Privacy" back="/account">
       <div className="prose">
-        <p>We use your location only to arrange and track trips, and keep trip records for 7 years because the tax office requires it. We don't sell your data or share it with café partners. They only see a voucher code.</p>
+        <p>We use your location only to arrange and track trips, and keep trip records for 5 years because the tax office requires it. We don't sell your data or share it with café partners. They only see a voucher code.</p>
+        <p><a href={`${WEB_URL}/legal/privacy`} target="_blank" rel="noopener noreferrer">Read the privacy policy</a></p>
       </div>
       <button className="dg-btn dg-btn--ghost dg-btn--block" onClick={download}>Download my data</button>
       <button className="dg-btn dg-btn--danger dg-btn--block" style={{ marginTop: 12 }} onClick={() => setOpen(true)}>Delete my account</button>

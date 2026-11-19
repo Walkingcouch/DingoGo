@@ -27,12 +27,16 @@
     "test": "npm test -w services/api",
     "build:vercel": "node scripts/build-vercel.mjs",
     "smoke": "node scripts/smoke-e2e.mjs",
-    "i18n:review": "node scripts/i18n-review.mjs"
+    "i18n:review": "node scripts/i18n-review.mjs",
+    "store:screenshots": "node scripts/store-screenshots.mjs",
+    "android:assets": "node scripts/android-assets.mjs"
   },
   "engines": {
     "node": "22.x"
   },
   "devDependencies": {
-    "axe-core": "^4.14.1"
+    "axe-core": "^4.14.1",
+    "pngjs": "^7.0.0",
+    "yaml": "^2.9.1"
   }
 }

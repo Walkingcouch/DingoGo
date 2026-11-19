@@ -1,25 +1,45 @@
 name: Android apps
+# Two jobs (Round 21; release steps in docs/OPERATIONS.md, "Google Play releases"):
+#  - build:  test APKs on every push to the apps, signed with the shared TEST key (android-signing/), published to the
+#            "android-latest" pre-release so testers can install over the last one.
+#  - bundle: Google Play AABs, only when run by hand (Actions > Android apps > Run workflow, "Build Google Play bundles"),
+#            signed with the private upload key from GitHub Actions secrets. Never uses the test key.
 on:
   push:
     branches: [dingogo, main]
     paths: ['apps/rider/**', 'apps/driver/**', 'packages/shared/**', 'android-signing/**', '.github/workflows/android.yml']
   workflow_dispatch:
-permissions:
-  contents: write
+    inputs:
+      bundle:
+        description: Build Google Play bundles (AAB) signed with the upload key
+        type: boolean
+        default: false
+      play_track:
+        description: Also upload the bundles to this Google Play track (needs PLAY_SERVICE_ACCOUNT_JSON)
+        type: choice
+        options: [none, internal]
+        default: none
 concurrency:
-  group: android-${{ github.ref }}
+  group: android-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: true
+env:
+  VITE_API_URL: https://dingogo-steel.vercel.app/api
+  VITE_WEB_URL: https://dingogo-steel.vercel.app
+  VITE_REALTIME: 'off'
+  # Version code: the run number of this workflow (rises for test and Play builds alike); version name: apps/<app>/package.json.
+  ANDROID_VERSION_CODE: ${{ github.run_number }}
 jobs:
   build:
+    if: github.event_name == 'push' || !inputs.bundle
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     strategy:
       fail-fast: false
       matrix:
         app: [rider, driver]
     env:
-      VITE_API_URL: https://dingogo-steel.vercel.app/api
-      VITE_WEB_URL: https://dingogo-steel.vercel.app
-      VITE_REALTIME: 'off'
+      ANDROID_VERSION_SUFFIX: -test.${{ github.run_number }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -33,7 +53,7 @@ jobs:
       - run: npm ci --include=dev
       - name: Build web bundle
         working-directory: apps/${{ matrix.app }}
-        run: npx vite build
+        run: VITE_APP_VERSION="$(node -p "require('./package.json').version")$ANDROID_VERSION_SUFFIX ($ANDROID_VERSION_CODE)" npx vite build
       - name: Sync into Android project
         working-directory: apps/${{ matrix.app }}
         run: npx cap sync android
@@ -52,3 +72,104 @@ jobs:
         run: |
           gh release view android-latest >/dev/null 2>&1 || gh release create android-latest --prerelease --target ${{ github.sha }} --title "DingoGo Android test builds" --notes "Android test builds of the DingoGo rider and driver apps. Download the APK on your phone, open it and allow installs from your browser. New builds install over old ones."
           gh release upload android-latest dingogo-${{ matrix.app }}.apk --clobber
+
+  bundle:
+    if: github.event_name == 'workflow_dispatch' && inputs.bundle
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    environment: google-play
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - app: rider
+            package: au.com.dingogo.rider
+          - app: driver
+            package: au.com.dingogo.driver
+    env:
+      ANDROID_VERSION_SUFFIX: ''
+      DINGOGO_REQUIRE_UPLOAD_KEY: 'true'
+      # The public test key's certificate (android-signing/dingogo-test.keystore): a Play bundle signed with it is refused.
+      TEST_KEY_SHA256: C5:C8:FE:E0:A1:7C:DF:1D:4B:00:53:CF:0F:0C:33:B4:20:BF:6F:7F:34:85:99:C3:BB:E9:CA:64:6A:1C:E7:20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - name: Check the upload key secrets
+        env:
+          ANDROID_UPLOAD_KEYSTORE_BASE64: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_BASE64 }}
+          ANDROID_UPLOAD_STORE_PASSWORD: ${{ secrets.ANDROID_UPLOAD_STORE_PASSWORD }}
+          ANDROID_UPLOAD_KEY_ALIAS: ${{ secrets.ANDROID_UPLOAD_KEY_ALIAS }}
+        run: |
+          missing=""
+          for k in ANDROID_UPLOAD_KEYSTORE_BASE64 ANDROID_UPLOAD_STORE_PASSWORD ANDROID_UPLOAD_KEY_ALIAS; do
+            [ -n "${!k}" ] || missing="$missing $k"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::Missing GitHub Actions secrets:$missing (see docs/OPERATIONS.md, Google Play releases)"
+            exit 1
+          fi
+      - name: Decode the upload key
+        env:
+          ANDROID_UPLOAD_KEYSTORE_BASE64: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_BASE64 }}
+        run: echo "$ANDROID_UPLOAD_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/upload.jks"
+      - name: Firebase config for push (optional)
+        env:
+          GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
+        run: |
+          if [ -n "$GOOGLE_SERVICES_JSON" ]; then
+            echo "$GOOGLE_SERVICES_JSON" > apps/${{ matrix.app }}/android/app/google-services.json
+            echo "VITE_FCM_ENABLED=true" >> "$GITHUB_ENV"
+          else
+            echo "::warning::GOOGLE_SERVICES_JSON is not set: this bundle has no native push (trip offers only arrive while the app is open)."
+          fi
+      - run: npm ci --include=dev
+      - name: Build web bundle
+        working-directory: apps/${{ matrix.app }}
+        run: VITE_APP_VERSION="$(node -p "require('./package.json').version") ($ANDROID_VERSION_CODE)" npx vite build
+      - name: Sync into Android project
+        working-directory: apps/${{ matrix.app }}
+        run: npx cap sync android
+      - name: Gradle build (release AAB, signed with the upload key)
+        working-directory: apps/${{ matrix.app }}/android
+        env:
+          DINGOGO_UPLOAD_STORE_FILE: ${{ runner.temp }}/upload.jks
+          DINGOGO_UPLOAD_STORE_PASSWORD: ${{ secrets.ANDROID_UPLOAD_STORE_PASSWORD }}
+          DINGOGO_UPLOAD_KEY_ALIAS: ${{ secrets.ANDROID_UPLOAD_KEY_ALIAS }}
+          DINGOGO_UPLOAD_KEY_PASSWORD: ${{ secrets.ANDROID_UPLOAD_KEY_PASSWORD }}
+        run: chmod +x gradlew && ./gradlew --no-daemon bundleRelease
+      - name: Check the signature (upload key, never the test key)
+        run: |
+          aab=apps/${{ matrix.app }}/android/app/build/outputs/bundle/release/app-release.aab
+          jarsigner -verify "$aab" >/dev/null
+          sha=$(keytool -printcert -jarfile "$aab" | awk '/SHA256:/ {print $2; exit}')
+          echo "Signed with certificate SHA-256 $sha"
+          if [ -z "$sha" ] || [ "$sha" = "$TEST_KEY_SHA256" ]; then
+            echo "::error::The bundle is unsigned or signed with the public test key."
+            exit 1
+          fi
+          cp "$aab" dingogo-${{ matrix.app }}-${{ github.run_number }}.aab
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dingogo-${{ matrix.app }}-aab
+          path: dingogo-${{ matrix.app }}-${{ github.run_number }}.aab
+          retention-days: 30
+      - name: Upload to Google Play (${{ inputs.play_track }} track, as a draft)
+        if: inputs.play_track != 'none'
+        uses: r0adkll/upload-google-play@v1.1.5
+        with:
+          serviceAccountJsonPlainText: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+          packageName: ${{ matrix.package }}
+          releaseFiles: dingogo-${{ matrix.app }}-${{ github.run_number }}.aab
+          track: ${{ inputs.play_track }}
+          status: draft
+      - name: Remove the upload key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/upload.jks"

@@ -9,6 +9,7 @@ export default defineConfig({
     alias: [
       { find: '@dingogo/shared/brand.css', replacement: `${shared}/src/brand.css` },
       { find: '@dingogo/shared/map', replacement: `${shared}/src/LazyMap.tsx` },
+      { find: '@dingogo/shared/track', replacement: `${shared}/src/SharedTrack.tsx` },
       { find: /^@dingogo\/shared\/assets\/(.*)$/, replacement: `${shared}/assets/$1` },
       { find: '@dingogo/shared', replacement: `${shared}/src/index.ts` },
     ],

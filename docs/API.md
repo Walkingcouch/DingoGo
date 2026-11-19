@@ -1188,3 +1188,26 @@ the old weekly lease run and charging logs keep working, the car form drops the 
 
 Vehicles (`PATCH /admin/vehicles/:id`, `POST /admin/vehicles`) also take `purchase_price_cents`, `purchase_date`,
 `finance_weekly_cents` and `spare`. Messages: `fleet_arrears`, `fleet_bought_out`, `fleet_car_off_road`, `fleet_car_back`.
+
+## App store readiness (Round 21)
+
+**Android App Links.** `GET /.well-known/assetlinks.json` (also at `/api/.well-known/assetlinks.json`; Vercel routes the root path to the
+API) → the Digital Asset Links statement for the rider app (`ANDROID_RIDER_PACKAGE`, default `au.com.dingogo.rider`) with the SHA-256
+certificate fingerprints in `ANDROID_APP_LINK_CERTS` (comma separated, colons optional, any case). Unset → `[]` (links open in the
+browser). The public test key's fingerprint and anything that isn't a SHA-256 fingerprint are dropped (logged once). `Cache-Control:
+public, max-age=3600`, never a redirect. The rider app claims `https://<site>/track/*` (shared trips open in the app without signing in)
+and `/rider*` (website "Book this ride", fare and invite links, handed off as in a browser).
+
+**Permission explanations (Google Play prominent disclosure).** `POST /me/disclosures { app: rider|driver, kind: location|
+background_location|notifications|camera, version, accepted, platform?: android|ios|web (default web), app_version? }` → `{ ok,
+recorded: true, disclosure }`; 60 per day per account. `GET /me/disclosures` → `{ ready, items }` (newest first, own answers only).
+Included in `GET /me/export` as `permission_disclosures`. Before migration 025: `POST` answers `{ ok: true, recorded: false }` (the
+answer stays on the phone), `GET` → `{ ready: false, items: [] }`, export `[]`.
+
+**Account deletion without the app.** Website page `/delete-account`:
+- Sign in with `POST /auth/otp/verify { phone, code, app: 'account' }`: existing accounts only (no account → 404 `no_account`, nothing
+  created), no role change (a rider stays a rider), then `DELETE /me` with that token (same rules and records as the app).
+- `POST /public/deletion-requests { name, phone, email?, role?: rider|driver|both, details? }` for people who can't sign in → `{ ok, ref,
+  due_days: 30 }`. Recorded in the privacy request register (kind `deletion`, channel `website`, status `open`, 30-day due date),
+  linked to the account when the number matches one; the answer is the same either way. Shares the website forms' per-IP limit
+  (`RATE_PUBLIC_FORM_PER_IP`). Privacy request channels now include `website`.

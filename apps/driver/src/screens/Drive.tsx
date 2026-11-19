@@ -7,7 +7,7 @@ import { Sheet } from '../Sheet';
 import { ExpiryBanner } from './Expiry';
 
 export function Drive() {
-  const { me, online, setOnline, battery, setBattery, pos, simulated, setSimulated, geoDenied, reloadMe } = useDriver();
+  const { me, online, setOnline, battery, setBattery, pos, simulated, setSimulated, geoDenied, reloadMe, locationOk, setLocationAsk } = useDriver();
   const [askBattery, setAskBattery] = useState(false);
   const [pickPlace, setPickPlace] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -64,6 +64,7 @@ export function Drive() {
           <div className="inline-notice">
             <Icon name="pin" size={20} />
             <span>Location is off</span>
+            {!locationOk && <button className="link-btn" onClick={() => setLocationAsk(true)}>Turn on location</button>}
             <button className="link-btn" onClick={() => setPickPlace(true)}>Set location</button>
           </div>
         )}
@@ -174,6 +175,7 @@ function PhotoCheckSheet({ rejected, onClose, onDone }: { rejected: boolean; onC
       <p className="dg-muted" style={{ marginTop: 0 }}>
         {rejected ? 'Your last photo wasn\'t accepted. ' : ''}Take a photo of your face so riders know it's you driving today. Good light, no hat or sunglasses.
       </p>
+      <p className="dg-muted" style={{ fontSize: 'var(--fs-sm)' }}>Your phone may ask to use the camera. DingoGo uses it only for this photo, which only DingoGo staff see.</p>
       <label className="dg-btn btn-xl dg-btn--block" style={{ cursor: 'pointer' }} aria-disabled={busy}>
         <Icon name="camera" size={22} />{busy ? 'Sending…' : 'Take photo'}
         <input type="file" accept="image/*" capture="user" style={{ position: 'absolute', width: 1, height: 1, opacity: 0 }} disabled={busy}

@@ -21,3 +21,7 @@ export { speak, canSpeak } from './speak';
 export * from './handoff';
 export { EmergencyCard, TrustedContacts, SafetyReportForm, MyReports, Restricted } from './Safety';
 export { cleanVin, decodeVin, vinYear } from './vin';
+export { DISCLOSURES, disclosureAnswer, answerDisclosure, appPlatform, appVersion } from './permissions';
+export type { Disclosure, DisclosureKind, DisclosureAnswer } from './permissions';
+export { PermissionPrimer } from './PermissionPrimer';
+export { onAppLink, appLinkRoute } from './applinks';

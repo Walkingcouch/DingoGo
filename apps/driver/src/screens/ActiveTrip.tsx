@@ -262,6 +262,7 @@ function ProofOfDelivery({ parcel, busy, onSubmit, returning }: { parcel: any; b
       {mode === 'photo' && (
         <div className="dg-field">
           <span>Photo of the parcel where you left it</span>
+          <span className="dg-muted" style={{ fontSize: 'var(--fs-sm)' }}>Your phone may ask to use the camera. The photo goes only to the sender, the recipient and DingoGo.</span>
           <input className="dg-input" type="file" accept="image/*" capture="environment" onChange={(e) => onPhoto(e.target.files?.[0])} />
           {uploading && <span className="dg-muted">Uploading…</span>}
           {photo && <span className="dg-chip dg-chip--green">Photo saved</span>}

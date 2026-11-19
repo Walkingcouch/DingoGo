@@ -39,6 +39,12 @@ export const config = {
     partnerCodeFailsPerUser: Number(env.RATE_PARTNER_CODE_FAILS ?? 20),
   },
   publicWebUrl: env.PUBLIC_WEB_URL ?? 'http://localhost:5173',
+  /** Round 21: Android App Links. SHA-256 certificate fingerprints of the rider app's signing keys (Google Play's app signing key,
+   *  and the upload key for internal testing), comma separated. Unset = no app claims the website's links (they open in the browser). */
+  android: {
+    appLinkCerts: env.ANDROID_APP_LINK_CERTS ?? '',
+    riderPackage: env.ANDROID_RIDER_PACKAGE ?? 'au.com.dingogo.rider',
+  },
   /** Card payments. Empty secret key = built-in mock provider (no network). */
   stripe: {
     secretKey: env.STRIPE_SECRET_KEY ?? '',                 // sk_test_… / sk_live_… (server only)

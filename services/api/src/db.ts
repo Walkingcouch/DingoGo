@@ -10,14 +10,21 @@ pg.types.setTypeParser(1082, (v) => v);
 // Round 18: pool size, idle close and a per-query limit from config.perf (DB_POOL_MAX, DB_IDLE_TIMEOUT_MS, DB_QUERY_TIMEOUT_MS).
 // No startup parameters are sent (the Supabase transaction pooler may refuse them); the server-side statement limit is set per
 // transaction in tx() instead.
-const makePool = (url: string) => new pg.Pool({
-  connectionString: url,
-  max: Math.max(1, config.perf.dbPoolMax),
-  idleTimeoutMillis: config.perf.dbIdleMs,
-  connectionTimeoutMillis: 8000,
-  ...(config.perf.dbQueryTimeoutMs > 0 ? { query_timeout: config.perf.dbQueryTimeoutMs } : {}),
-  ssl: /sslmode=require|supabase\.(co|com)/.test(url) ? { rejectUnauthorized: false } : undefined,
-});
+const makePool = (url: string) => {
+  const p = new pg.Pool({
+    connectionString: url,
+    max: Math.max(1, config.perf.dbPoolMax),
+    idleTimeoutMillis: config.perf.dbIdleMs,
+    connectionTimeoutMillis: 8000,
+    ...(config.perf.dbQueryTimeoutMs > 0 ? { query_timeout: config.perf.dbQueryTimeoutMs } : {}),
+    ssl: /sslmode=require|supabase\.(co|com)/.test(url) ? { rejectUnauthorized: false } : undefined,
+  });
+  // Round 21: an idle connection closed by the server (pooler restart, failover, "terminating connection due to administrator
+  // command") makes the pool emit 'error'. Unhandled, that crashed the whole process; now it is logged and the pool opens a new
+  // connection on the next query.
+  p.on('error', (e) => { void import('./lib/log.js').then((m) => m.logError('database idle connection', e)).catch(() => undefined); });
+  return p;
+};
 
 /** Live binding: importers always see the current pool (swapped by ensureDb if the first URL is unreachable). */
 export let pool = makePool(config.databaseUrl);

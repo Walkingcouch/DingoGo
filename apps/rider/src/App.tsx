@@ -1,7 +1,7 @@
 import { Suspense, useCallback, useEffect, useState } from 'react';
-import { NavLink, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
-import { Icon, Login, readHandoff, takeHandoff, get, getToken, initAuth, setToken, connectRealtime, useOnline, disablePush, refreshPush, ServiceNotice, lazyWithRetry } from '@dingogo/shared';
-import { MeCtx, type Me, ACTIVE } from './ctx';
+import { Link, NavLink, Navigate, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom';
+import { Icon, Login, readHandoff, takeHandoff, get, getToken, initAuth, setToken, connectRealtime, useOnline, disablePush, refreshPush, ServiceNotice, lazyWithRetry, onAppLink } from '@dingogo/shared';
+import { MeCtx, type Me, ACTIVE, WEB_URL } from './ctx';
 import { RideScreen } from './screens/Ride';
 import { TripScreen, clearCachedTrip, readCachedTrip } from './screens/Trip';
 import { TripsScreen } from './screens/Trips';
@@ -10,6 +10,8 @@ import { AccountScreen } from './screens/Account';
 const RewardsScreen = lazyWithRetry(() => import('./screens/Rewards').then((m) => ({ default: m.RewardsScreen })));
 const BusinessScreen = lazyWithRetry(() => import('./screens/Business').then((m) => ({ default: m.BusinessScreen })));
 const ClientsScreen = lazyWithRetry(() => import('./screens/Clients').then((m) => ({ default: m.ClientsScreen })));
+// Round 21: a shared trip opened from a text message (Android App Links), no sign-in needed. Map code loads only here.
+const SharedTrack = lazyWithRetry(() => import('@dingogo/shared/track').then((m) => ({ default: m.SharedTrack })));
 import { Toast, toast } from './components/Toast';
 import { Announcer } from './components/Announcer';
 import { Spinner } from './components/ui';
@@ -37,6 +39,13 @@ export function App() {
     setToken(null); clearCachedTrip(); setMe(null); setAuthed(false); nav('/');
   }, [nav]);
 
+  // Round 21: a website link that opened the app (share-trip or "Book this ride"): go there. Booking links restart the app at
+  // that address so the usual hand-off (main.tsx) fills in the trip, as it does in a browser.
+  useEffect(() => onAppLink((route) => {
+    if (route.startsWith('/track/')) nav(route);
+    else window.location.assign(route);
+  }), [nav]);
+
   useEffect(() => {
     if (!authed) return;
     void reload();
@@ -56,6 +65,10 @@ export function App() {
     });
     return () => rt.close();
   }, [authed]); // eslint-disable-line
+
+  if (loc.pathname.startsWith('/track/')) {
+    return <Suspense fallback={<div className="page"><Spinner /></div>}><Routes><Route path="/track/:token" element={<TrackScreen />} /></Routes></Suspense>;
+  }
 
   if (!authed) {
     return <><OfflineBar /><Login title="Rides and deliveries for Mparntwe" subtitle="Aboriginal-owned and local to Alice Springs. Going electric." askName askReferral
@@ -98,6 +111,15 @@ export function App() {
       </div>
     </MeCtx.Provider>
   );
+}
+
+/** A shared trip (someone's share link): the same live view as the website, with a way into the app. */
+function TrackScreen() {
+  const { token = '' } = useParams();
+  return <SharedTrack token={token} homeHref="/" safetyHref={`${WEB_URL}/safety`}
+    renderLink={(href, label, className) => (href.startsWith('http')
+      ? <a href={href} className={className} target="_blank" rel="noopener noreferrer">{label}</a>
+      : <Link to={href} className={className}>{label}</Link>)} />;
 }
 
 /** Shown at the top of every screen while there's no signal. Announced once to screen readers. */

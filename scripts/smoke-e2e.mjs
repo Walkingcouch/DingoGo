@@ -19,53 +19,15 @@
  * Env: DATABASE_URL (required), SMOKE_PORT (4317), PLAYWRIGHT_PATH, HEADED=1, SMOKE_SHOTS=dir (screenshot per step).
  * Exits 1 on the first failed step (with a screenshot in SMOKE_SHOTS or the scratch dir).
  */
-import { createRequire } from 'node:module';
 import fs from 'node:fs';
-import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { loadChromium, startHarness } from './lib/vercel-harness.mjs';
 
-const require = createRequire(import.meta.url);
-const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
-const out = path.join(root, '.vercel/output');
 const PORT = Number(process.env.SMOKE_PORT ?? 4317);
-const BASE = `http://127.0.0.1:${PORT}`;
 const SHOTS = process.env.SMOKE_SHOTS || fs.mkdtempSync(path.join(os.tmpdir(), 'dingogo-smoke-'));
-if (!process.env.DATABASE_URL) { console.error('Set DATABASE_URL to a demo-seeded database (npm run db:reset -w services/api).'); process.exit(2); }
-if (!fs.existsSync(path.join(out, 'functions/api.func/index.mjs'))) { console.error('Build first: node scripts/build-vercel.mjs'); process.exit(2); }
-
-let chromium;
-for (const p of [process.env.PLAYWRIGHT_PATH, 'playwright', '/opt/npm-tools/node_modules/playwright'].filter(Boolean)) {
-  try { ({ chromium } = require(p)); break; } catch { /* try the next */ }
-}
-if (!chromium) { console.error('Playwright not found. Install it (npm i -g playwright) or set PLAYWRIGHT_PATH.'); process.exit(2); }
-
-// ── The API exactly as bundled for Vercel, in serverless mode (dispatch on requests) ──
-Object.assign(process.env, {
-  SERVERLESS: 'true', OTP_DEV_MODE: 'true', NODE_ENV: 'development', LOG_LEVEL: process.env.LOG_LEVEL ?? 'warn', LOG_SMS: 'false',
-  AUTO_MIGRATE: 'false', JWT_SECRET: process.env.JWT_SECRET ?? 'smoke-test-secret-not-for-production', PUBLIC_WEB_URL: BASE,
-});
-const { default: api } = await import(pathToFileURL(path.join(out, 'functions/api.func/index.mjs')).href);
-
-// ── Static files with the same fallbacks as .vercel/output/config.json ──
-const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png',
-  '.webp': 'image/webp', '.jpg': 'image/jpeg', '.json': 'application/json', '.webmanifest': 'application/manifest+json', '.ico': 'image/x-icon',
-  '.woff2': 'font/woff2', '.txt': 'text/plain', '.xml': 'application/xml' };
-const staticDir = path.join(out, 'static');
-const fileAt = (p) => { const f = path.join(staticDir, p); return f.startsWith(staticDir) && fs.existsSync(f) && fs.statSync(f).isFile() ? f : null; };
-const server = http.createServer((req, res) => {
-  const u = new URL(req.url ?? '/', BASE);
-  if (u.pathname === '/api' || u.pathname.startsWith('/api/')) return void api(req, res);
-  const app = u.pathname.match(/^\/(rider|driver|admin|partner|roof)(\/|$)/);
-  if (app && !app[2]) { res.writeHead(308, { location: `/${app[1]}/` }); return res.end(); }
-  const f = fileAt(decodeURIComponent(u.pathname)) ?? fileAt(path.join(decodeURIComponent(u.pathname), 'index.html'))
-    ?? (app ? fileAt(`/${app[1]}/index.html`) : fileAt('/app.html'));
-  if (!f) { res.writeHead(404); return res.end(); }
-  res.writeHead(200, { 'content-type': TYPES[path.extname(f)] ?? 'application/octet-stream' });
-  fs.createReadStream(f).pipe(res);
-});
-await new Promise((r) => server.listen(PORT, '127.0.0.1', r));
+const chromium = loadChromium();
+const { BASE, close: closeServer } = await startHarness({ port: PORT });
 
 const browser = await chromium.launch({ headless: !process.env.HEADED });
 const NEAR_TODD = { latitude: -23.6990, longitude: 133.8815 };
@@ -106,6 +68,8 @@ try {
 
   await run('driver signs in and goes online', async () => {
     await signIn(driver, '0400 000 011');
+    // Round 21: the location explanation (Google Play prominent disclosure) comes before the phone asks.
+    await driver.getByRole('dialog', { name: 'Your location while you drive' }).getByRole('button', { name: 'Continue' }).click();
     await driver.getByRole('button', { name: 'Go online' }).click();
     // Electric car: the battery check comes first.
     const confirm = driver.getByRole('dialog').getByRole('button', { name: 'Go online' });
@@ -202,6 +166,6 @@ try {
   if (problems.length) console.error(`  page errors / 5xx:\n    ${problems.join('\n    ')}`);
 } finally {
   await browser.close();
-  server.close();
+  closeServer();
   setTimeout(() => process.exit(exit), 200).unref();
 }

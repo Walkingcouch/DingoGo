@@ -47,6 +47,7 @@ export const PAGES: Page[] = [
   { path: '/safety', title: 'Safety', description: 'How DingoGo keeps riders, recipients and drivers safe: vetted drivers, trip PINs, live trip sharing, an emergency button and route checks.', priority: 0.6, changefreq: 'monthly' },
   { path: '/about', title: 'About', description: 'DingoGo is an Aboriginal-owned, local rideshare and courier business in Alice Springs, going electric. Owned by Johnathan Ah Chee and Micah Bartlett.', priority: 0.6, changefreq: 'monthly' },
   { path: '/help', title: 'Help & FAQ', description: 'Answers to common questions about DingoGo rides, parcels, payments, points and accounts.', faq: 'general', priority: 0.7, changefreq: 'monthly' },
+  { path: '/delete-account', title: 'Delete your account', description: 'Delete your DingoGo rider or driver account and personal information, with or without the app, and what we have to keep.', priority: 0.3, changefreq: 'yearly' },
   { path: '/legal/privacy', title: 'Privacy policy', description: 'How DingoGo collects, uses and protects personal information.', priority: 0.3, changefreq: 'yearly' },
   { path: '/legal/terms', title: 'Terms of use', description: 'The terms for using DingoGo rides, deliveries and the app.', priority: 0.3, changefreq: 'yearly' },
   { path: '/legal/cancellations', title: 'Cancellations and refunds', description: 'When cancellation fees apply and how to ask for a refund.', priority: 0.3, changefreq: 'yearly' },

@@ -30,7 +30,9 @@ const appEnv = { VITE_API_URL: process.env.VITE_API_URL ?? '/api', VITE_REALTIME
 for (const a of apps) {
   const dest = path.join(out, 'static', a.base);
   console.log(`\n▶ building ${a.dir} → ${a.base}`);
-  sh(`npx vite build --base ${a.base} --outDir ${dest} --emptyOutDir`, path.join(root, 'apps', a.dir), appEnv);
+  // Round 21: the version shown in the apps (Account / Profile), from the app's package.json and the deployed commit.
+  const version = `${JSON.parse(fs.readFileSync(path.join(root, 'apps', a.dir, 'package.json'), 'utf8')).version ?? '0.0.0'}${process.env.VERCEL_GIT_COMMIT_SHA ? ` (${process.env.VERCEL_GIT_COMMIT_SHA.slice(0, 7)})` : ''}`;
+  sh(`npx vite build --base ${a.base} --outDir ${dest} --emptyOutDir`, path.join(root, 'apps', a.dir), { ...appEnv, VITE_APP_VERSION: process.env.VITE_APP_VERSION ?? version });
 }
 
 console.log('\n▶ bundling API');
@@ -64,6 +66,8 @@ fs.writeFileSync(path.join(out, 'config.json'), JSON.stringify({
     { src: '^/(?!api(?:/|$)).*$', headers: staticHeaders, continue: true },
     { src: '^/(rider|driver|admin|partner|roof)$', status: 308, headers: { Location: '/$1/' } },
     { src: '^/api/?(.*)$', dest: '/api?__path=$1' },
+    // Round 21: Android App Links statement (the rider app opens share-trip and booking links), answered by the API from ANDROID_APP_LINK_CERTS.
+    { src: '^/\\.well-known/assetlinks\\.json$', dest: '/api?__path=.well-known/assetlinks.json' },
     { src: '^/(sitemap\\.xml|robots\\.txt)$', headers: { 'Cache-Control': 'public, max-age=3600' }, continue: true },
     { src: '^/assets/(.*)$', headers: { 'Cache-Control': 'public, max-age=31536000, immutable' }, continue: true },
     ...prerendered.map((p) => ({ src: `^${escRe(p)}/?$`, dest: `${p}/index.html` })),

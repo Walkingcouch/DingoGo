@@ -1,0 +1,40 @@
+{
+  "_about": "Round 21: Google Play store listing copy (en-AU). Limits checked by services/api/test/store.test.ts: title 30, short 80, full 4000, release notes 500. Screenshots: node scripts/store-screenshots.mjs. Never claim an all-electric fleet.",
+  "contact": { "website": "https://dingogo-steel.vercel.app", "privacy_policy": "https://dingogo-steel.vercel.app/legal/privacy", "account_deletion": "https://dingogo-steel.vercel.app/delete-account" },
+  "apps": {
+    "rider": {
+      "package": "au.com.dingogo.rider",
+      "category": "Maps & Navigation",
+      "tags": ["Taxi & rideshare", "Delivery"],
+      "content_rating_notes": "No user-generated content beyond trip chat between rider and driver during a trip; no ads; no gambling.",
+      "title": "DingoGo: Rides & Parcels",
+      "short": "Local rides and same-day parcels in Alice Springs. Fixed price before you book.",
+      "full": "DingoGo is an Aboriginal-owned rideshare and courier service in Alice Springs (Mparntwe), run by locals and going electric.\n\nRIDES\n- See the fixed price before you book, with GST and the NT levy included.\n- Book now or for later: airport, hospital, shops, work or home.\n- Electric and hybrid cars are offered first when they're close by.\n- Pay by card, DingoGo credit or a business account.\n- Share your trip with family so they can follow the car live.\n- Trip PIN so you know you're in the right car, and an emergency button.\n\nPARCELS\n- Same-day delivery across town, with photo or signature on delivery.\n- The recipient gets a tracking link and can leave a note for the driver.\n\nMADE FOR EVERYONE\n- Simple mode with big buttons, pictures and read-aloud.\n- Wheelchair-friendly cars and assistance animals welcome.\n- Plain English, with Arrernte, Warlpiri, Pitjantjatjara and Luritja words where we can.\n\nREWARDS\n- Earn points on every trip and use them on fares.\n- Gift vouchers and café rewards with local businesses.\n\nDingoGo is local: drivers keep 75% of the fare and 100% of tips. Our fleet is going electric, one car at a time.\n\nQuestions? Visit our website or call us. Privacy policy: https://dingogo-steel.vercel.app/legal/privacy",
+      "release_notes": "First release on Google Play: book rides and parcels in Alice Springs, track your trip live, share it with family, and earn points.",
+      "screenshots": [
+        { "file": "rider-1-book.png", "caption": "Fixed price before you book" },
+        { "file": "rider-2-quote.png", "caption": "Choose your ride" },
+        { "file": "rider-3-trip.png", "caption": "Your driver and trip PIN" },
+        { "file": "rider-4-rewards.png", "caption": "Points on every trip" },
+        { "file": "rider-5-account.png", "caption": "Safety, privacy and settings" }
+      ]
+    },
+    "driver": {
+      "package": "au.com.dingogo.driver",
+      "category": "Maps & Navigation",
+      "tags": ["Taxi & rideshare"],
+      "content_rating_notes": "For approved DingoGo drivers. Trip chat with riders during a trip; no ads.",
+      "title": "DingoGo Driver",
+      "short": "Drive with DingoGo in Alice Springs. Keep 75% of every fare and all your tips.",
+      "full": "DingoGo Driver is the app for approved drivers with DingoGo, the Aboriginal-owned rideshare and courier service in Alice Springs (Mparntwe).\n\nEARN\n- Keep 75% of every fare and 100% of tips.\n- See what you'll earn before you accept a trip.\n- Weekly earnings, GST figures for your BAS and tax invoices in the app.\n\nDRIVE\n- Trip offers near you, with pickup, drop-off and pay on one screen.\n- Open the route in Google Maps or Waze.\n- Rider PIN at pickup, emergency help and trusted contacts.\n- Keeps working with poor signal: your trip updates wait on your phone and send when signal returns.\n\nYOUR CAR AND PAPERS\n- Upload your licence, accreditation and car papers, with reminders before they expire.\n- Own car (any fuel, within the NT age limit) or a DingoGo fleet car.\n- Charging log for electric cars.\n\nLOOKING AFTER YOU\n- Fatigue breaks, leave for Sorry Business and family, and a sun-friendly high-contrast theme.\n\nLocation: DingoGo Driver uses your location while the app is open and you're online or on a trip, to offer you nearby trips and show your rider where you are. It explains this before your phone asks.\n\nTo drive, apply on our website first. Privacy policy: https://dingogo-steel.vercel.app/legal/privacy",
+      "release_notes": "First release on Google Play: trip offers, navigation, earnings and GST, car papers and safety tools for DingoGo drivers.",
+      "screenshots": [
+        { "file": "driver-1-online.png", "caption": "Go online when you're ready" },
+        { "file": "driver-2-offer.png", "caption": "See your pay before you accept" },
+        { "file": "driver-3-trip.png", "caption": "Pickup, PIN and route" },
+        { "file": "driver-4-earnings.png", "caption": "Earnings and GST for your BAS" },
+        { "file": "driver-5-profile.png", "caption": "Your car, papers and safety" }
+      ]
+    }
+  }
+}

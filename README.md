@@ -21,7 +21,7 @@ This repository is the whole platform: one API and database, five apps and the p
 | Website | https://dingogo-steel.vercel.app |
 | Rider / driver / admin / partner apps | `/rider`, `/driver`, `/admin`, `/partner` on the same domain |
 | API | `/api` (Vercel function, region syd1) → Supabase Postgres `dingogo` (ap-southeast-2) |
-| Android test builds | GitHub release `android-latest` (built by `.github/workflows/android.yml` on every push) |
+| Android test builds | GitHub release `android-latest` (built by `.github/workflows/android.yml` on every push); Google Play bundles by hand from the same workflow |
 
 Deploy = `node scripts/build-vercel.mjs` (Vercel runs it). Database changes go in `services/api/migrations/`; with `AUTO_MIGRATE=true` the API applies
 them at cold start (advisory-locked), or run `npm run db:migrate`. **New or lost database:** `npm run db:bootstrap` (migrations, RLS, production base
@@ -39,7 +39,7 @@ npm install
 npm run db:setup                                   # migrations + demo data (local databases only)
 npm run dev:api                                    # http://localhost:4000
 npm run dev:web    # and/or dev:rider, dev:driver, dev:admin, dev:partner, dev:roof
-npm test                                           # 198 API, money, tax, loyalty, tours, fleet and website tests (needs a throwaway DB: they reset it, and create/drop scratch databases)
+npm test                                           # 211 API, money, tax, loyalty, tours, fleet, website and store-readiness tests (needs a throwaway DB: they reset it, and create/drop scratch databases)
 node scripts/build-vercel.mjs && npm run db:reset -w services/api && npm run smoke   # browser smoke test: rider books, driver completes, admin approves a car (built apps + serverless API; Playwright)
 node scripts/a11y-check.mjs                        # WCAG 2.2 AA check (axe-core + Playwright) of the website and rider app; needs api, web and rider running
 ```
@@ -96,6 +96,10 @@ npx cap add ios && npx cap sync ios && npx cap open ios               # needs a 
 ```
 
 They also install from the browser as web apps (PWA) — useful for testing before store approval.
+
+Google Play (Round 21): signed bundles from the Android workflow ("Build Google Play bundles", upload key in GitHub Actions
+secrets), store copy, Data safety draft and iOS notes in `docs/store/`, screenshots with `npm run store:screenshots`. Steps and the
+owner's checklist: `docs/OPERATIONS.md` section 11.
 
 ## Deploy
 
