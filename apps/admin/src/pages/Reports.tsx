@@ -3,7 +3,7 @@ import { dateTime, get, money, useLoad } from '@dingogo/shared';
 import { Link } from 'react-router-dom';
 import { PAYMENT_ROW_STATUS, label } from '../labels';
 import { Page } from '../ctx';
-import { ErrorMsg, Section, Table, downloadCsv, useRun } from '../ui';
+import { ErrorMsg, Section, Table, downloadCsv, downloadFile, useRun } from '../ui';
 
 const KIND: Record<string, string> = { topup: 'Credit top-ups', capture: 'Card fares', cash: 'Cash fares', invoice: 'Account invoices', subscription: 'DingoGo Pass', refund: 'Refunds', tip: 'Tips (passed to drivers)' };
 
@@ -40,6 +40,7 @@ export default function Reports() {
           { key: 'ref', label: 'Trip', render: (r) => (r.trip_id ? <Link to={`/trips?open=${r.trip_id}`}>{r.ref}</Link> : r.dispute_ref) }, { key: 'rider_name', label: 'Rider' },
           { key: 'status', label: 'Status', render: (r) => label(PAYMENT_ROW_STATUS, r.status) }, { key: 'created_at', label: 'Opened', render: (r) => dateTime(r.created_at) },
           { key: 'cents', label: 'Amount', num: true, render: (r) => money(r.cents) },
+          { key: 'evidence', label: 'Evidence', render: (r) => (r.trip_id ? <button className="dg-btn dg-btn--sm dg-btn--ghost" onClick={() => run(() => downloadFile(`/admin/trips/${r.trip_id}/evidence-pack?format=pdf`), "Evidence pack downloaded")}>Evidence pack</button> : '—') },
         ]} />
       </>)}
 

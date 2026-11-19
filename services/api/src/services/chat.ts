@@ -52,13 +52,22 @@ export function chatRole(t: any, me: { id: string; role: string }): ChatRole | n
   return null;
 }
 
-/** Open while the trip is on (driver assigned) and for 30 minutes after drop-off (left something in the car). Staff can always write. */
+/** Open while the trip is on (driver assigned) and for 30 minutes after drop-off (left something in the car), and while a lost
+ *  property case is open (`t.lost_contact_until`, Round 22). Staff can always write. */
 export function chatOpen(t: any, role: ChatRole | null, now = Date.now()) {
   if (!role) return false;
   if (role === 'dingogo') return true;
   if (!t.driver_id) return false;
   if (LIVE.has(t.status)) return true;
+  if (t.lost_contact_until && now < new Date(t.lost_contact_until).getTime()) return true;
   return t.status === 'completed' && !!t.completed_at && now - new Date(t.completed_at).getTime() < CHAT_AFTER_MIN * 60_000;
+}
+/** When the chat closes for the rider and driver (null while the trip is on). */
+function closesAt(t: any) {
+  if (t.status !== 'completed' || !t.completed_at) return null;
+  const after = new Date(t.completed_at).getTime() + CHAT_AFTER_MIN * 60_000;
+  const lost = t.lost_contact_until ? new Date(t.lost_contact_until).getTime() : 0;
+  return new Date(Math.max(after, lost)).toISOString();
 }
 
 function out(m: any, me: { id: string }) {
@@ -81,8 +90,9 @@ export async function listMessages(t: any, me: { id: string; role: string }, opt
     messages: rows.map((m) => out(m, me)),
     unread: opts.peek ? unreadRow?.n ?? 0 : 0,
     can_send: open,
-    closes_at: role !== 'dingogo' && t.status === 'completed' && t.completed_at ? new Date(new Date(t.completed_at).getTime() + CHAT_AFTER_MIN * 60_000).toISOString() : null,
-    quick_replies: open ? quickRepliesFor(role, t.kind) : [],
+    closes_at: role !== 'dingogo' ? closesAt(t) : null,
+    // Quick replies are for meeting the car; after the trip (lost property) people type.
+    quick_replies: open && LIVE.has(t.status) ? quickRepliesFor(role, t.kind) : [],
     role,
   };
 }
@@ -96,7 +106,7 @@ export async function postMessage(t: any, sender: { id: string; role: string; na
   input: { body?: string; quick?: string; client_id?: string; via?: 'app' | 'sms' }) {
   const role = chatRole(t, sender);
   if (!role) throw new ApiError(404, 'not_found', 'Trip not found');
-  if (!chatOpen(t, role)) throw conflict('chat_closed', `Messages are open while the trip is on and for ${CHAT_AFTER_MIN} minutes after drop-off.`);
+  if (!chatOpen(t, role)) throw conflict('chat_closed', `Messages are open while the trip is on, for ${CHAT_AFTER_MIN} minutes after drop-off, and while a lost property case is open.`);
   let text = '';
   let quick: string | null = null;
   if (input.quick) {
@@ -142,16 +152,20 @@ export async function postMessage(t: any, sender: { id: string; role: string; na
   return { message: msg, replayed: false };
 }
 
-/** The live trip (or one that ended under 30 minutes ago, for texts) behind a phone number calling or texting the relay. */
-export async function tripForPhone(phone: string, opts: { recent?: boolean } = {}) {
+/** The live trip (or one that ended under 30 minutes ago, for texts) behind a phone number calling or texting the relay.
+ *  Round 22: `lostDays` also finds a finished ride with an open lost property case opened within that many days (calls and texts). */
+export async function tripForPhone(phone: string, opts: { recent?: boolean; lostDays?: number } = {}) {
+  const lost = opts.lostDays && opts.lostDays > 0
+    ? `OR (t.status = 'completed' AND EXISTS (SELECT 1 FROM lost_items l WHERE l.trip_id = t.id AND l.status IN ('reported','found','collect','return_booked')
+                                            AND l.created_at > now() - make_interval(days => $4)))` : '';
   const t = await one(
     `SELECT t.*, ru.phone AS rider_phone, ru.name AS rider_name, du.phone AS driver_phone, du.name AS driver_name
      FROM trips t JOIN users ru ON ru.id = t.rider_id LEFT JOIN users du ON du.id = t.driver_id
      WHERE t.driver_id IS NOT NULL AND (ru.phone = $1 OR du.phone = $1)
        AND (t.status IN ('accepted','arrived','in_progress')
-            OR ($2 AND t.status = 'completed' AND t.completed_at > now() - make_interval(mins => $3)))
+            OR ($2 AND t.status = 'completed' AND t.completed_at > now() - make_interval(mins => $3)) ${lost})
      ORDER BY (t.status IN ('accepted','arrived','in_progress')) DESC, (du.phone = $1) DESC, coalesce(t.accepted_at, t.requested_at) DESC
-     LIMIT 1`, [phone, !!opts.recent, CHAT_AFTER_MIN]);
+     LIMIT 1`, lost ? [phone, !!opts.recent, CHAT_AFTER_MIN, opts.lostDays] : [phone, !!opts.recent, CHAT_AFTER_MIN]);
   if (!t) return null;
   const callerIs: 'rider' | 'driver' = t.driver_phone === phone ? 'driver' : 'rider';
   return { trip: t, callerIs, callerId: callerIs === 'rider' ? t.rider_id : t.driver_id, callerName: callerIs === 'rider' ? t.rider_name : t.driver_name,
@@ -160,7 +174,7 @@ export async function tripForPhone(phone: string, opts: { recent?: boolean } = {
 
 /** How the rider and driver can reach each other on this trip. */
 export function contactFor(t: any, role: ChatRole | null) {
-  const live = LIVE.has(t.status) && !!t.driver_id;
+  const live = (LIVE.has(t.status) || (!!t.lost_contact_until && Date.now() < new Date(t.lost_contact_until).getTime())) && !!t.driver_id;
   const relay = config.twilio.relayNumber && config.twilio.sid && config.twilio.token ? config.twilio.relayNumber : null;
   const call = live && relay && (role === 'rider' || role === 'driver') ? relay : null;
   return {

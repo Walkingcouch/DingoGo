@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link, Route, Routes, useNavigate, useSearchParams } from 'react-router-dom';
-import { Acknowledgement, ApiError, DraftNotice, Icon, appVersion, downloadFile, MyReports, NotifySettings, SafetyReportForm, TrustedContacts, ago, date, del, get, langInfo, money, normaliseLang, patch, post, put, t, useLoad, Ranges } from '@dingogo/shared';
+import { Acknowledgement, ApiError, DraftNotice, HelpCentre, Icon, MyTickets, NewTicket, TripHelp, appVersion, downloadFile, MyReports, NotifySettings, SafetyReportForm, TrustedContacts, ago, date, del, get, langInfo, money, normaliseLang, patch, post, put, t, useLoad, Ranges } from '@dingogo/shared';
+import type { HelpAction } from '@dingogo/shared';
 import { Dialog, Page, Spinner } from '../components/ui';
 import { CLIENT_KINDS, WEB_URL, useMe } from '../ctx';
 
@@ -306,56 +307,34 @@ function Inbox() {
   );
 }
 
-const CATS = [
-  ['lost_item', 'I left something in the car'], ['fare', 'A question about my fare'], ['safety', 'A safety concern'], ['driver', 'Feedback about my driver'],
-  ['parcel', 'A parcel problem'], ['accessibility', 'Accessibility'], ['assistance_animal_refused', 'A driver refused my assistance animal'],
-  ['app', 'The app isn’t working'], ['other', 'Something else'],
-] as const;
-
+/** Round 22: help centre (articles and search), "Get help with this trip", your messages with replies, and a message form. */
 function Help() {
   const [sp] = useSearchParams();
+  const nav = useNavigate();
   const tripId = sp.get('trip') ?? undefined;
-  const tickets = useLoad(() => get<{ tickets: any[] }>('/support'));
+  const startCat = sp.get('category') ?? undefined;
   const cfg = useLoad(() => get('/public/config'));
-  const startCat = sp.get('category');
-  const [f, setF] = useState({ category: CATS.some((c) => c[0] === startCat) ? startCat! : 'lost_item', subject: '', message: '' });
-  const [err, setErr] = useState<string | null>(null);
-  const [sent, setSent] = useState(false);
-  const sentRef = useRef<HTMLParagraphElement>(null);
-  async function send(e: React.FormEvent) {
-    e.preventDefault(); setErr(null);
-    try {
-      await post('/support', { ...f, subject: f.subject || CATS.find((c) => c[0] === f.category)![1], trip_id: tripId });
-      setSent(true); setF({ ...f, subject: '', message: '' }); await tickets.reload();
-      sentRef.current?.focus();
-    } catch (e2) { setErr(e2 instanceof ApiError ? e2.message : 'Could not send'); }
-  }
+  const [sent, setSent] = useState(0);
+  const form = useRef<HTMLDivElement>(null);
   const phone = cfg.data?.support?.phone;
+  const onAction = (a: HelpAction) => {
+    if (a === 'trip_help') nav('/trips');
+    else if (a === 'safety') nav('/account/safety/report');
+    else if (a === 'payment') nav('/account/payment');
+    else if (a === 'profile') nav('/account/profile');
+    else if (a === 'call') window.location.href = 'tel:000';
+    else form.current?.scrollIntoView({ behavior: 'smooth' });
+  };
   return (
-    <Page title="Help" back="/account">
+    <Page title={tripId ? 'Get help with this trip' : 'Help'} back={tripId ? `/trips/${tripId}` : '/account'}>
       <div className="callout callout--earth"><strong>In danger?</strong> Call <a href="tel:000">000</a>. During a trip, use the SOS button on the trip screen.</div>
       {phone && <p>Talk to a person: <a href={`tel:${phone.replace(/\s/g, '')}`}>{phone}</a>, {cfg.data?.support?.hours}.</p>}
-      <form onSubmit={send} className="block">
-        <h2 className="section__title">Send us a message{tripId ? ' about this trip' : ''}</h2>
-        {f.category === 'assistance_animal_refused' && (
-          <p className="callout callout--dusk">Refusing an assistance animal is against the law and DingoGo policy. Tell us what happened. We review every report and follow it up with the driver.</p>
-        )}
-        <label className="dg-field"><span>What's it about?</span>
-          <select className="dg-select" value={f.category} onChange={(e) => setF({ ...f, category: e.target.value })}>{CATS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select></label>
-        <label className="dg-field"><span>Subject (optional)</span><input className="dg-input" value={f.subject} onChange={(e) => setF({ ...f, subject: e.target.value })} /></label>
-        <label className="dg-field"><span>Tell us what happened</span><textarea className="dg-textarea" required minLength={5} value={f.message} onChange={(e) => setF({ ...f, message: e.target.value })} /></label>
-        {err && <p className="dg-error" role="alert">{err}</p>}
-        {sent && <p className="callout callout--green" role="status" tabIndex={-1} ref={sentRef}>Message sent. We'll reply in the app and by SMS.</p>}
-        <button className="dg-btn dg-btn--dark">Send message</button>
-      </form>
-      {tickets.data && tickets.data.tickets.length > 0 && (
-        <section className="section">
-          <h2 className="section__title">Your messages</h2>
-          <ul className="inbox">{tickets.data.tickets.map((t) => (
-            <li key={t.id}><strong>{t.subject}</strong><p>{t.resolution ?? t.message}</p><span className="dg-muted">{t.status === 'resolved' ? 'Resolved' : 'Open'}, {date(t.created_at)}</span></li>
-          ))}</ul>
-        </section>
-      )}
+      {tripId && !startCat
+        ? <TripHelp tripId={tripId} onSafety={() => nav(`/account/safety/report?trip=${tripId}`)} onOpenTrip={(id) => nav(`/trips/${id}`)} />
+        : tripId ? <NewTicket audience="rider" tripId={tripId} initial={startCat} onSent={() => setSent((n) => n + 1)} /> : null}
+      <MyTickets audience="rider" reloadKey={sent} />
+      {!tripId && <HelpCentre audience="rider" onAction={onAction} />}
+      {!tripId && <div ref={form}><NewTicket audience="rider" onSent={() => setSent((n) => n + 1)} /></div>}
     </Page>
   );
 }

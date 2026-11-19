@@ -68,6 +68,10 @@ Base URL: `http://localhost:4000` in development. Auth: `Authorization: Bearer <
 | POST | `/wallet/voucher` |
 | POST | `/support` |
 | GET | `/support` |
+| GET | `/support/:id` (thread, Round 22) |
+| POST | `/support/:id/messages` (Round 22) |
+| POST | `/support/:id/rating` (Round 22) |
+| GET | `/trips/:id/help` (Round 22) |
 | GET | `/tours` |
 
 ## Driver
@@ -140,8 +144,10 @@ Base URL: `http://localhost:4000` in development. Auth: `Authorization: Bearer <
 | GET | `/admin/sos/:id` (incident view, Round 7) |
 | PATCH | `/admin/sos/:id` |
 | POST | `/admin/sos/:id/notes` (Round 7) |
-| GET | `/admin/support` |
+| GET | `/admin/support` (queue, Round 22) |
+| GET | `/admin/support/:id` (Round 22) |
 | PATCH | `/admin/support/:id` |
+| POST | `/admin/support/:id/messages` (Round 22) |
 | GET | `/admin/compliance` |
 | PATCH | `/admin/compliance/:id` |
 | GET | `/admin/reports/levy` |
@@ -1211,3 +1217,89 @@ answer stays on the phone), `GET` → `{ ready: false, items: [] }`, export `[]`
   due_days: 30 }`. Recorded in the privacy request register (kind `deletion`, channel `website`, status `open`, 30-day due date),
   linked to the account when the number matches one; the answer is the same either way. Shares the website forms' per-IP limit
   (`RATE_PUBLIC_FORM_PER_IP`). Privacy request channels now include `website`.
+
+## Customer support and dispute resolution (Round 22)
+
+Needs migration `026_support.sql` (ticket columns `ref, role, priority, assigned_to, first_response_due_at, resolve_due_at,
+first_response_at, resolved_at, last_customer_at, csat_score, csat_comment, csat_at, review`; tables `support_messages`,
+`support_canned_replies` (7 starter replies), `lost_items`). Before it (`services/support.ts` `supportReady()`, re-checked once a
+minute): `POST /support`, `GET /support`, `GET /support/:id` (the message and the last reply), the desk list and replies (stored as the
+old `resolution` and sent as a notification) and evidence packs work; replies from customers, ratings, internal notes, priority and
+owner, canned replies, fare reviews and lost property answer 503 `migration_pending`; `GET /trips/:id/help` says `ready: false` and
+offers no fare review.
+
+**Policy** (setting `support_policy`; defaults in `lib/support.ts`): `GET /admin/support/policy` (ops) → `{ policy, defaults }`,
+`PUT /admin/support/policy` (admin, audited; 400 `invalid_policy`) `{ sla: { urgent|high|normal|low: { first_response_min,
+resolve_hours } }, priority_by_category: { <category>: priority } (safety always urgent), fare_review: { auto_refund, max_cents (1500),
+max_per_rider_30d (2), tolerance_cents (50), min_track_points (5), track_allowance_pct (10), unverified: refund|ticket },
+lost_property: { report_within_days (30), contact_days (7) }, reopen_days (14) }`. Defaults: urgent 15 min / 4 h, high 1 h / 24 h,
+normal 4 h / 72 h, low 24 h / 7 days, calendar time. Categories: lost_item, fare, safety, driver, parcel, accessibility,
+assistance_animal_refused, app, pay (drivers), other.
+
+**Customers (riders and drivers).** `POST /support` as before (category `pay` added; 20 a day) → 201 `{ ticket }` with `ref`
+(`ST-XXXXXX`), `priority`, due times; the inbox note gives the reference and when we aim to reply. `GET /support` → `{ ready, tickets:
+[{ id, ref, category, subject, message, status, trip_id, trip_ref, created_at, updated_at, resolution, reply_by, awaiting: dingogo|you|null,
+can_reply, can_rate, csat_score, last_reply_at }] }`. `GET /support/:id` (own only, else 404) → `{ ready, ticket, messages: [{ id, from:
+you|dingogo, automatic, body, created_at }] }` (internal notes never shown). `POST /support/:id/messages { body (1–2000) }` → 201 the
+thread: a pending ticket goes back to the desk, a resolved one reopens (new resolve due time) within `reopen_days`, later 409
+`ticket_closed`; 20 an hour. `POST /support/:id/rating { score 1–5, comment? }` → `{ ok, csat_score }`; 409 `not_resolved`,
+`already_rated`.
+
+**Trip help.** `GET /trips/:id/help` (the trip's rider or driver, else 404) → `{ ready, role, trip { id, ref, kind, service, status,
+quote_cents, final_cents, cancel_fee_cents, payment_status, completed_at }, options: [{ key, title, sub }], lost_item | null, tickets }`.
+Rider keys: `fare_review` (finished, not reviewed yet, not a returned parcel, payment not failed), `cancel_fee`, `lost_item` (finished
+ride within `report_within_days`, no open case), `driver_feedback`, `safety`, `parcel`, `assistance_animal`, `other`. Driver keys:
+`found_item`, `safety`, `pay`, `other`. The apps send `driver_feedback`, `cancel_fee`, `parcel`, `pay` and `other` as `POST /support`
+with the trip; `safety` opens the safety report (Round 14).
+
+**Fare review.** `POST /trips/:id/help/fare-review { message? }` (the rider; finished trips; 10 a day) → `{ outcome: refunded|explained|
+with_team, refund_cents, explanation, review { verdict, quote_cents, charged_cents, overcharge_cents }, ticket }`. The charge is compared
+with the upfront price and, for a route-change charge, the trip's GPS track since the start (plus `track_allowance_pct`, at most the
+reported distance) through the same route-change rule (`routeChangeExtra`). Verdicts: `as_quoted` (paid the price shown),
+`supported` (track shows the longer route), `overcharged`, `unverified` (fewer than `min_track_points`), `refunded_already`,
+`not_charged`. An overcharge (or an unverified charge with `unverified: refund`) up to `max_cents`, with fewer than
+`max_per_rider_30d` automatic refunds in 30 days, is refunded at once through the normal refund rules (`services/refunds.ts`; event
+`refund` with `by: system`, audit `auto_refund` with no actor, rider told `refund_issued`) and the ticket is resolved; `as_quoted`/
+`supported` are explained and resolved (the rider can reply to reopen); otherwise the ticket stays open for a person (priority high when
+over the limit or too many) with the working in an internal note and `ticket.review.decision` = `over_limit|too_many|unverified_to_person|
+policy_off`. Once per trip, also for two taps at once (409 `already_reviewed` with `details.ticket_id`); 409 `not_completed`,
+`not_reviewable`. Trip event `fare_review`.
+
+**Lost property.** `POST /trips/:id/help/lost-item { description (3–500) }` (rider of a finished ride, within `report_within_days`:
+409 `too_late`, `not_reportable`, `lost_item_open`) → 201 `{ lost_item, ticket }`; the driver gets `lost_item_driver`. `POST
+/trips/:id/help/found-item { description, note?, handover?: { lat, lng, address } }` (the trip's driver) → 201; the rider gets
+`lost_item_found`. While a case is open (`reported`, `found`, `collect`, `return_booked`) and for `contact_days` after it was opened,
+trip chat stays open for the rider and driver (`closes_at` moves) and the relay number connects calls and texts as for a live trip.
+`GET /driver/lost-items` → `{ ready, items }` (open, or changed in the last 7 days). `POST /lost-items/:id/respond { found, note?,
+handover? }` (the driver; `found: false` only from `reported` → `not_found`, rider told `lost_item_not_found`, ticket pending).
+`POST /lost-items/:id/return { method: courier|collect, dropoff?, payment_method?: card|wallet, instructions? }` (the rider, case `found`):
+`collect` → `collect` and the driver gets `lost_item_collect`; `courier` books a normal small courier job for the rider from the
+driver's handover place (409 `no_handover` until the driver gives one) to `dropoff`, the driver as sender and the rider as recipient
+(delivery PIN as usual) → `return_booked`, driver told `lost_item_courier`; the case becomes `returned` when that job is delivered (back
+to `found` if it is cancelled). `lost_item` view: `{ id, trip_id, status, label, description, reported_by, driver_note, handover,
+return_trip, can_return, can_answer }`. Trip events `lost_item_reported|found|not_found|collect|courier`.
+
+**Desk** (admin, dispatcher). `GET /admin/support?view=open|mine|unassigned|overdue|resolved|all&q=&category=` → `{ ready, items: [{ …,
+assigned_name, preview, sla: { first_response, resolve: met|missed|due|overdue|null, minutes_left, overdue } }], summary: { open, overdue,
+unassigned, mine, csat_30d, csat_count_30d, resolved_30d, sla_resolved_pct_30d, sla_first_pct_30d } }` (open first, then priority and
+the next due time; `q` matches reference, subject, name, phone, trip). `GET /admin/support/:id` → `{ ready, ticket, messages (with
+internal notes and author names), trip (money and refunded), related, lost_item, canned: [{ id, title, category, body, filled }] }`.
+`PATCH /admin/support/:id { status?, priority? (due times worked out again from when it came in), assigned_to? (staff only: 400
+`not_staff`; null to unassign), resolution? (old apps: a public reply) }`. `POST /admin/support/:id/messages { body, internal?, status?,
+canned_id? }` → 201: a public reply notifies the customer (`ticket_reply`), stops the first-response clock and gives the ticket to the
+replier if nobody has it; `status: resolved` sends `ticket_resolved` (asks for a rating). `GET /admin/support/staff`. Canned replies:
+`GET /admin/support/canned` → `{ ready, items }`, `POST /admin/support/canned`, `PATCH /admin/support/canned/:id`, `DELETE
+/admin/support/canned/:id` (admin) `{ title, body, category?, active? }`; placeholders `{first_name}`, `{name}`, `{trip_ref}`,
+`{ticket_ref}`. `GET /admin/lost-items?status=open|all`, `PATCH /admin/lost-items/:id { status, note? }`. Everything audited
+(`ticket_*`, `canned_*`, `lost_item_*`). Realtime on `ops`: `support.new`, `support.updated`, `support.reply`, `support.rated`,
+`lost_item.updated`.
+
+**Chargeback evidence pack.** `GET /admin/trips/:id/evidence-pack?format=json|pdf` (admin; audited `evidence_pack`) → `{ pack: { summary
+(plain sentences for the bank), trip, customer { name, phone (last 3 digits), member_since, completed_trips, disputes }, driver, vehicle,
+proof (PIN start for rides; signature, photo, receiver and distance for deliveries), timeline, track { points, distance_m, path },
+chat, receipt, payments, refunded_cents, ratings, support } }`, or a PDF (`dingogo-evidence-<ref>.pdf`) with the same sections (track
+thinned to about 60 rows).
+
+Refactor: the refund rules moved from the admin route to `services/refunds.ts` (`refundTrip`, `refundIn`); the receipt to
+`services/receipts.ts` (`buildReceipt`). Messages: `ticket_received` (now with the reference and reply-by time), `ticket_resolved`,
+`lost_item_driver`, `lost_item_found`, `lost_item_not_found`, `lost_item_collect`, `lost_item_courier`.

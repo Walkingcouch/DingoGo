@@ -16,6 +16,7 @@ import * as trips from '../services/trips.js';
 import { reattempt } from '../services/courier.js';
 import * as loyalty from '../services/loyalty.js';
 import { ledgerLabel } from '../lib/loyalty.js';
+import { buildReceipt } from '../services/receipts.js';
 
 /** Client Idempotency-Key header (a double tap or a retry after a lost reply sends the same one). */
 const idemKey = (req: FastifyRequest) => {
@@ -160,40 +161,7 @@ export default async function riderRoutes(app: FastifyInstance) {
     const t = await trips.getTrip((req.params as any).id);
     if (!trips.canView(t, me)) throw notFound('Trip');
     if (t.status !== 'completed' && !t.cancel_fee_cents) throw conflict('no_receipt', 'Receipt available once the trip is complete');
-    const fee = t.status !== 'completed';
-    const fare = fee ? t.cancel_fee_cents : t.final_cents;
-    const biz = (await one(`SELECT value FROM settings WHERE key = 'business'`))?.value ?? {};
-    const refunds = await q(`SELECT created_at AS at, -amount_cents AS cents, -gst_cents AS gst_cents FROM payments
-                             WHERE trip_id = $1 AND kind = 'refund' AND status = 'succeeded' ORDER BY created_at`, [t.id]);
-    const refunded = refunds.reduce((n: number, r: any) => n + r.cents, 0);
-    const refundedGst = refunds.reduce((n: number, r: any) => n + r.gst_cents, 0);
-    const gst = Math.round(fare / 11);
-    const netGst = gst - refundedGst;
-    const total = fare + t.tip_cents;
-    const lines = fee ? [{ label: 'Cancellation fee', cents: fare }] : t.fare_breakdown.lines;
-    // Fares are the driver's taxable supply (each driver is registered for GST; see the GST report): DingoGo issues the
-    // invoice on the driver's behalf, so it carries the driver's ABN as well as DingoGo's.
-    const drv = t.driver_id ? await one('SELECT abn, gst_registered FROM drivers WHERE user_id = $1', [t.driver_id]) : null;
-    return {
-      receipt: {
-        title: refunded > 0 ? 'Tax Invoice (adjusted)' : 'Tax Invoice', invoice_number: t.ref,
-        supplier: biz, supplier_abn: biz.abn ?? null,
-        supplied_by: t.driver ? { name: t.driver.name, abn: drv?.abn ?? null, gst_registered: !!drv?.gst_registered } : null,
-        issued_on_behalf: !!t.driver, trip_ref: t.ref, date: t.completed_at ?? t.cancelled_at, issued_at: new Date().toISOString(),
-        customer: { name: t.rider?.name ?? null, ndis_number: t.ndis_number ?? null },
-        service: t.service, from: t.pickup_address, to: t.dropoff_address, cancellation_fee: fee,
-        driver: t.driver?.name, vehicle: t.vehicle?.rego, vehicle_fuel_type: t.vehicle?.fuel_type ?? null, vehicle_is_ev: !!t.vehicle?.is_ev,
-        lines, fare_cents: fare, tip_cents: t.tip_cents,
-        total_cents: total, gst_cents: gst,
-        refunds, refunded_cents: refunded, net_total_cents: total - refunded, net_gst_cents: netGst,
-        gst_note: `Total includes GST of $${(netGst / 100).toFixed(2)}`,
-        tip_note: t.tip_cents > 0 ? 'Tips go 100% to your driver and are not part of the taxable fare (no GST).' : null,
-        payment_method: t.payment_method, payment_status: t.payment_status,
-        distance_km: Math.round((t.actual_distance_m ?? t.est_distance_m) / 100) / 10,
-        // CO₂ saved only for trips actually done in an electric car (vs avg petrol car ~180 g/km); null otherwise.
-        co2_saved_kg: !fee && t.vehicle?.is_ev ? Math.round(((t.actual_distance_m ?? t.est_distance_m) / 1000) * 0.18 * 10) / 10 : null,
-      },
-    };
+    return { receipt: await buildReceipt(t) };
   });
 
   /** Pay a trip whose card payment didn't go through, with the rider's current default card. */
@@ -416,35 +384,6 @@ export default async function riderRoutes(app: FastifyInstance) {
     });
   });
 
-  // ───────────── Support ─────────────
-  app.post('/support', async (req, reply) => {
-    const me = await requireUser(req);
-    const b = parse(z.object({
-      trip_id: z.string().uuid().optional(), category: z.enum(['lost_item', 'fare', 'safety', 'driver', 'parcel', 'accessibility', 'assistance_animal_refused', 'app', 'other']),
-      subject: z.string().min(3).max(120), message: z.string().min(5).max(2000),
-    }), req.body);
-    let trip: any = null;
-    if (b.trip_id) {
-      trip = await trips.getTrip(b.trip_id);
-      if (!trips.canView(trip, me)) throw forbidden();
-    }
-    const t = await one(`INSERT INTO support_tickets (user_id, trip_id, category, subject, message) VALUES ($1,$2,$3,$4,$5) RETURNING *`,
-      [me.id, b.trip_id ?? null, b.category, b.subject, b.message]);
-    toOps('support.new', t);
-    // A rider saying a driver refused their assistance animal (unlawful under the DDA) gets the same compliance review as a driver
-    // declining or cancelling such a trip, even if the rider didn't tick "assistance animal" when booking (the driver saw the dog and left).
-    if (b.category === 'assistance_animal_refused' && trip && trip.rider_id === me.id) {
-      const flagged = await trips.flagRiderReportedRefusal(trip, b.message);
-      if (flagged) t.flagged = true;
-    }
-    void send(me.id, 'ticket_received', { id: t.id }, { data: { ticket_id: t.id } });
-    reply.code(201);
-    return { ticket: t };
-  });
-  app.get('/support', async (req) => {
-    const me = await requireUser(req);
-    return { tickets: await q('SELECT * FROM support_tickets WHERE user_id = $1 ORDER BY created_at DESC', [me.id]) };
-  });
-
+  // /support, /trips/:id/help, lost property: routes/support.ts (Round 22).
   // /tours: routes/tours.ts (Round 19).
 }

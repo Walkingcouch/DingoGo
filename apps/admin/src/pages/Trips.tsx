@@ -3,7 +3,7 @@ import { useSearchParams } from 'react-router-dom';
 import { get, post, money, dateTime, time, km, mins, STATUS_LABEL, COURIER_STATUS_LABEL, statusTone, useLoad, Icon, FileLink } from '@dingogo/shared';
 import { DgMap, type MapMarker } from '@dingogo/shared/map';
 import { Page } from '../ctx';
-import { Chip, Drawer, ErrorMsg, Modal, Table, downloadCsv, useAsk, useRun, useToast, type Col } from '../ui';
+import { Chip, Drawer, ErrorMsg, Modal, Table, downloadCsv, downloadFile, useAsk, useRun, useToast, type Col } from '../ui';
 import { CHANNEL, COMMS_STATUS, COMMS_TEMPLATE, EVENT_TYPE, LEDGER_KIND, OFFER_STATUS, PARCEL_SIZE, PARCEL_OUTCOME, FAIL_REASON, PAYMENT_KIND, PAYMENT_METHOD, PAYMENT_PROVIDER, PAYMENT_ROW_STATUS, PAYMENT_STATUS, SERVICE_NAME, label } from '../labels';
 
 const SERVICES: [string, string][] = [['ride', 'Ride'], ['pet', 'Pet-friendly'], ['courier_s', 'Courier small'], ['courier_m', 'Courier medium'], ['courier_l', 'Courier large'], ['tour', 'Tour'], ['hourly', 'Hourly hire']];
@@ -217,6 +217,16 @@ function TripDrawer({ id, onClose }: { id: string; onClose: () => void }) {
             <h3>No driver found</h3>
             <p className="dg-muted">Search again takes the payment again (card hold, credit or points) and looks for a driver for another few minutes.</p>
             <button className="dg-btn dg-btn--sm dg-btn--dark" onClick={async () => { const r = await run(() => post(`/admin/trips/${id}/redispatch`), 'Searching again'); if (r) void reload(); }}>Search again</button>
+          </div>
+        )}
+        {(t.final_cents || t.cancel_fee_cents) > 0 && (
+          <div className="panel" style={{ marginTop: 18 }}>
+            <h3>Chargeback evidence</h3>
+            <p className="dg-muted">Timeline, PIN or delivery proof, GPS track, chat, receipt and payments, for a bank dispute. Downloading is recorded.</p>
+            <div className="actions">
+              <button type="button" className="dg-btn dg-btn--sm dg-btn--dark" onClick={() => run(() => downloadFile(`/admin/trips/${id}/evidence-pack?format=pdf`), 'Evidence pack downloaded')}>Evidence pack (PDF)</button>
+              <button type="button" className="dg-btn dg-btn--sm dg-btn--ghost" onClick={() => run(() => downloadFile(`/admin/trips/${id}/evidence-pack?format=json`), 'Evidence pack downloaded')}>JSON</button>
+            </div>
           </div>
         )}
         {(t.final_cents || t.cancel_fee_cents) > 0 && (

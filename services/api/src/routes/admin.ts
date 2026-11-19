@@ -21,6 +21,7 @@ import { integrationStatus } from './health.js';
 import { gsmFriendly, render, smsSegments } from '../lib/messages.js';
 import * as pay from '../services/payments.js';
 import * as trips from '../services/trips.js';
+import { refundTrip } from '../services/refunds.js';
 import { complianceIssues } from './driver.js';
 import { DRIVER_PAY_DEFAULTS, loadDriverPay, mergeDriverPay } from '../lib/driverPay.js';
 import { invalidateConfig } from '../lib/cache.js';
@@ -330,57 +331,8 @@ export default async function adminRoutes(app: FastifyInstance) {
     const me = await admin(req);
     const b = parse(z.object({ cents: z.number().int().min(1), reason: z.string().min(1).max(200) }), req.body);
     const id = (req.params as any).id;
-    // One refund at a time per trip (row lock), and the running total can never exceed what the rider paid.
-    const out = await tx(async (c) => {
-      const t = await one('SELECT * FROM trips WHERE id = $1 FOR UPDATE', [id], c);
-      if (!t) throw notFound('Trip');
-      const farePaid = t.payment_status === 'failed' ? 0 : (t.final_cents ?? t.cancel_fee_cents ?? 0);
-      const tip = await one(`SELECT provider, provider_ref, amount_cents FROM payments WHERE trip_id = $1 AND kind = 'tip' AND status = 'succeeded' ORDER BY created_at DESC LIMIT 1`, [id], c);
-      const tipPaid = tip ? t.tip_cents ?? 0 : 0;
-      const rows = await q(`SELECT provider_ref, -amount_cents AS cents FROM payments WHERE trip_id = $1 AND kind = 'refund' AND status = 'succeeded'`, [id], c);
-      const prior = rows.reduce((n: number, r: any) => n + r.cents, 0);
-      const left = farePaid + tipPaid - prior;
-      if (b.cents > left) throw bad('refund_too_large', left > 0 ? `Only $${(left / 100).toFixed(2)} is left to refund on this trip` : 'This trip has already been fully refunded', { refundable_cents: Math.max(left, 0) });
-      // How much of each part is already refunded: by PaymentIntent when the tip has its own, otherwise fare first.
-      const ownTipRef = tip?.provider_ref && tip.provider_ref !== t.payment_ref && !['wallet'].includes(tip.provider_ref);
-      const tipRefunded = ownTipRef ? rows.filter((r: any) => r.provider_ref === tip!.provider_ref).reduce((n: number, r: any) => n + r.cents, 0) : Math.max(prior - farePaid, 0);
-      const fareRefunded = prior - tipRefunded;
-      const farePart = Math.min(b.cents, Math.max(farePaid - fareRefunded, 0));
-      const tipPart = b.cents - farePart;
-      const parts: { cents: number; gst: number; method: string; ref: string | null; which: string }[] = [];
-      if (farePart > 0 && t.payment_method === 'card' && t.fare_breakdown?.deposit) {
-        // Round 19: a tour fare paid partly by its deposit is refunded against each payment in turn (what's left on each).
-        const caps = await q(`SELECT provider_ref, sum(amount_cents)::int cents FROM payments WHERE trip_id = $1 AND kind = 'capture' AND status = 'succeeded' AND provider_ref IS NOT NULL
-                              GROUP BY provider_ref ORDER BY min(created_at) DESC`, [id], c);
-        let need = farePart;
-        for (const cap of caps) {
-          const done = rows.filter((r: any) => r.provider_ref === cap.provider_ref).reduce((n: number, r: any) => n + r.cents, 0);
-          const take = Math.min(need, Math.max(0, cap.cents - done));
-          if (take > 0) { parts.push({ cents: take, gst: Math.round(take / 11), method: 'card', ref: cap.provider_ref, which: `fare-${parts.length}` }); need -= take; }
-        }
-        if (need > 0) throw bad('refund_too_large', 'Nothing left to refund on the card payments for this trip');
-      } else if (farePart > 0) parts.push({ cents: farePart, gst: Math.round(farePart / 11), method: t.payment_method, ref: t.payment_ref, which: 'fare' });
-      if (tipPart > 0) parts.push({ cents: tipPart, gst: 0, method: tip!.provider === 'wallet' ? 'wallet' : 'card', ref: tip!.provider_ref, which: 'tip' });
-      for (const p of parts) {
-        let provider = p.method;
-        if (p.method === 'card' && p.ref) {
-          const r = await pay.refund(p.ref, p.cents, `${t.id}-${prior}-${p.which}-${p.cents}`);
-          if (!r.ok) throw bad('refund_failed', r.error);
-          provider = p.ref.startsWith('mock_') ? 'mock' : 'stripe';
-        } else if (p.method === 'wallet' || p.method === 'cash') {
-          // Cash fares are refunded as DingoGo credit.
-          await c.query('UPDATE users SET wallet_cents = wallet_cents + $2 WHERE id = $1', [t.rider_id, p.cents]);
-          provider = 'wallet';
-        }
-        await c.query(`INSERT INTO payments (trip_id, user_id, provider, provider_ref, kind, amount_cents, gst_cents, status) VALUES ($1,$2,$3,$4,'refund',$5,$6,'succeeded')`,
-          [t.id, t.rider_id, provider, p.ref, -p.cents, -p.gst]);
-      }
-      if (b.cents === left) await c.query(`UPDATE trips SET payment_status = 'refunded' WHERE id = $1`, [t.id]);
-      await trips.event(c, t.id, 'refund', me.id, { ...b, fare_cents: farePart, tip_cents: tipPart });
-      await c.query('INSERT INTO audit_log (actor_id, action, entity, entity_id, data) VALUES ($1,$2,$3,$4,$5)', [me.id, 'refund', 'trip', t.id, b]);
-      return { t, refundable_cents: left - b.cents };
-    });
-    void send(out.t.rider_id, 'refund_issued', { ref: out.t.ref, cents: b.cents, reason: b.reason }, { data: { trip_id: out.t.id } });
+    // One refund at a time per trip (row lock), and the running total can never exceed what the rider paid (services/refunds.ts).
+    const out = await refundTrip(id, b.cents, b.reason, me.id);
     return { ok: true, refundable_cents: out.refundable_cents };
   });
 
@@ -976,19 +928,7 @@ export default async function adminRoutes(app: FastifyInstance) {
     return { item: s };
   });
 
-  app.get('/admin/support', async (req) => {
-    await ops(req);
-    return { items: await q(`SELECT s.*, u.name AS user_name, u.phone AS user_phone, t.ref AS trip_ref FROM support_tickets s LEFT JOIN users u ON u.id = s.user_id LEFT JOIN trips t ON t.id = s.trip_id ORDER BY (s.status = 'open') DESC, s.created_at DESC LIMIT 300`) };
-  });
-  app.patch('/admin/support/:id', async (req) => {
-    const me = await ops(req);
-    const b = parse(z.object({ status: z.enum(['open', 'pending', 'resolved']), resolution: z.string().max(2000).optional() }), req.body);
-    const t = await one(`UPDATE support_tickets SET status = $2, resolution = coalesce($3, resolution), updated_at = now() WHERE id = $1 RETURNING *`, [(req.params as any).id, b.status, b.resolution ?? null]);
-    if (!t) throw notFound('Ticket');
-    await audit(me.id, 'ticket_' + b.status, 'support_ticket', t.id, b.resolution ? { resolution: b.resolution } : undefined);
-    if (t.user_id && b.resolution) void send(t.user_id, 'ticket_reply', { subject: t.subject, resolution: b.resolution }, { data: { ticket_id: t.id } });
-    return { item: t };
-  });
+  // /admin/support…, /admin/lost-items, evidence packs: routes/support.ts (Round 22).
 
   app.get('/admin/compliance', async (req) => {
     await ops(req);

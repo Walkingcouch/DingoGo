@@ -5202,3 +5202,303 @@ test('round 21: an idle database connection closed by the server is logged, not 
   assert.equal((await one<{ ok: number }>('SELECT 1 AS ok'))?.ok, 1);
   assert.ok(pool.listenerCount('error') >= 1);
 });
+
+// ───────────── Round 22: customer support and dispute resolution ─────────────
+import { resetSupportReady } from '../src/services/support.js';
+import { tripForPhone } from '../src/services/chat.js';
+
+/** A finished ride for the demo rider with driver 1 (a copy of a real completed trip), with the given money and distances. */
+async function supportTrip(o: { quote?: number; final?: number; est?: number; actual?: number | null; pay?: string; doneMinAgo?: number; trackKm?: number | null } = {}) {
+  const rider = await userIdOf('+61400000100');
+  const d1 = await userIdOf('+61400000011');
+  const done = new Date(Date.now() - (o.doneMinAgo ?? 120) * 60_000);
+  const start = new Date(done.getTime() - 20 * 60_000);
+  const r = await one<{ id: string }>(
+    `INSERT INTO trips SELECT (jsonb_populate_record(NULL::trips, to_jsonb(t) || jsonb_build_object('id', gen_random_uuid(), 'ref', 'DG-S' || upper(substr(md5(random()::text), 1, 5)),
+       'rider_id', $1::uuid, 'driver_id', $2::uuid, 'status', 'completed', 'kind', 'ride', 'service', 'ride', 'requested_at', $3::timestamptz, 'accepted_at', $3::timestamptz,
+       'started_at', $3::timestamptz, 'completed_at', $4::timestamptz, 'share_token', substr(md5(random()::text), 1, 20), 'promo_code', NULL, 'batch_id', NULL,
+       'quote_cents', $5::int, 'final_cents', $6::int, 'est_distance_m', $7::int, 'actual_distance_m', $8::int, 'payment_method', $9::text,
+       'payment_status', 'captured', 'tip_cents', 0, 'cancel_fee_cents', 0, 'tour_package_id', NULL, 'corporate_account_id', NULL,
+       'fare_breakdown', jsonb_build_object('lines', jsonb_build_array(jsonb_build_object('label', 'Trip', 'cents', $5::int)))))).*
+     FROM trips t WHERE t.status = 'completed' AND t.kind = 'ride' LIMIT 1 RETURNING id`,
+    [rider, d1, start.toISOString(), done.toISOString(), o.quote ?? 2000, o.final ?? o.quote ?? 2000, o.est ?? 10_000, o.actual ?? null, o.pay ?? 'wallet']);
+  const km = o.trackKm === undefined ? 10 : o.trackKm;
+  if (km) {
+    const n = Math.round(km * 4) + 1;
+    await q(`INSERT INTO trip_track (trip_id, lat, lng, at) SELECT $1, -23.6984 - ($2::float8 / 111.2 / ($3 - 1)) * i, 133.8822, $4::timestamptz + make_interval(secs => i * 20)
+             FROM generate_series(0, $3 - 1) i`, [r!.id, km, n, start.toISOString()]);
+  }
+  return r!.id;
+}
+const lastNote = async (phone: string) => { await flushBackground(); return (await one('SELECT title, body, data FROM notifications WHERE user_id = $1 ORDER BY id DESC LIMIT 1', [await userIdOf(phone)])); };
+
+test('round 22: tickets — reference, priority and due times; thread with replies, internal notes, reopen, CSAT once; queue views, assign, canned replies', async () => {
+  const t = await call('POST', '/support', 'rider', { category: 'lost_item', subject: 'Black hat', message: 'I think I left my hat on the back seat yesterday.' });
+  assert.equal(t.status, 201, JSON.stringify(t));
+  assert.match(t.ticket.ref, /^ST-[2-9A-Z]{6}$/);
+  assert.equal(t.ticket.priority, 'high');
+  const due = (new Date(t.ticket.first_response_due_at).getTime() - new Date(t.ticket.created_at).getTime()) / 60_000;
+  assert.equal(Math.round(due), 60, 'high: first reply within 60 minutes');
+  assert.match((await lastNote('+61400000100')).body, new RegExp(`${t.ticket.ref}.*We aim to reply by`));
+  const id = t.ticket.id;
+  const mine = await call('GET', `/support/${id}`, 'rider');
+  assert.deepEqual([mine.ready, mine.messages.length, mine.messages[0].from, mine.ticket.awaiting, mine.ticket.can_rate], [true, 1, 'you', 'dingogo', false]);
+  assert.ok(mine.ticket.reply_by);
+  await login('rider3', '0400 000 178');
+  assert.equal((await call('GET', `/support/${id}`, 'rider3')).status, 404, "someone else's ticket");
+
+  // Desk: queue with timers and counts; assign to a dispatcher, priority change moves the due times; not staff is refused.
+  const q1 = await call('GET', '/admin/support?view=unassigned', 'admin');
+  const row = q1.items.find((x: any) => x.id === id);
+  assert.deepEqual([row.sla.first_response, row.sla.overdue, row.priority], ['due', false, 'high']);
+  assert.ok(q1.summary.unassigned >= 1);
+  const staff = (await call('GET', '/admin/support/staff', 'admin')).items;
+  const disp = staff.find((s: any) => s.role === 'dispatcher') ?? staff[0];
+  assert.equal((await call('PATCH', `/admin/support/${id}`, 'admin', { assigned_to: await userIdOf('+61400000100') })).error, 'not_staff');
+  const up = await call('PATCH', `/admin/support/${id}`, 'admin', { assigned_to: disp.id, priority: 'urgent' });
+  assert.equal(up.status, 200, JSON.stringify(up));
+  assert.equal(Math.round((new Date(up.item.first_response_due_at).getTime() - new Date(up.item.created_at).getTime()) / 60_000), 15);
+  assert.ok(!(await call('GET', '/admin/support?view=unassigned', 'admin')).items.some((x: any) => x.id === id));
+  assert.ok((await call('GET', `/admin/support?q=${t.ticket.ref}&view=all`, 'admin')).items.some((x: any) => x.id === id), 'search by reference');
+  // Overdue view: a ticket whose first reply is late.
+  await q(`UPDATE support_tickets SET first_response_due_at = now() - interval '5 minutes' WHERE id = $1`, [id]);
+  assert.ok((await call('GET', '/admin/support?view=overdue', 'admin')).items.some((x: any) => x.id === id && x.sla.overdue));
+
+  // Canned replies: admin manages them, the ticket shows them filled in.
+  const c = await call('POST', '/admin/support/canned', 'admin', { title: 'Test reply', body: 'Hi {first_name}, about {ticket_ref}: we are on it.', category: 'lost_item' });
+  assert.equal(c.status, 201, JSON.stringify(c));
+  assert.equal((await call('POST', '/admin/support/canned', 'd1', { title: 'x', body: 'nope nope' })).status, 403);
+  const detail = await call('GET', `/admin/support/${id}`, 'admin');
+  const filled = detail.canned.find((x: any) => x.id === c.item.id);
+  assert.match(filled.filled, new RegExp(`^Hi \\w+, about ${t.ticket.ref}: we are on it\\.$`));
+  assert.equal(detail.canned[0].category, 'lost_item', 'same category first');
+  assert.equal((await call('PATCH', `/admin/support/canned/${c.item.id}`, 'admin', { active: false })).item.active, false);
+  assert.equal((await call('DELETE', `/admin/support/canned/${c.item.id}`, 'admin')).ok, true);
+
+  // Internal note: never shown to the customer and doesn't count as a reply. Then a reply that waits on the customer.
+  assert.equal((await call('POST', `/admin/support/${id}/messages`, 'admin', { body: 'Driver is on leave until Friday.', internal: true })).status, 201);
+  assert.equal((await one('SELECT first_response_at FROM support_tickets WHERE id = $1', [id])).first_response_at, null);
+  const rep = await call('POST', `/admin/support/${id}/messages`, 'admin', { body: filled.filled, status: 'pending', canned_id: c.item.id });
+  assert.equal(rep.status, 201);
+  assert.ok(rep.ticket.first_response_at);
+  assert.equal((await lastNote('+61400000100')).title, 'Re: Black hat');
+  const seen = await call('GET', `/support/${id}`, 'rider');
+  assert.deepEqual(seen.messages.map((m: any) => m.from), ['you', 'dingogo']);
+  assert.ok(!seen.messages.some((m: any) => /leave until Friday/.test(m.body)), 'no internal notes');
+  assert.equal(seen.ticket.awaiting, 'you');
+  // Customer replies: back to the desk. Rating only once resolved, and once.
+  assert.equal((await call('POST', `/support/${id}/rating`, 'rider', { score: 5 })).error, 'not_resolved');
+  const back = await call('POST', `/support/${id}/messages`, 'rider', { body: 'It is a black Akubra with a feather.' });
+  assert.equal(back.status, 201);
+  assert.equal(back.ticket.status, 'open');
+  assert.equal((await call('POST', `/admin/support/${id}/messages`, 'admin', { body: 'Found it, sending it back.', status: 'resolved' })).ticket.status, 'resolved');
+  assert.equal((await lastNote('+61400000100')).title, 'Sorted');
+  assert.equal((await call('GET', `/support/${id}`, 'rider')).ticket.can_rate, true);
+  assert.equal((await call('POST', `/support/${id}/rating`, 'rider', { score: 4, comment: 'Quick, thanks' })).csat_score, 4);
+  assert.equal((await call('POST', `/support/${id}/rating`, 'rider', { score: 1 })).error, 'already_rated');
+  const sum = (await call('GET', '/admin/support?view=resolved', 'admin')).summary;
+  assert.ok(sum.csat_count_30d >= 1 && sum.csat_30d > 0 && sum.resolved_30d >= 1);
+  // A reply long after it was sorted starts a new ticket instead.
+  await q(`UPDATE support_tickets SET resolved_at = now() - interval '30 days' WHERE id = $1`, [id]);
+  assert.equal((await call('POST', `/support/${id}/messages`, 'rider', { body: 'Hello again' })).error, 'ticket_closed');
+  // Old apps: PATCH with a resolution is still a public reply.
+  const t2 = await call('POST', '/support', 'rider', { category: 'app', subject: 'App slow', message: 'The map takes ages to load.' });
+  assert.equal((await call('PATCH', `/admin/support/${t2.ticket.id}`, 'admin', { status: 'resolved', resolution: 'Fixed in the latest version.' })).item.status, 'resolved');
+  assert.equal((await call('GET', `/support/${t2.ticket.id}`, 'rider')).messages.at(-1).body, 'Fixed in the latest version.');
+  // Policy: dispatchers read it, only admins change it, checked.
+  assert.equal((await call('PUT', '/admin/support/policy', 'admin', { priority_by_category: { safety: 'low' } })).error, 'invalid_policy');
+});
+
+test('round 22: fare review — route change the GPS track does not support is refunded at once within the limits; once per trip; otherwise a person decides', async () => {
+  await q(`DELETE FROM settings WHERE key = 'support_policy'`); invalidateConfig();
+  const rider = await userIdOf('+61400000100');
+  const wallet = async () => (await one('SELECT wallet_cents FROM users WHERE id = $1', [rider])).wallet_cents as number;
+  // Charged $24 for 14 km on a $20 quote; the car drove 10 km.
+  const over = await supportTrip({ quote: 2000, final: 2400, actual: 14_000, trackKm: 10 });
+  const help = await call('GET', `/trips/${over}/help`, 'rider');
+  assert.ok(help.options.some((o: any) => o.key === 'fare_review') && help.options.some((o: any) => o.key === 'lost_item'), JSON.stringify(help.options));
+  assert.ok((await call('GET', `/trips/${over}/help`, 'd1')).options.some((o: any) => o.key === 'found_item'));
+  assert.equal((await call('GET', `/trips/${over}/help`, 'd2')).status, 404);
+  const before = await wallet();
+  // Two taps at once: one review, one refund.
+  const [a, b] = await Promise.all([call('POST', `/trips/${over}/help/fare-review`, 'rider', { message: 'Way too much' }), call('POST', `/trips/${over}/help/fare-review`, 'rider', {})]);
+  const ok = [a, b].find((r) => r.status === 200)!;
+  assert.ok(ok, JSON.stringify([a, b]));
+  assert.equal([a, b].filter((r) => r.error === 'already_reviewed').length, 1);
+  assert.deepEqual([ok.outcome, ok.refund_cents, ok.review.verdict, ok.ticket.status], ['refunded', 400, 'overcharged', 'resolved']);
+  assert.equal(await wallet(), before + 400, 'wallet trips are refunded as credit');
+  assert.equal((await one(`SELECT count(*)::int n FROM payments WHERE trip_id = $1 AND kind = 'refund'`, [over])).n, 1);
+  assert.equal((await one(`SELECT actor_id, action FROM audit_log WHERE entity_id = $1 AND action = 'auto_refund'`, [over])).actor_id, null);
+  assert.match((await lastNote('+61400000100')).title, /Refund issued/);
+  const thread = await call('GET', `/support/${ok.ticket.id}`, 'rider');
+  assert.ok(thread.messages.some((m: any) => m.automatic && /refunded \$4\.00/.test(m.body)));
+  assert.ok(!(await call('GET', `/trips/${over}/help`, 'rider')).options.some((o: any) => o.key === 'fare_review'), 'offered once');
+
+  // Paid the price shown: explained, nothing refunded, the ticket can still be answered.
+  const fair = await supportTrip({ quote: 2000, final: 2000 });
+  const f = await call('POST', `/trips/${fair}/help/fare-review`, 'rider', {});
+  assert.deepEqual([f.outcome, f.refund_cents, f.review.verdict, f.ticket.can_reply], ['explained', 0, 'as_quoted', true]);
+  // The track shows the longer route: the charge stands.
+  const long = await supportTrip({ quote: 2000, final: 2400, actual: 14_000, trackKm: 14 });
+  assert.equal((await call('POST', `/trips/${long}/help/fare-review`, 'rider', {})).review.verdict, 'supported');
+  // More than the automatic limit: a person decides (high priority, working in an internal note the rider can't see).
+  const big = await supportTrip({ quote: 10_000, final: 12_000, est: 40_000, actual: 60_000, trackKm: 40 });
+  const g = await call('POST', `/trips/${big}/help/fare-review`, 'rider', {});
+  assert.deepEqual([g.outcome, g.refund_cents, g.ticket.status], ['with_team', 0, 'open']);
+  const desk = await call('GET', `/admin/support/${g.ticket.id}`, 'admin');
+  assert.equal(desk.ticket.priority, 'high');
+  assert.ok(desk.messages.some((m: any) => m.internal && /over|more than we refund/i.test(m.body)));
+  assert.equal(desk.ticket.review.decision, 'over_limit');
+  assert.ok(!(await call('GET', `/support/${g.ticket.id}`, 'rider')).messages.some((m: any) => /Held for a person/.test(m.body)));
+  // Too many automatic refunds in 30 days (the limit is 2): the next goes to a person.
+  const t2 = await supportTrip({ quote: 2000, final: 2400, actual: 14_000, trackKm: 10 });
+  assert.equal((await call('POST', `/trips/${t2}/help/fare-review`, 'rider', {})).outcome, 'refunded');
+  const t3 = await supportTrip({ quote: 2000, final: 2400, actual: 14_000, trackKm: 10 });
+  const r3 = await call('POST', `/trips/${t3}/help/fare-review`, 'rider', {});
+  assert.equal(r3.outcome, 'with_team');
+  assert.equal((await call('GET', `/admin/support/${r3.ticket.id}`, 'admin')).ticket.review.decision, 'too_many');
+  // No GPS track and the policy says a person checks those.
+  assert.equal((await call('PUT', '/admin/support/policy', 'admin', { fare_review: { unverified: 'ticket', max_per_rider_30d: 10 } })).status, 200);
+  assert.equal((await call('PUT', '/admin/support/policy', 'd1', {})).status, 403);
+  const blind = await supportTrip({ quote: 2000, final: 2400, actual: 14_000, trackKm: null });
+  const u = await call('POST', `/trips/${blind}/help/fare-review`, 'rider', {});
+  assert.deepEqual([u.outcome, u.review.verdict], ['with_team', 'unverified']);
+  // Not finished, not yours.
+  assert.equal((await call('POST', `/trips/${blind}/help/fare-review`, 'rider3', {})).status, 404);
+  await q(`DELETE FROM settings WHERE key = 'support_policy'`); invalidateConfig();
+});
+
+test('round 22: lost property — rider reports, driver told and answers with a handover place, chat and relay stay open, courier return booked and closed when delivered', async () => {
+  await clearOpenTrips();
+  await onlyOnline([]);
+  const trip = await supportTrip({ doneMinAgo: 180 });
+  // Messages had closed (3 hours after drop-off).
+  assert.equal((await call('GET', `/trips/${trip}/messages`, 'rider')).can_send, false);
+  const rep = await call('POST', `/trips/${trip}/help/lost-item`, 'rider', { description: 'Blue backpack with my TAFE books' });
+  assert.equal(rep.status, 201, JSON.stringify(rep));
+  assert.deepEqual([rep.lost_item.status, rep.ticket.status], ['reported', 'open']);
+  assert.equal((await call('POST', `/trips/${trip}/help/lost-item`, 'rider', { description: 'Again' })).error, 'lost_item_open');
+  const note = await lastNote('+61400000011');
+  assert.equal(note.title, 'A rider may have left something in your car');
+  assert.match(note.body, /Blue backpack/);
+  // Rider and driver can message each other again; the relay finds the trip by phone.
+  const m = await call('GET', `/trips/${trip}/messages`, 'rider');
+  assert.equal(m.can_send, true);
+  assert.ok(new Date(m.closes_at).getTime() > Date.now() + 6 * 86400_000);
+  assert.equal((await call('POST', `/trips/${trip}/messages`, 'd1', { body: 'Checking the car now' })).status, 201);
+  assert.equal((await tripForPhone('+61400000100', { lostDays: 7 }))?.trip.id, trip);
+  assert.equal(await tripForPhone('+61400000100').then((f) => f?.trip.id === trip), false, 'not without the lost-property window');
+
+  // Driver's list and answer. Rider can't answer for the driver; driver can't book the return.
+  const list = await call('GET', '/driver/lost-items', 'd1');
+  const item = list.items.find((x: any) => x.trip_id === trip);
+  assert.deepEqual([item.status, item.can_answer, item.rider_first_name != null], ['reported', true, true]);
+  assert.equal((await call('POST', `/lost-items/${item.id}/respond`, 'rider', { found: true })).status, 403);
+  assert.equal((await call('POST', `/lost-items/${item.id}/return`, 'rider', { method: 'collect' })).error, 'bad_state', 'driver has not checked yet');
+  const ans = await call('POST', `/lost-items/${item.id}/respond`, 'd1', { found: true, note: 'On the back seat', handover: { lat: -23.7005, lng: 133.8807, address: 'DingoGo depot, Gap Road' } });
+  assert.equal(ans.lost_item.status, 'found');
+  assert.equal((await lastNote('+61400000100')).title, 'Your driver has your item');
+  const h = await call('GET', `/trips/${trip}/help`, 'rider');
+  assert.deepEqual([h.lost_item.status, h.lost_item.can_return, h.lost_item.handover.address], ['found', true, 'DingoGo depot, Gap Road']);
+  assert.ok(!h.options.some((o: any) => o.key === 'lost_item'), 'one case at a time');
+  // Courier return: a normal courier job from the handover place to the rider, paid by the rider.
+  const ret = await call('POST', `/lost-items/${item.id}/return`, 'rider', { method: 'courier', dropoff: TODD_MALL, payment_method: 'card' });
+  assert.equal(ret.status, 200, JSON.stringify(ret));
+  assert.equal(ret.lost_item.status, 'return_booked');
+  const courier = await one('SELECT t.kind, t.service, t.pickup_address, t.rider_id, p.sender_phone, p.recipient_phone, p.description FROM trips t JOIN parcels p ON p.trip_id = t.id WHERE t.id = $1', [ret.return_trip.id]);
+  assert.deepEqual([courier.kind, courier.service, courier.pickup_address, courier.rider_id, courier.sender_phone, courier.recipient_phone],
+    ['courier', 'courier_s', 'DingoGo depot, Gap Road', await userIdOf('+61400000100'), '+61400000011', '+61400000100']);
+  assert.match(courier.description, /Lost property from DG-S/);
+  assert.equal((await lastNote('+61400000011')).title, 'A courier is collecting the lost item');
+  // Delivered: the case closes by itself.
+  await q(`UPDATE trips SET status = 'completed', completed_at = now() WHERE id = $1`, [ret.return_trip.id]);
+  assert.equal((await call('GET', `/trips/${trip}/help`, 'rider')).lost_item.status, 'returned');
+  assert.equal((await call('GET', `/trips/${trip}/messages`, 'rider')).can_send, false, 'messages close with the case');
+  const admin = await call('GET', '/admin/lost-items?status=all', 'admin');
+  assert.equal(admin.items.find((x: any) => x.id === item.id).status, 'returned');
+
+  // Driver finds something: rider told, can arrange a pickup; not found closes a rider's case.
+  const t2 = await supportTrip({ doneMinAgo: 60 });
+  const found = await call('POST', `/trips/${t2}/help/found-item`, 'd1', { description: 'Pair of reading glasses' });
+  assert.equal(found.status, 201, JSON.stringify(found));
+  assert.equal((await lastNote('+61400000100')).title, 'Your driver found something in the car');
+  const lid = found.lost_item.id;
+  assert.equal((await call('POST', `/lost-items/${lid}/return`, 'rider', { method: 'courier', dropoff: TODD_MALL })).error, 'no_handover');
+  assert.equal((await call('POST', `/lost-items/${lid}/return`, 'rider', { method: 'collect' })).lost_item.status, 'collect');
+  assert.equal((await lastNote('+61400000011')).title, 'The rider would like to collect their item');
+  assert.equal((await call('PATCH', `/admin/lost-items/${lid}`, 'admin', { status: 'returned', note: 'Collected at the depot' })).lost_item.status, 'returned');
+  const t3 = await supportTrip({ doneMinAgo: 60 });
+  const r3 = await call('POST', `/trips/${t3}/help/lost-item`, 'rider', { description: 'Sunglasses' });
+  const nf = await call('POST', `/lost-items/${r3.lost_item.id}/respond`, 'd1', { found: false, note: 'Checked under the seats' });
+  assert.equal(nf.lost_item.status, 'not_found');
+  assert.equal((await lastNote('+61400000100')).title, 'Your driver could not find it');
+  assert.equal((await call('GET', `/support/${r3.ticket.id}`, 'rider')).ticket.status, 'pending');
+  // Too late, not a finished ride, someone else's.
+  const old = await supportTrip({ doneMinAgo: 60 * 24 * 40 });
+  assert.equal((await call('POST', `/trips/${old}/help/lost-item`, 'rider', { description: 'Scarf' })).error, 'too_late');
+  assert.equal((await call('POST', `/trips/${t3}/help/lost-item`, 'rider3', { description: 'Scarf' })).status, 404);
+  assert.equal((await call('POST', `/trips/${t3}/help/found-item`, 'rider', { description: 'Scarf' })).status, 403);
+});
+
+test('round 22: chargeback evidence pack — timeline, PIN proof, GPS track, chat, receipt and payments as JSON or PDF; admin only, audited', async () => {
+  const trip = await supportTrip({ quote: 2000, final: 2400, actual: 14_000, trackKm: 10 });
+  await q(`INSERT INTO trip_events (trip_id, type, at) VALUES ($1, 'started', now() - interval '2 hours'), ($1, 'completed', now() - interval '100 minutes')`, [trip]);
+  await q(`INSERT INTO trip_messages (trip_id, sender_id, sender_role, body) VALUES ($1, $2, 'driver', 'Outside now')`, [trip, await userIdOf('+61400000011')]);
+  const r = await call('GET', `/admin/trips/${trip}/evidence-pack`, 'admin');
+  assert.equal(r.status, 200, JSON.stringify(r));
+  const p = r.pack;
+  assert.equal(p.proof.kind, 'pin');
+  assert.match(p.proof.text, /4-digit trip PIN/);
+  assert.ok(p.track.points >= 40 && Math.abs(p.track.distance_m - 10_000) < 100, JSON.stringify(p.track).slice(0, 200));
+  assert.deepEqual(p.chat.map((m: any) => m.body), ['Outside now']);
+  assert.ok(p.timeline.some((e: any) => e.label === 'Trip started'));
+  assert.equal(p.receipt.total_cents, 2400);
+  assert.match(p.customer.phone, /^…\d{3}$/, 'phone cut to the last 3 digits');
+  assert.ok(p.summary.some((s: string) => /upfront price of \$20\.00; final charge \$24\.00/.test(s)));
+  const pdf = await app.inject({ method: 'GET', url: `/admin/trips/${trip}/evidence-pack?format=pdf`, headers: { authorization: `Bearer ${tokens.admin}` } });
+  assert.equal(pdf.statusCode, 200);
+  assert.equal(pdf.headers['content-type'], 'application/pdf');
+  assert.ok(pdf.rawPayload.subarray(0, 5).toString() === '%PDF-');
+  assert.ok(pdf.rawPayload.toString('latin1').includes('Evidence pack: trip DG-S'));
+  assert.equal((await call('GET', `/admin/trips/${trip}/evidence-pack`, 'd1')).status, 403);
+  assert.equal((await one(`SELECT count(*)::int n FROM audit_log WHERE action = 'evidence_pack' AND entity_id = $1`, [trip])).n, 2);
+});
+
+test('before migration 026: messages to support, the desk list and replies, receipts and evidence packs work; threads, trip help and lost property say migration_pending', async () => {
+  const tables = ['support_messages', 'support_canned_replies', 'lost_items'];
+  const cols = ['ref', 'role', 'priority', 'assigned_to', 'first_response_due_at', 'resolve_due_at', 'first_response_at', 'resolved_at', 'last_customer_at', 'csat_score', 'csat_comment', 'csat_at', 'review'];
+  const trip = await supportTrip();
+  for (const t of tables) await q(`ALTER TABLE ${t} RENAME TO ${t}_off`);
+  for (const c of cols) await q(`ALTER TABLE support_tickets RENAME COLUMN ${c} TO ${c}_off`);
+  resetSupportReady();
+  try {
+    const t = await call('POST', '/support', 'rider', { trip_id: trip, category: 'fare', subject: 'Fare', message: 'Please check my fare.' });
+    assert.equal(t.status, 201, JSON.stringify(t));
+    assert.equal(t.ticket.ref, undefined);
+    const mine = await call('GET', '/support', 'rider');
+    assert.equal(mine.ready, false);
+    assert.ok(mine.tickets.some((x: any) => x.id === t.ticket.id));
+    assert.equal((await call('GET', `/support/${t.ticket.id}`, 'rider')).messages.length, 1);
+    assert.equal((await call('POST', `/support/${t.ticket.id}/messages`, 'rider', { body: 'More' })).error, 'migration_pending');
+    const desk = await call('GET', '/admin/support', 'admin');
+    assert.deepEqual([desk.ready, desk.items.some((x: any) => x.id === t.ticket.id)], [false, true]);
+    assert.equal((await call('POST', `/admin/support/${t.ticket.id}/messages`, 'admin', { body: 'Checked: it was right.' })).status, 201, 'reply the old way');
+    assert.equal((await call('GET', `/support/${t.ticket.id}`, 'rider')).messages.at(-1).body, 'Checked: it was right.');
+    assert.equal((await call('POST', `/admin/support/${t.ticket.id}/messages`, 'admin', { body: 'note', internal: true })).error, 'migration_pending');
+    assert.equal((await call('PATCH', `/admin/support/${t.ticket.id}`, 'admin', { priority: 'high' })).error, 'migration_pending');
+    assert.equal((await call('GET', '/admin/support/canned', 'admin')).ready, false);
+    const help = await call('GET', `/trips/${trip}/help`, 'rider');
+    assert.equal(help.ready, false);
+    assert.ok(!help.options.some((o: any) => o.key === 'fare_review'));
+    assert.equal((await call('POST', `/trips/${trip}/help/fare-review`, 'rider', {})).error, 'migration_pending');
+    assert.equal((await call('POST', `/trips/${trip}/help/lost-item`, 'rider', { description: 'Hat' })).error, 'migration_pending');
+    assert.equal((await call('GET', '/driver/lost-items', 'd1')).ready, false);
+    assert.equal((await call('GET', `/trips/${trip}/messages`, 'rider')).status, 200, 'chat still works');
+    assert.equal((await call('GET', `/trips/${trip}/receipt`, 'rider')).status, 200);
+    assert.equal((await call('GET', `/admin/trips/${trip}/evidence-pack`, 'admin')).status, 200);
+  } finally {
+    for (const t of tables) await q(`ALTER TABLE ${t}_off RENAME TO ${t}`);
+    for (const c of cols) await q(`ALTER TABLE support_tickets RENAME COLUMN ${c}_off TO ${c}`);
+    resetSupportReady();
+  }
+});

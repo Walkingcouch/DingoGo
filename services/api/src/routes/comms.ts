@@ -10,13 +10,23 @@ import { CATEGORY_INFO, lastConsent, loadRecipient, mergePrefs, recordConsent, s
 import { pushProviders } from '../services/push.js';
 import { checkTwilioSignature, e164, isOptedOut, keyword, logComms, optIn, optOut, smsConfigured, twiml } from '../services/sms.js';
 import { event } from '../services/trips.js';
+import { lostContactUntil, supportPolicy, supportReady } from '../services/support.js';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 async function tripRow(id: string) {
   if (!UUID.test(id)) throw notFound('Trip');
   const t = await one('SELECT * FROM trips WHERE id = $1', [id]);
   if (!t) throw notFound('Trip');
+  // Round 22: an open lost property case keeps messages and masked calls open after the trip.
+  if (t.status === 'completed') t.lost_contact_until = await lostContactUntil(t.id).catch(() => null);
   return t;
+}
+/** Days a lost property case keeps the relay open (0 before migration 026). */
+const lostDays = async () => ((await supportReady()) ? (await supportPolicy()).lost_property.contact_days : 0);
+async function relayTrip(phone: string, opts: { recent?: boolean } = {}) {
+  const found = await tripForPhone(phone, { ...opts, lostDays: await lostDays() });
+  if (found && found.trip.status === 'completed') found.trip.lost_contact_until = await lostContactUntil(found.trip.id).catch(() => null);
+  return found;
 }
 const supportPhone = async () => ((await one(`SELECT value FROM settings WHERE key = 'support'`).catch(() => null))?.value?.phone as string | undefined) ?? null;
 
@@ -132,7 +142,7 @@ export default async function commsRoutes(app: FastifyInstance) {
 
     const r = relay();
     if (!r || to !== r) return twiml.empty();
-    const found = await tripForPhone(from, { recent: true });
+    const found = await relayTrip(from, { recent: true });
     if (!found) return twiml.message(render('relay_no_trip_sms', { support: await supportPhone() }).sms!);
     try {
       await postMessage(found.trip, { id: found.callerId, role: found.callerIs, name: found.callerName }, { body: body.slice(0, 500), via: 'sms' });
@@ -152,7 +162,7 @@ export default async function commsRoutes(app: FastifyInstance) {
     const support = await supportPhone();
     const noTrip = `Sorry, we couldn't find a live DingoGo trip for this phone number. ${support ? `For help, call DingoGo on ${support.split('').join(' ')}.` : 'Please use the DingoGo app.'}`;
     if (!r) return twiml.say(noTrip);
-    const found = await tripForPhone(from);
+    const found = await relayTrip(from);
     if (!found || !found.other || String(found.other).startsWith('deleted:')) {
       await logComms({ channel: 'call', template: 'relay_call', userId: null, status: 'no_trip' });
       return twiml.say(noTrip);

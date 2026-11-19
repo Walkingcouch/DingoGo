@@ -44,6 +44,7 @@ export function Profile({ onSignOut }: { onSignOut: () => void }) {
       {(me as any).tax_missing?.length > 0 && <p className="dg-note" role="status"><a href="#tax">Add your tax details</a>: DingoGo must report your earnings to the ATO. Still needed: {(me as any).tax_missing.join(', ')}.</p>}
       <p className="dg-muted" style={{ marginTop: 0 }}>{d?.phone}{d?.state ? `, ${myState.name}` : ''}{d?.rating_avg ? `, rated ${Number(d.rating_avg).toFixed(2)} from ${d.rating_count} trips` : ''}</p>
 
+      <Link to="/help" className="dg-btn dg-btn--ghost dg-btn--block" style={{ marginBottom: 12 }}><Icon name="help" size={18} />Help and messages to DingoGo</Link>
       <section className="panel">
         <h2 style={{ marginTop: 0 }}>Your car</h2>
         {v ? (<>

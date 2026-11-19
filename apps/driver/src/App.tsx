@@ -10,6 +10,7 @@ import { Earnings } from './screens/Earnings';
 import { Charging } from './screens/Charging';
 import { Trips } from './screens/Trips';
 import { Profile } from './screens/Profile';
+import { Help } from './screens/Help';
 import { hasPlug } from './vehicle';
 import { clearOutbox } from './lib/outbox';
 
@@ -98,6 +99,7 @@ function Shell({ onSignOut }: { onSignOut: () => void }) {
           <Route path="/charging" element={plug || !me ? <Charging /> : <Navigate to="/" />} />
           <Route path="/trips" element={<Trips />} />
           <Route path="/profile" element={<Profile onSignOut={onSignOut} />} />
+          <Route path="/help" element={<Help />} />
           <Route path="*" element={<Navigate to="/" />} />
         </Routes>
       </div>

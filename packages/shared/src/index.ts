@@ -25,3 +25,6 @@ export { DISCLOSURES, disclosureAnswer, answerDisclosure, appPlatform, appVersio
 export type { Disclosure, DisclosureKind, DisclosureAnswer } from './permissions';
 export { PermissionPrimer } from './PermissionPrimer';
 export { onAppLink, appLinkRoute } from './applinks';
+export { HelpCentre, NewTicket, MyTickets, TicketThread, TripHelp, LostCase, DriverLostItems, SUPPORT_CATEGORIES } from './Support';
+export { HELP_ARTICLES, HELP_TOPICS, searchHelp, articlesFor } from './helpArticles';
+export type { HelpArticle, HelpAction, HelpAudience } from './helpArticles';

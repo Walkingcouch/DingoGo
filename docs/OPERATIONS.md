@@ -248,6 +248,33 @@ Before the migration, "Run weekly lease deductions" (Payouts & leases) still wor
   are a percentage of a car's profit from a date (never over 100% of a car); the monthly report and CSV are for the accountant. It is a
   management report, not a statement of account: check it before paying anyone.
 
+## 9d. Customer support desk (Round 22)
+
+Migration `026_support.sql` (AUTO_MIGRATE applies it; adds 7 starter canned replies). Before it, messages to support and replies still
+work the old way (one message, reply as a notification) and the lost property and fare check buttons don't show.
+
+- **Daily routine:** Support & inbox → Support tickets, view "Open" (sorted by priority, then what is due next) or "Late". Take a
+  ticket by giving it an owner (or just reply: an unowned ticket goes to whoever replies). "Send and wait for customer" when you need
+  more from them; "Send and resolve" when it is sorted (they are asked to rate it). Internal notes are never shown to the customer.
+- **Due times (Policy tab):** first reply 15 min (urgent), 1 h (high), 4 h (normal), 24 h (low); sorted within 4 h, 24 h, 3 days, 7 days.
+  Calendar time, so set them to what the team can really do overnight. Safety tickets are always urgent; real emergencies still go to
+  000 and the SOS/incident tools (section 7), not a ticket. Waiting on the customer pauses "late" on the resolve clock.
+- **Fare checks:** riders tap "My fare was higher than expected" on a trip. A route change charge (the trip was more than 25% longer)
+  the car's GPS track doesn't support is refunded at once up to $15, at most 2 times per rider in 30 days; a fare that was the price
+  shown is explained. Anything else arrives as a ticket with the working (internal note and "Automatic fare check" line). Automatic
+  refunds are in the audit log as `auto_refund` with no person. The driver's share of a refunded charge is not taken back (as with
+  staff refunds); raise it with the driver if a pattern shows.
+- **Lost property (Lost property tab):** the driver is told at once and answers "I have it" (with where a courier can collect it,
+  ideally the depot or a public place) or "not in my car". Rider and driver can message and call each other through the relay for 7
+  days while the case is open. The rider books the return courier themselves (normal small-parcel price; delivery PIN as usual) or
+  arranges a pickup; the case closes when the courier delivers. Valuables (phone, wallet, keys, medicine): phone the rider, and if the
+  driver can't be reached within the day, call the driver. Unclaimed items: hold 30 days, then follow the NT lost property rules
+  (hand in to police for items of value). Never give out either person's number.
+- **Chargebacks:** Reports → Payment problems → Open disputes → "Evidence pack" (or a trip's drawer → Chargeback evidence). The PDF has a
+  plain summary, the PIN or delivery proof, timeline, GPS track, chat, tax invoice and payments; upload it in the Stripe dashboard with
+  a short note before the due date. Each download is in the audit log (it holds personal information): keep it to the dispute.
+- **Canned replies (admin):** keep them short and plain; `{first_name}`, `{trip_ref}` and `{ticket_ref}` are filled in for you.
+
 ## 10. Performance and load testing (Round 18)
 - **Migration 022** (indexes only, safe any time; AUTO_MIGRATE applies it). Until it is in, `/health/deep` reports it pending and
   the API runs as before, just with slower dispatch queries as trips grow.

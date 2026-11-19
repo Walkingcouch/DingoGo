@@ -1578,3 +1578,107 @@ Ideas for next rounds:
   `VITE_APP_VERSION`.
 - Store listing translations for visitors (de, fr, ja…) reusing the Round 19 flagged machine translations, and Arrernte words in
   the listing reviewed by the language centre.
+
+### Round 22 — customer support and dispute resolution
+Scan: read `support_tickets` (001), `POST/GET /support`, `GET/PATCH /admin/support`, the admin Support page, rider Help and trip
+details, the driver app (Trips, Profile), trip chat and the relay number (`services/chat.ts`, `routes/comms.ts`), the admin refund
+route, upfront pricing (`routeChangeExtra`), the trip track, receipts, Stripe disputes (`/admin/payments/issues`) and the PDF
+writer. Found: a ticket was one message and one "resolution" overwritten by every reply, sent only as a notification, so the
+customer could never answer or see the thread; no reference, priority, owner or due time, so nothing showed what was late; "I
+left something in the car" went to ops only (the driver was never told) and chat and masked calls closed 30 minutes after
+drop-off, so rider and driver couldn't arrange a return; a fare complaint always needed a person even when the GPS track showed
+the route-change charge wasn't earned; the refund logic lived inside one admin route; there was no help content in the apps
+beyond the form, no way for drivers to contact support at all, no satisfaction score, and nothing to answer a chargeback with.
+
+Suggested:
+1. [add] Help centre: plain-language articles for riders and drivers in one file (`packages/shared/src/helpArticles.ts`) with a
+   tested search (words, simple stems, synonyms like "lost" / "left"), shown in the rider app (Account → Help) and a new driver
+   app Help screen, each article ending with the right next step (trip help, a message, safety report, call).
+2. [add] Ticket threads (migration 026): reference `ST-XXXXXX`, priority from the category, owner, first-response and resolve due
+   times from an admin-set SLA policy, `support_messages` (customer, staff, system, internal notes); customers see their thread,
+   reply in the app (a reply reopens a pending or recently resolved ticket) and rate it 1–5 after resolution (CSAT, once).
+3. [add] Admin support desk: queue views (mine, unassigned, overdue, all) with SLA timers, assign, priority, reply or internal
+   note, canned replies with placeholders (`{first_name}`, `{trip_ref}`, `{ticket_ref}`) managed in admin, CSAT and SLA-met figures.
+4. [add] "Get help with this trip": `GET /trips/:id/help` lists what fits the trip (fare review, lost item, driver behaviour →
+   safety report, cancellation fee, parcel, something else) for riders and drivers.
+5. [add] Fare review: the charge is checked against the upfront price and the trip's GPS track; a route-change charge the track
+   doesn't support is refunded at once when it is within the admin limits (per refund, per rider per 30 days), otherwise a
+   high-priority ticket with the working; a fare that was the price shown is explained (ticket stays answerable).
+6. [add] Lost property: rider reports (driver told at once), or driver reports a found item (rider told); driver answers found /
+   not found with a handover place; chat and masked relay calls stay open while the case is open (up to the policy's days);
+   return by courier booked by the rider as a normal courier job from the handover place (or arranged pickup); case closes when
+   the courier job is delivered; admin list and status.
+7. [fix] Refunds moved into one service (`refundTrip`) used by the admin route and automatic fare-review refunds (same locks,
+   caps and parts); automatic refunds are audited as `system` with the review attached.
+8. [add] Chargeback evidence pack: `GET /admin/trips/:id/evidence-pack?format=json|pdf` (admin, audited) — trip summary, timeline,
+   GPS track with tracked distance, chat, receipt and payments, ratings, support tickets and the PIN/delivery proof; linked
+   from open disputes and the trip drawer.
+9. [add] Driver app support: Help screen with articles, "Get help" on each trip (found item, safety report, message us), lost
+   property cases to answer, and their tickets with replies.
+10. [add] Docs (API.md, OPERATIONS.md support runbook, README) and tests; everything degrades before migration 026.
+
+Done (all 10, plus two found while checking in the browser: quick replies like "I'm coming out now" no longer show in a chat
+reopened for lost property, and the automatic "we've asked your driver" note no longer counts as the desk's first reply). Migration:
+`services/api/migrations/026_support.sql` (columns on `support_tickets`: `ref, role, priority, assigned_to, first_response_due_at,
+resolve_due_at, first_response_at, resolved_at, last_customer_at, csat_score, csat_comment, csat_at, review`; tables
+`support_messages`, `support_canned_replies` (7 starter replies), `lost_items` with one open case per trip; additive, IF NOT EXISTS).
+Before it (`services/support.ts` `supportReady()`, re-checked once a minute): `POST/GET /support`, `GET /support/:id` (message and last
+reply), the desk list and replies (stored as `resolution`, sent as a notification), receipts and evidence packs work; customer
+replies, ratings, notes, owner and priority, canned replies, fare checks and lost property answer 503 `migration_pending`; trip help
+says `ready: false`. Tests: 211 → 225 (`support.test.ts` 9 unit tests — policy checks, SLA due times and timer states incl. waiting on
+the customer, GPS track length with jump filter, fare review verdicts incl. partly supported and already refunded, automatic refund
+limits, canned placeholders, help content rules (topics, no emoji, numbers match the seeded fare rules and business rules) and help
+search; 5 e2e — ticket thread with reference, priority and due times, queue views and search, assign (staff only) and priority
+re-timing, canned replies, internal notes hidden, pending → customer reply → reopen, resolve → rating once, reopen window, old-app
+PATCH; fare review with two taps at once (one refund), wallet credit, audit with no actor, explained, supported, over the limit and too
+many to a person with hidden working, no-track policy; lost property report → driver told → chat and relay reopen → driver answers
+with a handover place → courier return booked with the right sender/recipient → closes when delivered, driver-found item with a
+pickup, not found, too late, someone else's; evidence pack JSON (PIN proof, track, chat, receipt, masked phone) and PDF, admin only and
+audited; everything with the 026 tables and columns renamed away). Browser: rider help search and article, trip help (lost item and
+fare check), the thread with a rating, driver Help with a lost property case answered, admin ticket drawer and the new tabs, no page
+errors or 5xx.
+- API: new `src/lib/support.ts` (policy, priorities, `slaDue`/`slaState`, `trackDistanceM`, `reviewFare`, `autoRefundDecision`,
+  `fillPlaceholders`, lost states), `src/services/support.ts` (tickets, threads, desk, canned replies, trip help, fare review, lost
+  property, relay window), `src/services/refunds.ts` (`refundIn`/`refundTrip`, moved from the admin route), `src/services/receipts.ts`
+  (`buildReceipt`, moved from the rider route), `src/services/evidence.ts` (pack and PDF), `src/routes/support.ts`; `services/chat.ts`
+  (chat open while a lost property case is, `closes_at`, `tripForPhone` with `lostDays`, no quick replies after the trip),
+  `routes/comms.ts` (lost-property window on chat, contact and the relay webhooks); `lib/messages.ts` (`ticket_received` with the
+  reference and reply-by time, `ticket_resolved`, five lost property messages); `lib/ids.ts` (`supportRef`). Old support routes removed
+  from `routes/rider.ts` and `routes/admin.ts` (same paths, same answers plus the new fields).
+- Shared: `helpArticles.ts` (26 articles for riders and drivers, topics, search), `Support.tsx` (`HelpCentre`, `NewTicket`,
+  `MyTickets`, `TicketThread` with rating, `TripHelp`, `LostCase` with chat and handover, `DriverLostItems`), styles in `brand.css`.
+- Apps: rider — Help is now answers + search, Your messages (thread, reply, rating) and the message form; "Get help with this trip" opens
+  the trip's options (fare check, lost item with chat to the driver and courier return or pickup, feedback, safety report,
+  cancellation fee, parcel, assistance animal). Driver — new Help screen (lost property cases, messages, answers, form; linked from
+  Profile and Trips), "Get help" on each trip (found item with handover place, pay question, safety). Admin — Support & inbox rewritten:
+  KPIs (open, late, unowned, replied/sorted in time, satisfaction), views and search, SLA chips, ticket drawer with thread, internal
+  notes, canned replies, owner, priority and status, fare check working; new tabs Lost property, Canned replies, Policy; evidence pack
+  buttons on open disputes (Reports) and in the trip drawer.
+- Behaviour changes to note: `ticket_received` now gives the `ST-` reference (was "#" + 8 characters of the id); customer messages show
+  as "With our team / Waiting for you / Sorted"; trip chat stays open for up to 7 days while a lost property case is open (was 30
+  minutes after drop-off) and the relay connects calls for those trips; riders can get automatic refunds of up to $15 (twice in 30
+  days) through the fare check; `POST /support` takes category `pay` and is limited to 20 a day per account.
+- Deploy: apply migration 026 (AUTO_MIGRATE does it). No env vars. Check with the owner: the reply/resolve times (calendar time — set them
+  to what the team can cover overnight), the automatic refund limits ($15, twice in 30 days, and refunding when there is no GPS track),
+  and lost property handling of unclaimed valuables (OPERATIONS.md 9d).
+
+Deferred:
+- Business-hours SLA calendars and an on-call roster with escalation when a ticket goes late (clocks are calendar time now).
+- Taking the driver's share of an automatically refunded route-change charge back from their pay (needs a driver-facing rule and a
+  dispute path, same as staff refunds today).
+- Sending the evidence pack to Stripe through the Disputes API (the pack's fields map to Stripe's evidence fields; upload is manual).
+- Photos and files on tickets (damage, receipts): the private `evidence` upload purpose exists for safety reports; tickets don't use it yet.
+- Help articles in community and visitor languages (needs the language centre review from Round 12).
+- Who pays for a lost property courier when the driver offers to drop it off themselves (a driver return fee like other platforms).
+
+Ideas for next rounds:
+- Stripe dispute evidence submitted from admin (map the pack to `service_date`, `customer_communication`, `receipt`,
+  `service_documentation`, `uncategorized_text`), with due-date reminders on the dashboard.
+- Inbound email and SMS to tickets (a support address webhook, SMS replies to the support number threaded by phone), and ticket
+  attachments using the private `evidence` uploads.
+- Help content analytics: searches with no answer and articles followed by a message, to improve the wording; translated articles.
+- Driver pay disputes checked automatically against the ledger (missing tip, cancellation share, cash collected) like the fare check.
+- Support quality: weekly report of first-reply and sorted-in-time per person, ratings with comments, and late tickets pushed to the
+  on-call phone.
+- Lost property: driver-delivered returns with a fixed return fee paid to the driver, and an unclaimed-items register with the
+  30-day hold.

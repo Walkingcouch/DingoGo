@@ -12,6 +12,7 @@ export const referralCode = (name: string) =>
   `${(name.replace(/[^a-z]/gi, '').slice(0, 5) || 'DINGO').toUpperCase()}${upper().slice(0, 4)}`;
 export const applicationRef = () => `DA-${upper()}`;
 export const incidentRef = () => `IR-${upper()}`;
+export const supportRef = () => `ST-${upper()}`;
 export const voucherCode = () => `DG${upper()}`;
 export const displayKey = () => `led_${token()}${token()}`;
 export const sha256 = (s: string) => crypto.createHash('sha256').update(s).digest('hex');
