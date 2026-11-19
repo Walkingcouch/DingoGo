@@ -17,6 +17,7 @@ const Drivers = lazyWithRetry(() => import('./pages/Drivers'));
 const Fleet = lazyWithRetry(() => import('./pages/Fleet'));
 const Pricing = lazyWithRetry(() => import('./pages/Pricing'));
 const Loyalty = lazyWithRetry(() => import('./pages/Loyalty'));
+const Tours = lazyWithRetry(() => import('./pages/Tours'));
 const Ads = lazyWithRetry(() => import('./pages/Ads'));
 const Business = lazyWithRetry(() => import('./pages/Business'));
 const Safety = lazyWithRetry(() => import('./pages/Safety'));
@@ -35,7 +36,7 @@ const NAV: { group: string; items: { to: string; label: string; icon: string; ba
   { group: 'People & fleet', items: [
     { to: '/drivers', label: 'Drivers', icon: 'users', badge: 'drivers' }, { to: '/fleet', label: 'Fleet & charging', icon: 'car', badge: 'cars' }, { to: '/business', label: 'Business accounts', icon: 'receipt' }] },
   { group: 'Commercial', items: [
-    { to: '/pricing', label: 'Pricing & tours', icon: 'cash' }, { to: '/loyalty', label: 'Loyalty & vouchers', icon: 'gift' }, { to: '/ads', label: 'Roof advertising', icon: 'bolt' }] },
+    { to: '/pricing', label: 'Pricing & tours', icon: 'cash' }, { to: '/tours', label: 'Tours & hire', icon: 'compass' }, { to: '/loyalty', label: 'Loyalty & vouchers', icon: 'gift' }, { to: '/ads', label: 'Roof advertising', icon: 'bolt' }] },
   { group: 'Admin', items: [{ to: '/reports', label: 'Reports', icon: 'document' }, { to: '/tax', label: 'Tax & compliance', icon: 'receipt' }, { to: '/settings', label: 'Settings & broadcast', icon: 'settings' }] },
 ];
 
@@ -146,6 +147,7 @@ function Shell({ me, onSignOut }: { me: any; onSignOut: () => void }) {
             <Route path="/drivers" element={<Drivers />} />
             <Route path="/fleet" element={<Fleet />} />
             <Route path="/pricing" element={<Pricing />} />
+            <Route path="/tours" element={<Tours />} />
             <Route path="/loyalty" element={<Loyalty />} />
             <Route path="/ads" element={<Ads />} />
             <Route path="/business" element={<Business />} />

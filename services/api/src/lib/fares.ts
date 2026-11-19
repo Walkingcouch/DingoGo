@@ -38,6 +38,8 @@ export interface FareContext {
   fuelSurchargeCents?: number;
   /** Approved concession card (admin community pricing): percent off the discountable amount, optional cap. DingoGo-funded. */
   concession?: { pct: number; max_cents: number | null; label: string } | null;
+  /** Round 19: fee for a tour led by an Aboriginal guide. Added after discounts, outside the driver's fare, 100% to the guide. */
+  guideFeeCents?: number;
 }
 
 export interface FareLine { label: string; cents: number }
@@ -51,6 +53,7 @@ export interface FareQuote {
   long_pickup_cents: number;
   long_pickup_km: number | null;
   fuel_surcharge_cents: number;
+  guide_fee_cents: number;
   discount_cents: number;
   points_redeemed: number;
   total_cents: number;
@@ -60,6 +63,7 @@ export interface FareQuote {
 }
 
 export const POINTS_PER_DOLLAR_REDEEM = 100;
+export const GUIDE_FEE_LABEL = 'Aboriginal guide (paid in full to your guide)';
 
 export function localHour(at: Date, tz = 'Australia/Darwin'): number {
   return Number(new Intl.DateTimeFormat('en-AU', { hour: 'numeric', hourCycle: 'h23', timeZone: tz }).format(at));
@@ -166,18 +170,21 @@ export function quoteFare(rule: FareRule, ctx: FareContext): FareQuote {
 
   const fuel = ctx.fixedPriceCents == null ? Math.max(0, round5(ctx.fuelSurchargeCents ?? 0)) : 0;
   if (fuel) lines.push({ label: 'Fuel surcharge (all to your driver)', cents: fuel });
+  const guide = Math.max(0, Math.round(ctx.guideFeeCents ?? 0));
+  if (guide) lines.push({ label: GUIDE_FEE_LABEL, cents: guide });
   if (levy) lines.push({ label: levyLabel, cents: levy });
-  const total = Math.max(0, round5(subtotal - discount)) + fuel + levy;
+  const total = Math.max(0, round5(subtotal - discount)) + fuel + guide + levy;
   return {
     service: rule.service,
     lines,
-    subtotal_cents: subtotal + fuel + levy,
+    subtotal_cents: subtotal + fuel + guide + levy,
     trip_cents: trip,
     booking_fee_cents: booking,
     levy_cents: levy,
     long_pickup_cents: pickupCents,
     long_pickup_km: longPickup ? Math.round(longPickup.km * 10) / 10 : null,
     fuel_surcharge_cents: fuel,
+    guide_fee_cents: guide,
     discount_cents: discount,
     points_redeemed: pointsRedeemed,
     total_cents: total,
@@ -189,7 +196,10 @@ export function quoteFare(rule: FareRule, ctx: FareContext): FareQuote {
 
 /** Fare breakdown as stored on trips.fare_breakdown: the quote at booking plus what happened on the road
  *  (route change line, return-to-sender line and fee). */
-export type FareBreakdown = Partial<FareQuote> & { lines: FareLine[]; return_fee_cents?: number };
+export type FareBreakdown = Partial<FareQuote> & { lines: FareLine[]; return_fee_cents?: number;
+  /** Round 19: card deposit taken at booking (tours): its own payment, applied to the fare or a late-cancellation fee. */
+  deposit?: TripDeposit | null };
+export interface TripDeposit { cents: number; ref: string; provider: string; status: 'paid' | 'applied' | 'refunded' | 'part_refunded' }
 
 export const ROUTE_CHANGE_LABEL = 'Route change adjustment';
 export const RETURN_FEE_LABEL = 'Return to sender';

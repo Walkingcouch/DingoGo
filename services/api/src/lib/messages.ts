@@ -218,6 +218,23 @@ export const templates = {
   sms_help: t<{ support?: string | null }>({ category: 'account', smsKind: 'essential',
     render: (v) => ({ sms: `DingoGo rideshare and courier, Alice Springs.${v.support ? ` Help: ${v.support}.` : ''} Reply STOP to stop texts.` }) }),
 
+  // ── Round 19: tours and hire ──
+  tour_booked_for_you: t<{ partner: string; tour: string; ref: string; when: string; pickup: string }>({ category: 'trip', smsKind: 'transactional',
+    render: (v) => ({
+      title: 'Tour booked for you',
+      body: `${v.partner} booked ${v.tour} (${v.ref}) for you, ${v.when}, pickup at ${v.pickup}.`,
+      sms: `DingoGo: ${v.partner} booked ${v.tour} for you (${v.ref}), ${v.when}, pickup at ${v.pickup}. Bring water and a hat. We'll text when your driver is on the way.`,
+    }) }),
+  tour_advisory: t<{ ref: string; tour: string; title: string; message: string; free: boolean }>({ category: 'safety', smsKind: 'transactional',
+    render: (v) => ({
+      title: v.title,
+      body: `${v.message} This affects ${v.tour} (${v.ref}).${v.free ? ' You can cancel or move it for free.' : ''}`,
+    }) }),
+  guide_assigned: t<{ tour: string; when: string; pickup: string; ref: string; cents: number }>({ category: 'trip', smsKind: 'transactional',
+    render: (v) => ({ sms: `DingoGo: you're guiding ${v.tour} (${v.ref}), ${v.when}, pickup ${v.pickup}. Your fee ${money(v.cents)}. Call DingoGo if you can't make it.` }) }),
+  hire_quote: t<{ name: string; cents: number; url: string; days: number }>({ category: 'account', smsKind: 'transactional',
+    render: (v) => ({ sms: `DingoGo: hi ${v.name}, your hire quote is ${money(v.cents)} incl. GST. See it and accept here within ${v.days} days: ${v.url}` }) }),
+
   // ── Marketing (only with consent; footer names DingoGo and how to stop) ──
   promo: t<{ title: string; body: string }>({ category: 'promo', smsKind: 'marketing',
     render: (v) => ({

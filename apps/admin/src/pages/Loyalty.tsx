@@ -15,14 +15,17 @@ export default function Loyalty() {
       {tab === 'programme' && <Programme />}
       {tab === 'winback' && <WinBack />}
       {tab === 'partners' && <CrudSection title="Partners" path="partners" newLabel="Add partner" fields={[
-        { key: 'name', label: 'Business name', required: true }, { key: 'kind', label: 'Type', type: 'select', required: true, options: [['cafe', 'Café'], ['shop', 'Shop'], ['community', 'Community organisation'], ['other', 'Other']] },
+        { key: 'name', label: 'Business name', required: true }, { key: 'kind', label: 'Type', type: 'select', required: true, options: [['cafe', 'Café'], ['shop', 'Shop'], ['community', 'Community organisation'], ['hotel', 'Hotel (books tours)'], ['visitor_centre', 'Visitor centre (books tours)'], ['tour_desk', 'Tour desk (books tours)'], ['other', 'Other']] },
         { key: 'address', label: 'Address', full: true }, { key: 'lat', label: 'Latitude', type: 'number', step: 0.0001 }, { key: 'lng', label: 'Longitude', type: 'number', step: 0.0001 },
         { key: 'phone', label: 'Phone', type: 'tel' }, { key: 'email', label: 'Email', type: 'email' }, { key: 'logo_url', label: 'Logo URL', full: true },
         { key: 'settlement_cents_per_redemption', label: 'DingoGo pays per redemption', type: 'money', help: 'What we reimburse the partner for each reward served' },
         { key: 'aboriginal_owned', label: 'Aboriginal-owned business', type: 'bool' }, { key: 'active', label: 'Active', type: 'bool' },
+        { key: 'tour_commission_pct', label: 'Tour commission (%)', type: 'number', step: 0.5, help: 'Hotels, visitor centres and tour desks: earned on each tour they book, once it is done' },
+        { key: 'corporate_account_id', label: 'Business account billed for desk bookings (id)', help: 'From Business accounts. Needed before the desk can book tours for guests' },
       ]} cols={[
         { key: 'name', label: 'Partner', render: (p) => <strong>{p.name}</strong> }, { key: 'kind', label: 'Type', render: (p) => label(PARTNER_KIND, p.kind) }, { key: 'address', label: 'Address', truncate: 240 },
         { key: 'settlement_cents_per_redemption', label: 'Paid per redemption', num: true, render: (p) => money(p.settlement_cents_per_redemption) },
+        { key: 'tour_commission_pct', label: 'Tour commission', num: true, render: (p) => (Number(p.tour_commission_pct) ? `${Number(p.tour_commission_pct)}%` : '') },
         { key: 'aboriginal_owned', label: '', render: (p) => p.aboriginal_owned && <Chip tone="ochre">Aboriginal-owned</Chip> },
         { key: 'active', label: 'Status', render: (p) => (p.active ? <Chip tone="green">Active</Chip> : <Chip>Inactive</Chip>) },
       ]} describe={<p className="dg-muted" style={{ marginTop: 0 }}>Partner staff sign in to the partner portal with a user whose role is "partner" and is linked to the business (Settings, users).</p>} />}

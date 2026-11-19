@@ -64,13 +64,13 @@ export const isGreenFuel = (f?: string | null) => f === 'electric' || f === 'plu
 export const VEHICLE_STATUS: Map = { pending: 'Waiting for check', approved: 'Approved', rejected: 'Not approved' };
 export const VEHICLE_STATUS_TONE: Map = { pending: 'ochre', approved: 'green', rejected: 'red' };
 export const EVENT_TYPE: Map = { relay_call: 'Call through DingoGo number', requested: 'Requested', offered: 'Offered to driver', accepted: 'Driver accepted', arrived: 'Driver arrived', started: 'Trip started', in_progress: 'Trip started', completed: 'Completed', cancelled: 'Cancelled', no_drivers: 'No driver available', picked_up: 'Parcel collected', delivered: 'Parcel delivered', refund: 'Refund issued', rated: 'Rated', pin_verified: 'PIN checked', scheduled: 'Scheduled', released: 'Released to drivers', redispatched: 'Searching again', pod_pin_failed: 'Wrong delivery PIN',
-  payment_failed: 'Payment failed', payment_retried: 'Payment taken (retry)', payment_retry_failed: 'Retry payment failed', hold_lapsed: 'Card hold lapsed',
+  payment_failed: 'Payment failed', deposit_applied: 'Tour deposit used or refunded', deposit_refund_failed: 'Deposit refund failed', payment_retried: 'Payment taken (retry)', payment_retry_failed: 'Retry payment failed', hold_lapsed: 'Card hold lapsed',
   dispute_opened: 'Dispute opened', dispute_updated: 'Dispute updated', dispute_closed: 'Dispute closed',
   driver_released: 'Back to the search (driver pulled out)', driver_silent: 'No signal from driver', offer_withdrawn: 'Offer withdrawn (driver went offline)',
   sos: 'Emergency alert', check_in: 'Asked "Are you OK?"', check_in_ok: 'Rider is OK', check_in_help: 'Rider asked for help', check_in_escalated: 'No answer: emergency alert raised',
   check_in_late_answer: 'Rider answered after the alert', shared_with_contacts: 'Shared with trusted contacts', incident_reported: 'Safety report sent',
   cancelled_rider: 'Cancelled by rider', cancelled_driver: 'Cancelled by driver', cancelled_admin: 'Cancelled by DingoGo', declined: 'Driver declined' };
-export const PARTNER_KIND: Map = { cafe: 'Café', shop: 'Shop', community: 'Community organisation', other: 'Other' };
+export const PARTNER_KIND: Map = { cafe: 'Café', shop: 'Shop', community: 'Community organisation', hotel: 'Hotel', visitor_centre: 'Visitor centre', tour_desk: 'Tour desk', other: 'Other' };
 export const SERVICE_NAME: Map = { ride: 'Ride', pet: 'Pet-friendly ride', courier_s: 'Courier, small', courier_m: 'Courier, medium', courier_l: 'Courier, large', tour: 'Tour', hourly: 'Hourly hire' };
 
 /** The API phrases driver compliance problems for the driver ("your application"). Rephrase for staff and strip raw codes. */

@@ -91,10 +91,19 @@ export default function Pricing() {
         { key: 'summary', label: 'Summary', type: 'textarea', required: true }, { key: 'description', label: 'Description', type: 'textarea', required: true },
         { key: 'cultural_note', label: 'Cultural note (shown before booking)', type: 'textarea' }, { key: 'stops', label: 'Stops (JSON list)', type: 'json' },
         { key: 'requires_permit', label: 'Needs a park or land permit', type: 'bool' }, { key: 'active', label: 'Bookable', type: 'bool' },
+        { key: 'itinerary', label: 'Itinerary (JSON: [{"name", "minutes", "note", "protocols": ["no_climbing", "no_swimming", "photos_restricted", "stay_on_path", "follow_owners", "gender_restricted", "quiet", "entry_fee"]}])', type: 'json', full: true },
+        { key: 'start_times', label: 'Start times (Alice Springs time, e.g. 07:00, 15:00)', type: 'array' },
+        { key: 'season_months', label: 'Months it runs (numbers 1-12, empty = all year)', type: 'array' }, { key: 'days', label: 'Days it runs (0 = Sunday ... 6 = Saturday, empty = every day)', type: 'array' },
+        { key: 'min_notice_hours', label: 'Book at least (hours ahead)', type: 'number' }, { key: 'deposit_pct', label: 'Deposit % (empty = the usual)', type: 'number' },
+        { key: 'heat_sensitive', label: 'Walking in the open (heat advisories set the latest start)', type: 'bool' }, { key: 'hotel_pickup', label: 'Hotel pickup', type: 'bool' },
+        { key: 'guided_by', label: 'Led by', type: 'select', options: [['driver', 'Your driver'], ['aboriginal_guide', 'An Aboriginal guide']] },
+        { key: 'guide_fee_cents', label: 'Guide fee (paid in full to the guide, added to the price)', type: 'money' },
+        { key: 'translations', label: 'Visitor-language text (JSON: {"de": {"name", "summary", "status": "machine"}}; "reviewed" needs reviewed_by and reviewed_on)', type: 'json', full: true },
       ]} cols={[
         { key: 'name', label: 'Tour', render: (t) => <strong>{t.name}</strong> }, { key: 'duration_min', label: 'Duration', num: true, render: (t) => `${(t.duration_min / 60).toFixed(1)} h` },
         { key: 'price_cents', label: 'Price', num: true, render: (t) => money(t.price_cents) }, { key: 'stops', label: 'Stops', render: (t) => (t.stops ?? []).join(', ') },
         { key: 'requires_permit', label: 'Permit', render: (t) => (t.requires_permit ? <Chip tone="ochre">Required</Chip> : 'No') },
+        { key: 'guided_by', label: 'Led by', render: (t) => (t.guided_by === 'aboriginal_guide' ? <Chip tone="ochre">Aboriginal guide</Chip> : 'Driver') },
         { key: 'active', label: 'Status', render: (t) => (t.active ? <Chip tone="green">Bookable</Chip> : <Chip>Hidden</Chip>) },
       ]} />}
       </Tabs>

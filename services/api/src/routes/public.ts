@@ -122,7 +122,7 @@ export default async function publicRoutes(app: FastifyInstance) {
     return { quote, in_service_area: !!zone, zone: zone?.name ?? null };
   });
 
-  app.get('/public/tours', async () => ({ tours: await q('SELECT * FROM tour_packages WHERE active ORDER BY price_cents') }));
+  // /public/tours: routes/tours.ts (Round 19).
   app.get('/public/partners', async () => ({
     partners: await q('SELECT id, name, kind, address, lat, lng, logo_url, aboriginal_owned FROM partners WHERE active ORDER BY name'),
   }));

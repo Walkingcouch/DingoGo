@@ -1279,3 +1279,97 @@ Ideas for next rounds:
 - Real-user monitoring (web vitals and API timings by route) through the analytics hook, with a budget alert in CI.
 - Uploads to Supabase Storage (still open): removes bytea from the database, its backups and its cache.
 - A nightly load run in CI against the volume fixture with a p95 budget per hot path.
+
+### Round 19 — tours, hire and tourism
+Scan: read the tour packages table and seed, `buildQuote`/`precheck`/`insertTrip`/`settle`/`cancelTrip` for tours and hourly hire, the
+rider Tours and Hire panels and trip cancel dialog, the website Tours and Legal pages, admin Pricing → Tours, hire requests in Support,
+the partner portal and the cancellation policy setting. Found: tours bookable at any minute of any day (no start times, season, notice or
+weather), guests not checked against the tour's maximum; a tour booked inside 48 hours was charged 50% the moment it was booked, and the
+rider's cancel dialog said "no charge" for it; no deposit; `service: 'hourly'` was priced by the drive time between pickup and drop-off
+(a 3-hour hire to the airport cost one 15-minute fare); editing a tour's stops in admin failed (a JS array was sent to the jsonb column as
+a Postgres array); hire requests only took a manual dollar figure with no way for the customer to accept; no itinerary detail, cultural
+protocols per stop, heat or closure handling, outback safety advice, hotel pickups or partner bookings, no Aboriginal guide model, no
+visitor languages; the Legal page quoted a $25 tour/hire cancellation fee that contradicts the 48 h / 50% policy and $6 ride fees.
+
+Suggested:
+1. [add] Tour products: itinerary (stop, minutes, note, cultural/site protocols from a fixed list), season months, weekdays, Darwin start
+   times, minimum notice, heat-sensitive flag, hotel pickup, led by driver or Aboriginal guide with a guide fee, own deposit %, visitor-
+   language text; validated admin edits; built-in itineraries for the four seeded tours so it all works before the migration.
+2. [add] Availability and booking checks: `/public/tours/:slug/availability` by Darwin date with the reason a time can't be booked;
+   bookings refused off-timetable, out of season, too soon, over the guest limit, on a closure day or after a heat advisory's latest start.
+3. [add] Card deposit and the 48-hour rule: deposit charged at booking as its own payment, the rest held at release; cancel terms (free
+   before 48 h, free 10 min after booking, free on advisory days, else 50%) with the deposit paying the fee first and the rest refunded;
+   no-drivers / declined-at-release refunds it; staff refunds go back against each payment; rider "what cancelling costs now" endpoint and
+   dialog.
+4. [fix] Hourly hire priced by the hours booked (`hire_hours`, 1–10 h, 24 h notice online) instead of the drive; admin tour `stops`/
+   `itinerary` written as JSON; Legal page and FAQ wording.
+5. [add] Hire quotes: calculator (hourly rule, minimum, day-rate cap, multi-day discount, levy per car per day, 10-hour fatigue cap), admin
+   "Send quote" storing the quote with a private link (texted), public quote page with terms and "Accept" (once, expiry).
+6. [add] Hotels, visitor centres and tour desks: partner kinds with commission % and a linked business account; partner portal Tours tab
+   books for a guest (pickup at the desk, guest texted, billed to the account), commission fixed at booking, earned on completion, void on
+   cancel; monthly commission view and CSV; admin "Mark paid" per month; partner hotels offered as pickup points.
+7. [add] Aboriginal-guided tours: guides register (community, consent to show name, ABN, payment reference), guide fee line outside
+   discounts and outside the driver's fare, guide assigned per booking (texted), owed in full on completion or the late fee's share on a late
+   cancel, admin payment runs with a reference and CSV.
+8. [add] Heat and safety advisories: heat / closure / fire / flood / road / water advisories by day and tour; heat sets the latest start for
+   walking tours, closures stop bookings; booked guests told in the app with free cancellation; outback safety advice per tour (water by
+   duration and guests, hat and shoes, coverage, summer heat, permits).
+9. [add] Visitor languages (German, French, Italian, Japanese, Korean, Simplified Chinese) for the tour and hire screens: separate
+   `visitor.json` with every entry flagged `machine` (reviewer and date needed for `reviewed`), `tv()` helper, seeded tour names/summaries
+   translated and flagged, `?lang=` on the catalogue, language picker with a "machine translation, being checked" note on the rider and
+   website tour screens; the community-language file stays machine-free.
+10. [add] Apps and docs: admin Tours & hire page (bookings with guide assignment, advisories, guides, guide payments, desk commissions,
+    deposit and hire policy), tour fields in Pricing, hire quote modal, partner-kind fields; rider tours (itinerary, protocols, start-time
+    picker, advisories, safety, hotel pickups, deposit and terms) and "Book a car by the hour"; website tours (language picker, itinerary,
+    advisories, safety, terms) and `/hire/:token`; API.md, OPERATIONS.md §9b, README.
+
+Done (all 10). Migration: `services/api/migrations/023_tours.sql` (columns `tour_packages.itinerary/season_months/days/start_times/
+min_notice_hours/heat_sensitive/hotel_pickup/guided_by/guide_fee_cents/deposit_pct/translations`, `partners.tour_commission_pct/
+corporate_account_id`, `hire_requests.quote/quote_token/quote_sent_at/quote_expires_at/start_date/accepted_at/accepted_name`; tables
+`tour_advisories`, `tour_guides`, `tour_guide_jobs`, `tour_commissions`; additive, IF NOT EXISTS). Before it is applied
+(`services/tours.ts` `toursReady()`, re-checked once a minute): catalogue, availability, booking checks (built-in timetables), deposit,
+cancel terms, hourly hire and the hire calculator work; advisories are empty; new tour fields, advisories, guides, desk bookings,
+commissions and hire quote links answer 503 `migration_pending`; admin forms still save the old fields. Tests: 174 → 188
+(`tours.test.ts` 7 unit tests — built-in vs own products, availability and every booking check incl. heat/closure/notice/staff, deposit
+and cancel terms incl. change of mind and advisory, hire quotes incl. minimum/day cap/multi-day/levy/fatigue, admin field and policy
+checks, visitor-language files (all flagged, placeholders kept, none in the community file) and localising, safety advice and the guide
+fee line; 6 e2e — catalogue in a visitor language with protocols, safety and terms; booking rules, hourly hire priced by hours, admin tour
+edits incl. the JSON list fix and a reviewed translation; deposit charged, refunded on a free cancel, change of mind free, late fee from
+the deposit then the card, a guided tour released/held for the rest/completed with two captures, the driver paid on the tour price only,
+the guide owed and paid once, a full refund against both payments, the guide's share on a late cancel; heat advisory notifying the booked
+guest, blocking walks, free cancel, closures; hotel desk booking for a guest with commission void on cancel, earned, month payment, no full
+guest phone, account required; hire quote calculator, send, public view, accept once, expiry; everything with the 023 columns and tables
+renamed away). The existing tour cancellation test now books real start times and steps past the change-of-mind minutes; the first ride test reads the tier after the trip (the seed gives the demo rider a random number of past trips, so it could cross into Silver and fail).
+- API: new `src/lib/tours.ts` (products, protocols, BUILT_IN and SEED_TRANSLATIONS, `checkStart`, `availability`, `scheduledCancel`,
+  `depositCents`, `hireQuote`, policy, safety), `src/services/tours.ts` (`toursReady`, cached products/advisories, `checkTourBooking`,
+  `cancelTermsFor`, guide/commission hooks, `assignGuide`, `notifyAdvisory`, commissions, hire quotes), `src/routes/tours.ts`;
+  `lib/fares.ts` (`guideFeeCents`, `GUIDE_FEE_LABEL`, `TripDeposit`); `services/trips.ts` (tour/hourly prechecks, guide fee and hours in
+  `buildQuote`, deposit in `insertTrip` with undo, `depositLeft`/`applyDeposit` in `placeHold`/`settle`/`cancelTrip`/no drivers/declined
+  release, cancel terms, tour hooks); `routes/admin.ts` (tour and partner `prepare`, `tour_policy` setting, refund across deposit and fare
+  payments); `lib/messages.ts` (4 templates); old `/public/tours` and `/tours` moved to the new routes.
+- Shared: `i18n/visitor.json`, `visitor.ts` (`tv`, `VISITOR_LANGS`, `visitorIsMachine`, saved language).
+- Behaviour changes to note: tours must be booked at one of the tour's start times, in season, with at least the notice (12 h town tours,
+  24 h West MacDonnells) and within the guest limit (staff phone bookings may be later); card tour bookings take a 20% deposit at booking
+  and hold only the rest at release; cancelling a tour in the first 10 minutes after booking is free; heat/closure advisory days make
+  cancelling free; hourly hire needs `hire_hours` (priced as hours × $75) and 24 h notice online; `GET /public/tours` returns `{ tours,
+  lang, languages, advisories, terms }` (tours carry the new fields); partner kinds can be hotel/visitor_centre/tour_desk.
+- Deploy: apply migration 023 (AUTO_MIGRATE does it). No env vars. Check with the owner: the 20% deposit, 10-minute change of mind, the
+  hire day-rate cap (8 h) and multi-day discount (10% from 3 days), guide fees and the GST treatment of guide fees, desk commission rates.
+  Machine translations need a fluent reviewer before they are marketed. No data fix.
+
+Deferred:
+- Paying a hire quote's deposit online (customers are not signed in; needs Stripe Checkout) and turning an accepted multi-day quote into
+  scheduled hourly trips per car per day automatically: ops still create those as phone bookings.
+- Live weather (BOM forecast feed) to suggest heat advisories automatically: needs a data agreement; ops post them for now.
+- Guide self-service (guides see their bookings and payments) and guide availability calendars: a guide login role is a bigger change.
+- Desk bookings paid by the guest's own card at the desk (Stripe Terminal / payment link): desks bill to their account for now.
+- Translating itineraries, protocols and safety advice per stop into visitor languages: only names, summaries and screen words so far.
+- Group tours with several cars and per-seat pricing for coach groups.
+
+Ideas for next rounds:
+- Hire deposit and balance by payment link, and automatic scheduled trips from an accepted quote (driver roster per day).
+- Guide portal: upcoming tours, owed and paid, with consent-based profile shown to guests.
+- BOM heat forecast import that drafts heat advisories for ops to approve, and a "move my tour" flow for guests on advisory days.
+- Tour reviews and ratings per tour and per guide, shown with consent on the website.
+- Yulara / Uluru long-distance tours when the zone opens (charging plan, overnight driver rest rules).
+- Desk statements as PDF and a QR poster for hotel lobbies linking to the tour pages with the desk's referral.

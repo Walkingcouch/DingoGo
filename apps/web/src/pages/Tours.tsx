@@ -1,26 +1,45 @@
 import { useEffect, useState } from 'react';
-import { get, money } from '@dingogo/shared';
+import { VISITOR_LANGS, get, money, saveVisitorLang, savedVisitorLang, tv, visitorIsMachine, visitorLangName, type VisitorLang } from '@dingogo/shared';
 import { PageHead } from '../Layout';
 import { Area, Field, formData, Sent, useSubmit } from '../forms';
 import { useMeta } from '../meta';
 import { FaqSection } from '../components/Faq';
 
-type Tour = { id: string; slug: string; name: string; summary: string; description: string; duration_min: number; price_cents: number; max_passengers: number; stops: string[]; cultural_note: string | null; requires_permit: boolean };
+type Stop = { name: string; minutes: number; note?: string | null; protocols?: string[] };
+type Tour = { id: string; slug: string; name: string; summary: string; description: string; duration_min: number; price_cents: number; max_passengers: number; stops: string[];
+  cultural_note: string | null; requires_permit: boolean; itinerary?: Stop[]; protocols?: Record<string, string>; start_times?: string[]; guided_by?: string; guide_fee_cents?: number;
+  heat_sensitive?: boolean };
+type Advisory = { id: string; title: string; message: string; tour_ids: string[] };
 const hours = (m: number) => (m % 60 ? `${Math.floor(m / 60)} h ${m % 60} min` : `${m / 60} hours`);
 
 export default function Tours() {
   useMeta();
   const [tours, setTours] = useState<Tour[] | null>(null);
+  const [advisories, setAdvisories] = useState<Advisory[]>([]);
+  const [terms, setTerms] = useState<{ deposit_pct: number; free_cancel_hours: number; late_pct: number } | null>(null);
   const [err, setErr] = useState(false);
   const f = useSubmit('/public/hire-requests');
   const [pick, setPick] = useState('');
-  useEffect(() => { get<{ tours: Tour[] }>('/public/tours').then((r) => setTours(r.tours)).catch(() => setErr(true)); }, []);
+  const [lang, setLangState] = useState<VisitorLang>(savedVisitorLang());
+  const setLang = (l: VisitorLang) => { setLangState(l); saveVisitorLang(l); };
+  useEffect(() => {
+    get<{ tours: Tour[]; advisories?: Advisory[]; terms?: any }>(`/public/tours?lang=${lang}`)
+      .then((r) => { setTours(r.tours); setAdvisories(r.advisories ?? []); setTerms(r.terms ?? null); }).catch(() => setErr(true));
+  }, [lang]);
 
   return (
     <>
       <PageHead tone="gap" title="Private tours from town">Your own car and driver for the morning, the afternoon or sunset. One price per car, for up to four people.</PageHead>
       <section className="section">
         <div className="wrap">
+          <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: 12 }}>
+            <label className="dg-field" style={{ margin: 0, maxWidth: 220 }}><span>{tv('language', lang)}</span>
+              <select className="dg-select" value={lang} onChange={(e) => setLang(e.target.value as VisitorLang)}>
+                {VISITOR_LANGS.map((l) => <option key={l} value={l}>{visitorLangName(l)}</option>)}
+              </select></label>
+            {visitorIsMachine(lang) && <p className="dg-muted" role="note" style={{ margin: 0, maxWidth: '60ch' }}>{tv('machine_note', lang)}</p>}
+          </div>
+          {advisories.map((a) => <p key={a.id} className="advisory" role="status"><b>{a.title}.</b> {a.message}</p>)}
           {err && <p className="dg-error">Tours couldn't load. Call us to book.</p>}
           {!tours && !err && <p className="dg-muted">Loading tours…</p>}
           <div>
@@ -28,19 +47,32 @@ export default function Tours() {
               <article className="tour" key={t.id} id={t.slug}>
                 <div>
                   <h3>{t.name}</h3>
-                  <p className="meta">{hours(t.duration_min)}, up to {t.max_passengers} guests</p>
+                  <p className="meta">{hours(t.duration_min)}, {tv('up_to_guests', lang, { n: t.max_passengers }).toLowerCase()}{t.start_times?.length ? `, starts ${t.start_times.join(' or ')}` : ''}</p>
+                  {t.guided_by === 'aboriginal_guide' && <p className="meta"><b>{tv('aboriginal_guide', lang)}</b> (guide fee {money(t.guide_fee_cents ?? 0)}, paid in full to your guide)</p>}
                   <p style={{ margin: 0, maxWidth: '68ch' }}>{t.description}</p>
-                  <div className="stops">{t.stops.map((s) => <span className="dg-chip" key={s}>{s}</span>)}</div>
-                  {t.cultural_note && <p className="culture"><b>Respecting Country.</b> {t.cultural_note}</p>}
+                  {t.itinerary?.length ? (
+                    <ol className="stops-list">{t.itinerary.map((s) => (
+                      <li key={s.name}><b>{s.name}</b>, about {s.minutes} min{s.note ? `. ${s.note}` : ''}
+                        {s.protocols?.length ? <span className="dg-muted"> {s.protocols.map((p) => t.protocols?.[p]).filter(Boolean).join(' ')}</span> : null}</li>))}</ol>
+                  ) : <div className="stops">{t.stops.map((s) => <span className="dg-chip" key={s}>{s}</span>)}</div>}
+                  {t.cultural_note && <p className="culture"><b>{tv('respect_country', lang)}.</b> {t.cultural_note}</p>}
+                  {advisories.filter((a) => a.tour_ids.includes(t.id)).map((a) => <p key={a.id} className="culture" role="status"><b>{a.title}.</b> {a.message}</p>)}
                 </div>
                 <aside>
-                  <b>{money(t.price_cents)}</b>
+                  <b>{money(t.price_cents + (t.guide_fee_cents ?? 0))}</b>
                   <span className="dg-muted">per car, incl. GST</span><br />
                   <a className="dg-btn dg-btn--sm" style={{ marginTop: 12 }} href="#enquire" onClick={() => setPick(t.name)}>Ask about this tour</a>
                 </aside>
               </article>
             ))}
           </div>
+          <h2 style={{ marginTop: 28 }}>{tv('safety_title', lang)}</h2>
+          <ul className="prose">
+            <li>{tv('water', lang, { l: '4–5' })} (half day, each person)</li>
+            <li>{tv('hat_shoes', lang)}</li>
+            <li>Phone coverage is patchy outside town. Your driver carries a satellite messenger and a first aid kit. From October to March, walks start early; on extreme heat days we move or refund tours.</li>
+          </ul>
+          {terms && <p className="prose">{tv('cancel_terms', lang, { h: terms.free_cancel_hours, pct: terms.late_pct })} {terms.deposit_pct > 0 ? tv('deposit_now', lang, { pct: terms.deposit_pct }) : ''}</p>}
           <p className="dg-muted prose" style={{ marginTop: 20 }}>Park entry fees aren't included. Some places on these routes are sacred sites or on Aboriginal land; your driver will explain where you can walk, swim and take photos. Trips onto Aboriginal land beyond these routes need a permit from the Central Land Council, which we'll help arrange. For longer guided cultural tours we partner with licensed Aboriginal tour operators.</p>
         </div>
       </section>
@@ -60,7 +92,7 @@ export default function Tours() {
                 <Field label="Email" name="contact_email" type="email" required autoComplete="email" />
                 <Field label="Mobile" name="contact_phone" type="tel" autoComplete="tel" />
                 <Field label="Date" name="event_date" type="date" />
-                <Field label="Number of guests" name="passengers" type="number" min={1} max={4} />
+                <Field label="Number of guests" name="passengers" type="number" min={1} max={Math.max(4, ...(tours ?? []).map((t) => t.max_passengers))} />
                 <Area label="Anything we should know" name="details" placeholder="Hotel for pickup, mobility needs, kids' car seats…" />
                 {f.error && <p className="dg-error full">{f.error}</p>}
                 <div className="full"><button className="dg-btn" disabled={f.busy}>{f.busy ? 'Sending…' : 'Send tour request'}</button></div>

@@ -6,7 +6,7 @@ import { Page } from '../ctx';
 import { Chip, Drawer, ErrorMsg, Modal, Table, downloadCsv, useAsk, useRun, useToast, type Col } from '../ui';
 import { CHANNEL, COMMS_STATUS, COMMS_TEMPLATE, EVENT_TYPE, LEDGER_KIND, OFFER_STATUS, PARCEL_SIZE, PARCEL_OUTCOME, FAIL_REASON, PAYMENT_KIND, PAYMENT_METHOD, PAYMENT_PROVIDER, PAYMENT_ROW_STATUS, PAYMENT_STATUS, SERVICE_NAME, label } from '../labels';
 
-const SERVICES: [string, string][] = [['ride', 'Ride'], ['pet', 'Pet-friendly'], ['courier_s', 'Courier small'], ['courier_m', 'Courier medium'], ['courier_l', 'Courier large'], ['hourly', 'Hourly hire']];
+const SERVICES: [string, string][] = [['ride', 'Ride'], ['pet', 'Pet-friendly'], ['courier_s', 'Courier small'], ['courier_m', 'Courier medium'], ['courier_l', 'Courier large'], ['tour', 'Tour'], ['hourly', 'Hourly hire']];
 
 type Filters = { q: string; status: string; kind: string; from: string; to: string };
 const NO_FILTERS: Filters = { q: '', status: '', kind: '', from: '', to: '' };

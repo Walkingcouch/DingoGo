@@ -22,6 +22,9 @@ import type { TripMoney } from '../lib/tripTypes.js';
 import { loadCourierPolicy, onParcelsCollected, returnFeeFor } from './courier.js';
 import { NO_FAULT_CANCEL_REASONS, concessionFor, loadCommunityPricing, localDate } from '../lib/community.js';
 import { cached, settingValue } from '../lib/cache.js';
+import * as tours from './tours.js';
+import { depositCents } from '../lib/tours.js';
+import type { TripDeposit } from '../lib/fares.js';
 
 export const ACTIVE = ['requested', 'accepted', 'arrived', 'in_progress'] as const;
 
@@ -34,6 +37,8 @@ export interface QuoteInput {
   redeem_points?: number;
   corporate_account_id?: string | null;
   tour_package_id?: string | null;
+  /** Round 19: hourly hire booked online, priced by the hours booked (not the drive). */
+  hire_hours?: number | null;
 }
 
 /** Fare rules, zones (with their state levy) and public holidays: read on every quote, changed only in admin (cached, Round 18). */
@@ -111,12 +116,23 @@ export async function buildQuote(userId: string | null, input: QuoteInput, c: Q 
 
   let fixedPriceCents: number | undefined;
   let r = await route(opts.legFrom ?? input.pickup, input.dropoff);
+  let guideFeeCents = 0;
   if (input.service === 'tour') {
     if (!input.tour_package_id) throw bad('tour_required', 'Choose a tour package');
-    const t = await one('SELECT * FROM tour_packages WHERE id = $1 AND active', [input.tour_package_id], c);
-    if (!t) throw notFound('Tour');
+    const t = await tours.loadTour(input.tour_package_id);
+    if (!t || !t.active) throw notFound('Tour');
     fixedPriceCents = t.price_cents;
+    guideFeeCents = t.guide_fee_cents;   // Aboriginal-guided tours: paid in full to the guide (Round 19)
     r = { ...r, duration_s: t.duration_min * 60 };
+  }
+  if (input.service === 'hourly') {
+    // Hourly hire is priced by the hours booked, not by the drive between pickup and drop-off.
+    const hp = (await tours.tourPolicy()).hire;
+    const hours = Number(input.hire_hours ?? 0);
+    if (!(hours >= hp.min_hours && hours <= hp.max_hours_per_day)) {
+      throw bad('hire_hours', `Choose ${hp.min_hours} to ${hp.max_hours_per_day} hours. For longer or several days, ask for a hire quote.`);
+    }
+    r = { ...r, duration_s: Math.round(hours * 3600) };
   }
 
   const at = input.scheduled_for ? new Date(input.scheduled_for) : new Date();
@@ -173,6 +189,7 @@ export async function buildQuote(userId: string | null, input: QuoteInput, c: Q 
     levy: zone.state_levy_cents != null ? { cents: Number(zone.state_levy_cents), label: zone.state_levy_label } : null,
     longPickup,
     fuelSurchargeCents,
+    guideFeeCents,
     concession,
   });
   if (opts.extraStop) quote.lines.unshift({ label: 'Extra stop on a multi-drop run (no base fare or booking fee)', cents: 0 });
@@ -220,7 +237,7 @@ export interface CreateTripInput extends QuoteInput {
   payment_method: 'card' | 'cash' | 'corporate' | 'wallet';
   women_driver_pref?: boolean;
   ndis_number?: string;
-  channel?: 'app' | 'phone' | 'web' | 'sms' | 'org';
+  channel?: 'app' | 'phone' | 'web' | 'sms' | 'org' | 'partner';
   booked_by?: string;
   parcel?: ParcelIn;
   /** Courier: collect any time between scheduled_for and this (30 min to 4 h). */
@@ -292,6 +309,20 @@ async function precheck(userId: string, input: CreateTripInput) {
       : 'Cash is not accepted for this service.');
   }
 
+  // Round 19: tours are booked for a start time the tour runs at, with room for the guests; hourly hire a set time ahead.
+  if (input.service === 'tour') {
+    if (input.kind !== 'ride') throw bad('invalid_service', 'Tours are rides');
+    if (!input.tour_package_id) throw bad('tour_required', 'Choose a tour package');
+    await tours.checkTourBooking(input.tour_package_id, input.scheduled_for, input.passengers ?? 1, { staff: input.channel === 'phone' });
+  }
+  if (input.service === 'hourly') {
+    if (input.kind !== 'ride') throw bad('invalid_service', 'Hourly hire is a ride');
+    const hp = (await tours.tourPolicy()).hire;
+    if (!input.scheduled_for) throw bad('hire_needs_date', 'Choose a start date and time for the hire');
+    if (input.channel !== 'phone' && new Date(input.scheduled_for).getTime() < Date.now() + hp.notice_hours * 3600_000) {
+      throw bad('hire_too_soon', `Book hourly hire at least ${hp.notice_hours} hours ahead, or call us`);
+    }
+  }
   if (input.scheduled_for) {
     const mins = (new Date(input.scheduled_for).getTime() - Date.now()) / 60000;
     if (mins < 20) throw bad('schedule_too_soon', 'Scheduled trips must be at least 20 minutes ahead');
@@ -305,7 +336,12 @@ export async function createTrip(userId: string, input: CreateTripInput) {
   await precheck(userId, input);
   const held: string[] = [];
   return tx((c) => insertTrip(c, userId, input, held)).catch(async (e) => {
-    for (const ref of held) await pay.cancelHold(ref);   // the booking didn't go through: don't leave money held on the card
+    // The booking didn't go through: don't leave money held on the card (or a deposit taken).
+    for (const ref of held) {
+      const dep = /^deposit:(.+):(\d+)$/.exec(ref);
+      if (dep) await pay.refund(dep[1], Number(dep[2]), `deposit-undo-${dep[1]}`).catch((x) => logError('deposit undo', x));
+      else await pay.cancelHold(ref);
+    }
     throw e;
   }).then(async (trip) => {
     await afterCreate(trip, input);
@@ -453,6 +489,24 @@ async function insertTrip(c: pg.PoolClient, userId: string, input: CreateTripInp
       }
     }
 
+    // Round 19: tours paid by card take a deposit now (its own payment); the rest is held when the booking is released.
+    if (input.payment_method === 'card' && input.service === 'tour' && scheduled && quote.total_cents > 0) {
+      const policy = await tours.tourPolicy();
+      const cents = depositCents(quote.total_cents, tours.depositPctFor(await tours.loadTour(input.tour_package_id!), policy));
+      if (cents > 0) {
+        const r = await pay.charge({ userId, amountCents: cents, description: `DingoGo tour deposit ${trip.ref}`, key: `deposit-${trip.id}`,
+          metadata: { trip_id: trip.id, kind: 'deposit' } });
+        if (!r.ok) throw payError(r);
+        held.push(`deposit:${r.ref}:${cents}`);
+        const deposit: TripDeposit = { cents, ref: r.ref, provider: r.provider, status: 'paid' };
+        quote.lines.push({ label: `Deposit paid now (rest charged on the day)`, cents: 0 });
+        (quote as any).deposit = deposit;
+        trip.fare_breakdown = { ...quote };
+        await c.query(`UPDATE trips SET fare_breakdown = $2 WHERE id = $1`, [trip.id, JSON.stringify(trip.fare_breakdown)]);
+        await c.query(`INSERT INTO payments (trip_id, user_id, provider, provider_ref, kind, amount_cents, gst_cents, status) VALUES ($1,$2,$3,$4,'deposit',$5,0,'succeeded')`,
+          [trip.id, userId, r.provider, r.ref, cents]);
+      }
+    }
     // Payment hold. Booked trips get theirs when they are released to drivers (card holds lapse after about 7 days).
     if (input.payment_method === 'card' && quote.total_cents > 0 && !scheduled) {
       const auth = await placeHold(c, trip);
@@ -483,11 +537,46 @@ export const payError = (r: pay.PayResult) =>
 /** Hold the fare on the rider's card. Each attempt (booking, release, search again) has its own idempotency key. */
 async function placeHold(c: Q, t: TripMoney): Promise<pay.PayResult> {
   const n = await one<{ n: number }>(`SELECT count(*)::int n FROM payments WHERE trip_id = $1 AND kind = 'authorise'`, [t.id], c);
-  const auth = await pay.holdForTrip({ userId: t.rider_id, tripId: t.id, attempt: n!.n + 1, amountCents: t.quote_cents, description: `DingoGo ${t.ref}` });
+  const amount = t.quote_cents - depositLeft(t);   // a tour deposit already paid isn't held again
+  const auth = await pay.holdForTrip({ userId: t.rider_id, tripId: t.id, attempt: n!.n + 1, amountCents: amount, description: `DingoGo ${t.ref}` });
   if (auth.ok) await c.query(`UPDATE trips SET payment_status = 'authorised', payment_ref = $2 WHERE id = $1`, [t.id, auth.ref]);
   await c.query(`INSERT INTO payments (trip_id, user_id, provider, provider_ref, kind, amount_cents, status) VALUES ($1,$2,$3,$4,'authorise',$5,$6)`,
-    [t.id, t.rider_id, auth.provider, auth.ref || null, auth.amount_cents ?? Math.round(t.quote_cents * 1.2), auth.ok ? 'succeeded' : 'failed']);
+    [t.id, t.rider_id, auth.provider, auth.ref || null, auth.amount_cents ?? Math.round(amount * 1.2), auth.ok ? 'succeeded' : 'failed']);
   return auth;
+}
+
+/** The card deposit still to be applied (paid and not yet used for the fare or a fee, nor refunded). */
+const depositLeft = (t: TripMoney) => (t.fare_breakdown?.deposit?.status === 'paid' ? Number(t.fare_breakdown.deposit.cents) : 0);
+
+/** Use the deposit towards `cents` (the fare or a late-cancellation fee) and refund what's left of it. Records each part
+ *  against the deposit's own payment. Returns how much of `cents` it covered. */
+async function applyDeposit(c: Q, t: TripMoney, cents: number): Promise<number> {
+  const dep = t.fare_breakdown?.deposit;
+  if (!dep || dep.status !== 'paid') return 0;
+  const used = Math.min(Math.max(0, cents), dep.cents);
+  const back = dep.cents - used;
+  if (used > 0) {
+    await c.query(`INSERT INTO payments (trip_id, user_id, provider, provider_ref, kind, amount_cents, gst_cents, status) VALUES ($1,$2,$3,$4,'capture',$5,$6,'succeeded')`,
+      [t.id, t.rider_id, dep.provider, dep.ref, used, gstOf(used)]);
+  }
+  let status: TripDeposit['status'] = 'applied';
+  if (back > 0) {
+    const r = await pay.refund(dep.ref, back, `deposit-back-${t.id}-${back}`);
+    if (!r.ok) {
+      // Money can't be stuck: ops are told and the deposit stays "paid" so a refund can be retried from admin.
+      await event(c, t.id, 'deposit_refund_failed', null, { cents: back, reason: r.error ?? null });
+      setImmediate(() => toOps('payment.failed', { trip_id: t.id, ref: t.ref, cents: back, stage: 'deposit_refund' }));
+      return used;
+    }
+    await c.query(`INSERT INTO payments (trip_id, user_id, provider, provider_ref, kind, amount_cents, gst_cents, status) VALUES ($1,$2,$3,$4,'deposit_refund',$5,0,'succeeded')`,
+      [t.id, t.rider_id, dep.provider, r.ref ?? dep.ref, -back]);
+    status = used > 0 ? 'part_refunded' : 'refunded';
+  }
+  const fb = { ...t.fare_breakdown, deposit: { ...dep, status, used_cents: used, refunded_cents: back } };
+  t.fare_breakdown = fb as FareBreakdown;
+  await c.query(`UPDATE trips SET fare_breakdown = $2 WHERE id = $1`, [t.id, JSON.stringify(fb)]);
+  await event(c, t.id, 'deposit_applied', null, { used_cents: used, refunded_cents: back });
+  return used;
 }
 
 /** Take `amount` for a card trip: capture the hold, or (no hold / it lapsed) charge the saved card. Records the result. */
@@ -721,6 +810,8 @@ async function failNoDrivers(c: pg.PoolClient, t: any, why: 'search' | 'missed' 
   await c.query(`UPDATE trip_offers SET status = 'expired' WHERE trip_id = $1 AND status = 'offered'`, [t.id]);
   await givePromoBack(c, t);
   await releaseHoldsAndPoints(c, t);
+  await applyDeposit(c, t, 0);   // no tour: the whole deposit goes back
+  await tours.onTourCancelled(c, t, 0);
   await event(c, t.id, 'no_drivers', null, why === 'missed' ? { reason: 'Booking was not sent to drivers in time' } : undefined);
   // The rest of a multi-drop run was waiting for this drop's driver: it ends too.
   if (t.batch_id && !t._follower) {
@@ -839,6 +930,8 @@ async function releaseBooking(tripId: string) {
           [t.id, 'Card declined when the booking was due']);
         await givePromoBack(c, t);
         await releaseHoldsAndPoints(c, { ...t, payment_status: 'none' });
+        await applyDeposit(c, t, 0);
+        await tours.onTourCancelled(c, t, 0);
         await event(c, t.id, 'payment_failed', null, { stage: 'release', reason: auth.code ?? null });
         return { t, failed: auth };
       }
@@ -1290,6 +1383,7 @@ export async function completeTrip(driverId: string, tripId: string, input: Comp
       [tripId, final, actualM, ...tapArg(r)]);
     await event(c, tripId, 'completed', driverId, idemData(r, { final_cents: final }));
     await settle(c, { ...t, final_cents: final });
+    await tours.onTourCompleted(c, t);
     return { t, returned, far: farFlag };
   }).catch(async (e) => {
     // Recorded outside the (rolled-back) transaction so the try limit holds.
@@ -1328,8 +1422,13 @@ async function settle(c: pg.PoolClient, t: TripMoney & { final_cents: number; dr
   if (t.payment_method === 'card') {
     // Capture the hold (or charge the saved card if it lapsed or was never placed). A failure leaves the trip "failed" to pay
     // (rider "Pay now", ops "Retry charge"); the driver is paid either way.
-    if (amount > 0) {
-      const r = await collectCard(c, t, amount, 'fare', `DingoGo ${t.ref}`);
+    // A tour deposit pays the first part of the fare (Round 19); the hold covers the rest.
+    const fromDeposit = await applyDeposit(c, t, amount);
+    if (fromDeposit > 0 && amount - fromDeposit <= 0) {
+      if (t.payment_status === 'authorised' && t.payment_ref && t.payment_ref !== 'wallet') await pay.cancelHold(t.payment_ref);
+      await c.query(`UPDATE trips SET payment_status = 'captured' WHERE id = $1`, [t.id]);
+    } else if (amount - fromDeposit > 0) {
+      const r = await collectCard(c, t, amount - fromDeposit, 'fare', `DingoGo ${t.ref}`);
       // Charged afresh (the hold had lapsed, or the amount was more than the hold, e.g. a return fee): let the old hold go
       // instead of leaving the money held on the rider's card for a week.
       const held = t.payment_status === 'authorised' && t.payment_ref && t.payment_ref !== 'wallet' ? t.payment_ref : null;
@@ -1437,9 +1536,9 @@ export async function cancelTrip(actor: { id: string; role: string }, tripId: st
       ?? { free_window_s: 120, scheduled_free_hours: { tour: 48, hourly: 24 }, scheduled_late_pct: 50 };
     const freeHours = policy.scheduled_free_hours?.[t.service];
     if (isRider && freeHours && t.scheduled_for) {
-      // Tours & hire: free until N hours before start, then a percentage of the booking
-      const hoursAhead = (new Date(t.scheduled_for).getTime() - Date.now()) / 3600e3;
-      if (hoursAhead < freeHours) fee = Math.round((t.quote_cents * (policy.scheduled_late_pct ?? 50)) / 100);
+      // Tours & hire: free until N hours before start, then a percentage of the booking. Round 19: also free in the first
+      // minutes after booking (change of mind) and when a closure or heat advisory covers the day.
+      fee = (await tours.cancelTermsFor(t))?.fee_cents ?? 0;
     } else if (isRider && t.driver_id) {
       const rule = await loadRule(t.service, c);
       const sinceAccept = (Date.now() - new Date(t.accepted_at).getTime()) / 1000;
@@ -1457,7 +1556,13 @@ export async function cancelTrip(actor: { id: string; role: string }, tripId: st
       [tripId, status, reason ?? null, fee]);
     await c.query(`UPDATE trip_offers SET status = 'expired' WHERE trip_id = $1 AND status = 'offered'`, [tripId]);
     await givePromoBack(c, t);
-    await releaseHoldsAndPoints(c, t, fee);
+    // A tour deposit covers the fee first and the rest of it goes back to the card (Round 19).
+    const fromDeposit = await applyDeposit(c, t, fee);
+    if (fromDeposit > 0 && fee - fromDeposit <= 0) {
+      await releaseHoldsAndPoints(c, t, 0);
+      await c.query(`UPDATE trips SET payment_status = 'captured' WHERE id = $1`, [tripId]);
+    } else await releaseHoldsAndPoints(c, t, fee - fromDeposit);
+    await tours.onTourCancelled(c, t, fee);
     if (fee && t.driver_id) {
       // Driver keeps the same share as on fares (100% − the service fee fixed when they accepted, 25% by default).
       const pct = Number((await acceptedPay(c, tripId, t.driver_id) ?? await offerPay(c, t, t.driver_id, null)).fee_pct);

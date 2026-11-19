@@ -189,6 +189,32 @@ Loyalty & vouchers.
 - **Win-back:** Loyalty → Win-back. Only riders who said yes to offers get it, at most once every 90 days (setting). For a code just for them, make a
   targeted promo code first and put it in the form.
 
+## 9b. Tours, hire and tourism (Round 19)
+
+Migration `023_tours.sql` (AUTO_MIGRATE applies it). Before it, tours still list and book with the built-in itineraries, start times and
+heat rules for the four seeded tours, the card deposit and the 48-hour rule work, but there are no advisories, guides, desk bookings or
+hire quote links (503 `migration_pending`). Admin → Tours & hire; tour products under Pricing & tours → Tours.
+
+- **Heat days (October to March):** when the forecast is 40 degrees or more, post a heat advisory (Tours & hire → Advisories) for the day
+  with "walking tours must start by" (e.g. 07:00). Afternoon starts of walking tours can't be booked, booked guests are told in the app and
+  can cancel free. Park closures (fire danger, flooding, Parks and Wildlife notices): a closure advisory for those tours stops bookings; check
+  Bookings for guests already booked and call them to move or refund.
+- **Aboriginal-guided tours:** add the guide (Guides; their name shows to guests only with consent), set the tour to "Led by an Aboriginal
+  guide" with the guide fee (added to the price, paid in full to the guide, never part of the driver's fare). Assign the guide on Bookings
+  before the day (they get a text). After the tour the fee is "Owed"; pay by bank transfer and tick it in Guide payments with the reference
+  (CSV for the accountant). Late cancellations owe the guide the same share as the guest paid. GST on guide fees depends on the guide's
+  registration: confirm with the accountant.
+- **Hotels and visitor centres:** Loyalty & vouchers → Partners: type Hotel / Visitor centre / Tour desk, address and location (offered as a
+  pickup point), commission %, and the id of a Business account billed for their bookings; then a partner login for the desk (Settings, users).
+  Each month, Desk commissions → "Mark paid" for last month with the transfer reference.
+- **Hire quotes:** Support & inbox → Hire requests → Send quote (hours a day, days, cars; "Work it out" shows the price). The customer gets a
+  private link (texted when they gave a mobile) to accept; the request turns Confirmed with their name. Quotes expire after 14 days.
+- **Deposit:** card tour bookings pay 20% at booking (Tours & hire → Deposit & hire; a tour can set its own). A failed deposit refund shows as a
+  payment problem and a `deposit_refund_failed` trip event: refund it from the trip.
+- **Visitor languages:** tour names, summaries and key screen words in German, French, Italian, Japanese, Korean and Chinese are machine
+  translations and say so. To sign one off, a fluent reviewer checks it and an admin sets `status: reviewed` with `reviewed_by` and
+  `reviewed_on` (tour text in Pricing → Tours → Visitor-language text; screen words in `packages/shared/src/i18n/visitor.json`).
+
 ## 10. Performance and load testing (Round 18)
 - **Migration 022** (indexes only, safe any time; AUTO_MIGRATE applies it). Until it is in, `/health/deep` reports it pending and
   the API runs as before, just with slower dispatch queries as trips grow.

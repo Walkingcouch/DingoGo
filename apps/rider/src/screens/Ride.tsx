@@ -244,7 +244,7 @@ export function RideScreen() {
           ))}
         </div>
 
-        {mode === 'hire' ? <HirePanel /> : mode === 'tour' ? (
+        {mode === 'hire' ? <HirePanel pickup={pickup} setPickup={setPickup} onFocusPickup={() => setTarget('pickup')} /> : mode === 'tour' ? (
           <ToursPanel pickup={pickup} setPickup={setPickup} onFocusPickup={() => setTarget('pickup')} payMethod={pay.method} />
         ) : (
           <>

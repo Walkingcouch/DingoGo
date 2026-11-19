@@ -22,6 +22,7 @@ const Help = lazy(() => import('./pages/Help'));
 const Legal = lazy(() => import('./pages/Legal'));
 const NotFound = lazy(() => import('./pages/NotFound'));
 const Track = lazy(() => import('./pages/Track'));
+const HireQuote = lazy(() => import('./pages/HireQuote'));
 
 const page = (el: React.ReactNode) => <Suspense fallback={<div className="wrap section dg-muted" role="status">Loading…</div>}>{el}</Suspense>;
 
@@ -49,6 +50,7 @@ export default function App() {
             <Route path="help" element={page(<Help />)} />
             <Route path="legal/:doc" element={page(<Legal />)} />
             <Route path="track/:token" element={page(<Track />)} />
+            <Route path="hire/:token" element={page(<HireQuote />)} />
             <Route path="*" element={page(<NotFound />)} />
           </Route>
         </Routes>

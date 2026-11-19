@@ -49,7 +49,9 @@ export const FAQS = {
   ],
   tours: [
     { q: 'How many people fit on a private tour?', a: 'Up to four people in one car, for one price per car.' },
-    { q: 'Can we cancel a tour?', a: 'Free up to 48 hours before. After that, 50% of the tour price.' },
+    { q: 'Can we cancel a tour?', a: 'Free up to 48 hours before. After that, 50% of the tour price. Card bookings pay a 20% deposit that counts towards the price; it comes back if you cancel in time.' },
+    { q: 'What if it is too hot?', a: 'On extreme heat days walking tours start early, and tracks can close. If an advisory affects your tour we tell you, and you can cancel or move it for free.' },
+    { q: 'Can my hotel book for me?', a: 'Yes. Partner hotels and visitor centres can book a tour for you at the desk, with pickup from the hotel.' },
     { q: 'Are the places named in Arrernte?', a: 'Yes. Places are named in Arrernte and English, and your driver will tell you where not to climb or take photos.' },
   ],
   business: [

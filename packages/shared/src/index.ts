@@ -15,6 +15,7 @@ export { NotifySettings } from './NotifySettings';
 export { ServiceNotice } from './ServiceNotice';
 export * from './courier';
 export * from './i18n';
+export * from './visitor';
 export { Acknowledgement, Words, DraftNotice } from './Acknowledgement';
 export { speak, canSpeak } from './speak';
 export * from './handoff';

@@ -100,7 +100,9 @@ test('ride: quote → request → nearest driver offered → accept → PIN star
   assert.ok(q.quote.lines.some((l: any) => l.label === 'NT passenger levy'));
 
   const before = await one('SELECT loyalty_points FROM users WHERE phone = $1', ['+61400000100']);
-  const mult = (await call('GET', '/loyalty', 'rider')).tier.multiplier;   // Round 17: points at the rider's tier
+  // Round 17: points at the rider's tier, counting this trip (the seed gives the demo rider a random number of past trips, so this
+  // trip can lift them into the next tier: read the tier once it's done).
+  let mult = 1;
   const t = await call('POST', '/trips', 'rider', { kind: 'ride', service: 'ride', pickup: TODD_MALL, dropoff: AIRPORT, payment_method: 'card', redeem_points: 300 });
   assert.equal(t.status, 201, JSON.stringify(t));
   rideId = t.trip.id;
@@ -131,6 +133,7 @@ test('ride: quote → request → nearest driver offered → accept → PIN star
   assert.equal(done.trip.final_cents, t.trip.quote_cents, 'upfront price honoured');
   assert.equal(done.trip.payment_status, 'captured');
 
+  mult = (await call('GET', '/loyalty', 'rider')).tier.multiplier;
   const after = await one('SELECT loyalty_points FROM users WHERE phone = $1', ['+61400000100']);
   assert.equal(after.loyalty_points, before.loyalty_points - 300 + Math.floor((done.trip.final_cents / 100) * 10 * mult));
 
@@ -224,14 +227,30 @@ test('EV range check: low-battery car is skipped for long trips', async () => {
   await call('POST', `/trips/${t.trip.id}/cancel`, 'rider', {});
 });
 
-test('tour cancellation: free 48 h+ ahead, 50% inside 48 h', async () => {
+/** A bookable start for a tour between minH and maxH hours from now (Darwin time, from the availability endpoint). */
+async function tourSlot(slug: string, minH: number, maxH = 24 * 60) {
+  const a = await call('GET', `/public/tours/${slug}/availability?days=62`);
+  assert.equal(a.status, 200, JSON.stringify(a));
+  for (const d of a.days) for (const t of d.times) {
+    if (!t.ok) continue;
+    const at = new Date(`${d.date}T${t.time}:00+09:30`);
+    const h = (at.getTime() - Date.now()) / 3600e3;
+    if (h >= minH && h <= maxH) return at.toISOString();
+  }
+  throw new Error(`no slot for ${slug} in ${minH}-${maxH} h`);
+}
+
+test('tour cancellation: free 48 h+ ahead, 50% inside 48 h (after the first minutes), the deposit covers part of it', async () => {
   const tours = (await call('GET', '/tours', 'rider')).tours;
+  const slug = tours[0].slug;
   const t1 = await call('POST', '/trips', 'rider', { kind: 'ride', service: 'tour', tour_package_id: tours[0].id, pickup: TODD_MALL, dropoff: TODD_MALL, payment_method: 'card',
-    scheduled_for: new Date(Date.now() + 72 * 3600e3).toISOString() });
+    scheduled_for: await tourSlot(slug, 72) });
   assert.equal(t1.status, 201, JSON.stringify(t1));
   assert.equal((await call('POST', `/trips/${t1.trip.id}/cancel`, 'rider', {})).trip.cancel_fee_cents, 0);
   const t2 = await call('POST', '/trips', 'rider', { kind: 'ride', service: 'tour', tour_package_id: tours[0].id, pickup: TODD_MALL, dropoff: TODD_MALL, payment_method: 'card',
-    scheduled_for: new Date(Date.now() + 24 * 3600e3).toISOString() });
+    scheduled_for: await tourSlot(slug, 13, 46) });
+  assert.equal(t2.status, 201, JSON.stringify(t2));
+  await q(`UPDATE trips SET requested_at = now() - interval '20 minutes' WHERE id = $1`, [t2.trip.id]);   // past the change-of-mind minutes
   const c2 = await call('POST', `/trips/${t2.trip.id}/cancel`, 'rider', {});
   assert.equal(c2.trip.cancel_fee_cents, Math.round(t2.trip.quote_cents / 2));
 });
@@ -4442,5 +4461,325 @@ test('round 18: polled offers keep every field with one query for the trip (no p
     assert.ok(seen.driver_pay?.total_cents > 0 && seen.total_m > 0 && seen.ref);
   } finally {
     await call('POST', `/trips/${t.trip.id}/cancel`, 'rider', {});
+  }
+});
+
+// ───────────────────────── Round 19: tours, hire and tourism ─────────────────────────
+import { resetToursReady } from '../src/services/tours.js';
+
+/** A tour led by an Aboriginal guide (admin-made), bookable at 07:00 and 15:00, 24 h notice. */
+async function guidedTour(extra: Record<string, unknown> = {}) {
+  const r = await call('POST', '/admin/tours', 'admin', {
+    slug: `guided-${Math.random().toString(36).slice(2, 8)}`, name: 'Arrernte Country walk (test)', summary: 'Walk with an Arrernte guide.', description: 'A guided walk.',
+    duration_min: 180, price_cents: 30000, max_passengers: 4, active: true, guided_by: 'aboriginal_guide', guide_fee_cents: 9000, start_times: ['07:00', '15:00'],
+    min_notice_hours: 24, heat_sensitive: true, itinerary: [{ name: 'Ntaripe (Heavitree Gap)', minutes: 90, protocols: ['gender_restricted', 'photos_restricted'] }], ...extra,
+  });
+  assert.equal(r.status, 201, JSON.stringify(r));
+  invalidateConfig();
+  return r.item;
+}
+
+test('round 19: catalogue in visitor languages (flagged), itinerary with protocols, availability, safety, pickups and the terms', async () => {
+  const en = await call('GET', '/public/tours');
+  assert.equal(en.status, 200);
+  const west = en.tours.find((t: any) => t.slug === 'west-macs-gaps');
+  assert.deepEqual([west.machine_translated, west.itinerary.length, west.start_times, west.heat_sensitive], [false, 2, ['07:00', '08:00'], true]);
+  assert.match(west.protocols.no_swimming, /Swimming/);
+  assert.deepEqual([en.terms.deposit_pct, en.terms.free_cancel_hours, en.terms.late_pct, en.terms.change_of_mind_min], [20, 48, 50, 10]);
+  assert.equal(en.languages.ja.status, 'machine');
+  const de = await call('GET', '/public/tours?lang=de');
+  const westDe = de.tours.find((t: any) => t.slug === 'west-macs-gaps');
+  assert.deepEqual([de.lang, westDe.machine_translated, westDe.name], ['de', true, 'Schluchten der West MacDonnell Ranges']);
+  assert.equal(westDe.description, west.description, 'English where there is no translation');
+  assert.equal((await call('GET', '/public/tours?lang=xx')).lang, 'en');
+  assert.equal((await call('GET', '/tours?lang=ja', 'rider')).tours.find((t: any) => t.slug === 'west-macs-gaps').machine_translated, true);
+
+  const one1 = await call('GET', '/public/tours/west-macs-gaps?guests=3');
+  assert.ok(one1.safety[0].includes('15 L'), one1.safety[0]);   // 270 min → 5 h × 3 guests
+  assert.ok(Array.isArray(one1.pickups));
+  assert.equal((await call('GET', '/public/tours/nope')).status, 404);
+  const av = await call('GET', '/public/tours/west-macs-gaps/availability?days=5');
+  assert.equal(av.days.length, 5);
+  assert.equal(av.days[0].times.every((t: any) => !t.ok), true, 'today is inside the 24 h notice');
+});
+
+test('round 19: booking rules — start times, guests, notice; hourly hire priced by the hours booked; admin tour edits (JSON lists) checked', async () => {
+  await login('tr1', '+61400001901');
+  const tours = (await call('GET', '/tours', 'tr1')).tours;
+  const town = tours.find((t: any) => t.slug === 'town-heritage');
+  const slot = await tourSlot('town-heritage', 30);
+  const base = { kind: 'ride', service: 'tour', tour_package_id: town.id, pickup: TODD_MALL, dropoff: TODD_MALL, payment_method: 'wallet' };
+  const odd = new Date(new Date(slot).getTime() + 30 * 60000).toISOString();
+  assert.equal((await call('POST', '/trips', 'tr1', { ...base, scheduled_for: odd })).error, 'tour_start_time');
+  assert.equal((await call('POST', '/trips', 'tr1', { ...base, scheduled_for: slot, passengers: 5 })).error, 'too_many_guests');
+  assert.equal((await call('POST', '/trips', 'tr1', { ...base })).error, 'tour_needs_date');
+  assert.equal((await call('POST', '/quotes', 'tr1', { service: 'tour', tour_package_id: town.id, pickup: TODD_MALL, dropoff: TODD_MALL, scheduled_for: slot })).status, 200);
+
+  // Hourly hire: hours required, priced as hours x the hourly rate (not the drive), 24 h ahead online.
+  const hire = { kind: 'ride', service: 'hourly', pickup: TODD_MALL, dropoff: AIRPORT, payment_method: 'card' };
+  const later = new Date(Date.now() + 3 * 24 * 3600e3).toISOString();
+  assert.equal((await call('POST', '/quotes', 'tr1', { service: 'hourly', pickup: TODD_MALL, dropoff: AIRPORT, scheduled_for: later })).error, 'hire_hours');
+  const hq = await call('POST', '/quotes', 'tr1', { service: 'hourly', pickup: TODD_MALL, dropoff: AIRPORT, scheduled_for: later, hire_hours: 3 });
+  assert.equal(hq.quote.trip_cents, 3 * 7500, JSON.stringify(hq.quote));
+  assert.equal((await call('POST', '/quotes', 'tr1', { service: 'hourly', pickup: TODD_MALL, dropoff: AIRPORT, hire_hours: 11 })).error, 'hire_hours');
+  assert.equal((await call('POST', '/trips', 'tr1', { ...hire, hire_hours: 3, scheduled_for: new Date(Date.now() + 5 * 3600e3).toISOString() })).error, 'hire_too_soon');
+  const h = await call('POST', '/trips', 'tr1', { ...hire, hire_hours: 3, scheduled_for: later });
+  assert.equal(h.status, 201, JSON.stringify(h));
+  assert.deepEqual([h.trip.est_duration_s, h.trip.fare_breakdown.trip_cents], [3 * 3600, 22500]);
+  await call('POST', `/trips/${h.trip.id}/cancel`, 'tr1', {});
+
+  // Admin edits: stops as a JSON list (was sent as a Postgres array and failed), itinerary checked against the duration.
+  const ed = await call('PATCH', `/admin/tours/${town.id}`, 'admin', { stops: ['Anzac Hill', 'Telegraph Station'] });
+  assert.equal(ed.status, 200, JSON.stringify(ed));
+  assert.deepEqual(ed.item.stops, ['Anzac Hill', 'Telegraph Station']);
+  assert.equal((await call('PATCH', `/admin/tours/${town.id}`, 'admin', { itinerary: [{ name: 'Anzac Hill', minutes: 300 }] })).error, 'itinerary_too_long');
+  assert.equal((await call('PATCH', `/admin/tours/${town.id}`, 'admin', { translations: { de: { name: 'Stadt', status: 'reviewed' } } })).error, 'reviewer_required');
+  assert.equal((await call('PATCH', `/admin/tours/${town.id}`, 'admin', { guide_fee_cents: 500 })).error, 'guide_fee_needs_guide');
+  assert.equal((await call('PATCH', `/admin/tours/${town.id}`, 'admin', { start_times: ['8am'] })).error, 'validation_error');
+  const tr = await call('PATCH', `/admin/tours/${town.id}`, 'admin', { translations: { de: { name: 'Stadtrundfahrt Mparntwe', status: 'reviewed', reviewed_by: 'A. Becker', reviewed_on: '2026-11-19' } } });
+  assert.equal(tr.status, 200, JSON.stringify(tr));
+  invalidateConfig();
+  const de = (await call('GET', '/public/tours?lang=de')).tours.find((t: any) => t.id === town.id);
+  assert.deepEqual([de.name, de.machine_translated], ['Stadtrundfahrt Mparntwe', false], 'a reviewed name replaces the machine one');
+  // Policy: validated and audited.
+  assert.equal((await call('PUT', '/admin/tour-policy', 'admin', { policy: { deposit_pct: 120 } })).error, 'validation_error');
+  assert.equal((await call('PUT', '/admin/tour-policy', 'admin', { policy: { deposit_pct: 20 } })).policy.hire.day_cap_hours, 8);
+});
+
+test('round 19: card deposit at booking; free cancel refunds it; change of mind is free; late fee taken from it first; guided tour pays the guide in full', async () => {
+  await clearOpenTrips();
+  await login('tr2', '+61400001902');
+  const g = await guidedTour();
+  const riderId = await userIdOf('+61400001902');
+  const book = async (minH: number, maxH?: number) => {
+    const t = await call('POST', '/trips', 'tr2', { kind: 'ride', service: 'tour', tour_package_id: g.id, pickup: TODD_MALL, dropoff: TODD_MALL, payment_method: 'card',
+      passengers: 2, scheduled_for: await tourSlot(g.slug, minH, maxH) });
+    assert.equal(t.status, 201, JSON.stringify(t));
+    return t.trip;
+  };
+  // Free cancel (more than 48 h ahead): the whole deposit goes back.
+  const a = await book(72);
+  const total = 30000 + 9000 + 100;
+  assert.equal(a.quote_cents, total);
+  assert.ok(a.fare_breakdown.lines.some((l: any) => l.label.startsWith('Aboriginal guide') && l.cents === 9000));
+  assert.deepEqual([a.fare_breakdown.deposit.cents, a.fare_breakdown.deposit.status], [Math.round(total * 0.2 / 5) * 5, 'paid']);
+  const dep = a.fare_breakdown.deposit.cents;
+  assert.equal((await one(`SELECT amount_cents FROM payments WHERE trip_id = $1 AND kind = 'deposit'`, [a.id])).amount_cents, dep);
+  const terms = await call('GET', `/trips/${a.id}/cancel-terms`, 'tr2');
+  assert.deepEqual([terms.terms.reason, terms.deposit_back_cents], ['free_before', dep]);
+  assert.equal((await call('GET', `/trips/${a.id}/cancel-terms`, 'rider')).status, 404);
+  assert.equal((await call('POST', `/trips/${a.id}/cancel`, 'tr2', {})).trip.cancel_fee_cents, 0);
+  assert.equal((await one(`SELECT amount_cents FROM payments WHERE trip_id = $1 AND kind = 'deposit_refund'`, [a.id])).amount_cents, -dep);
+  assert.equal((await one(`SELECT fare_breakdown->'deposit'->>'status' s FROM trips WHERE id = $1`, [a.id])).s, 'refunded');
+
+  // Inside 48 h but just booked: change of mind is free. Later: 50%, the deposit pays the first part, the card the rest.
+  const b = await book(25, 47);
+  assert.equal((await call('GET', `/trips/${b.id}/cancel-terms`, 'tr2')).terms.reason, 'change_of_mind');
+  await q(`UPDATE trips SET requested_at = now() - interval '15 minutes' WHERE id = $1`, [b.id]);
+  const bt = await call('GET', `/trips/${b.id}/cancel-terms`, 'tr2');
+  assert.deepEqual([bt.terms.reason, bt.terms.fee_cents, bt.deposit_back_cents, bt.extra_charge_cents], ['late', Math.round(total / 2), 0, Math.round(total / 2) - dep]);
+  const c = await call('POST', `/trips/${b.id}/cancel`, 'tr2', {});
+  assert.equal(c.trip.cancel_fee_cents, Math.round(total / 2));
+  const caps = await q(`SELECT provider_ref, amount_cents FROM payments WHERE trip_id = $1 AND kind = 'capture' AND status = 'succeeded' ORDER BY created_at`, [b.id]);
+  assert.deepEqual(caps.map((r) => r.amount_cents), [dep, Math.round(total / 2) - dep], 'deposit first, then the card');
+
+  // Completed: the deposit plus the rest held at release; the guide is owed the full fee; the driver earns on the tour price only.
+  const gd = await call('POST', '/admin/tour-guides', 'admin', { name: 'Test Guide', phone: '+61400001990', community: 'Arrernte', show_name: true });
+  assert.equal(gd.status, 201, JSON.stringify(gd));
+  const t = await book(72);
+  assert.equal((await call('POST', `/admin/trips/${t.id}/guide`, 'tr2', { guide_id: gd.item.id })).status, 403);
+  const asg2 = await call('POST', `/admin/trips/${t.id}/guide`, 'admin', { guide_id: gd.item.id });
+  assert.equal(asg2.job.fee_cents, 9000);
+  await q(`UPDATE trips SET scheduled_for = now() + interval '10 minutes' WHERE id = $1`, [t.id]);
+  await onlyOnline(['d1']);
+  await dispatchTick();
+  const rel = await one(`SELECT status, payment_status FROM trips WHERE id = $1`, [t.id]);
+  assert.deepEqual([rel.status, rel.payment_status], ['requested', 'authorised']);
+  const held = (await one(`SELECT amount_cents FROM payments WHERE trip_id = $1 AND kind = 'authorise'`, [t.id])).amount_cents;
+  assert.ok([total - dep, Math.round((total - dep) * 1.2)].includes(held), `hold ${held} is for the rest after the deposit`);
+  await offeredTo(t.id, ['d1']);
+  const done = await rideToEnd(t.id, 'd1');
+  assert.equal(done.final_cents, total);
+  const paid = await q(`SELECT provider_ref, amount_cents FROM payments WHERE trip_id = $1 AND kind = 'capture' AND status = 'succeeded' ORDER BY amount_cents`, [t.id]);
+  assert.deepEqual(paid.map((r) => r.amount_cents), [dep, total - dep].sort((x, y) => x - y));
+  const led = await ledgerFor(t.id);
+  assert.equal(led.fare, 30000, 'driver earns on the tour price, not the guide fee or levy');
+  const job = await one(`SELECT status, owed_cents FROM tour_guide_jobs WHERE trip_id = $1`, [t.id]);
+  assert.deepEqual([job.status, job.owed_cents], ['owed', 9000]);
+  const jobs = await call('GET', '/admin/tour-guide-jobs', 'admin');
+  assert.ok(jobs.items.some((j: any) => j.trip_id === t.id && j.status === 'owed'));
+  assert.equal((await call('POST', '/admin/tour-guide-jobs/pay', 'admin', { trip_ids: [t.id], paid_ref: 'EFT-1901' })).paid, 1);
+  assert.equal((await call('POST', '/admin/tour-guide-jobs/pay', 'admin', { trip_ids: [t.id], paid_ref: 'EFT-1901' })).paid, 0, 'paid once');
+  assert.match(String((await app.inject({ method: 'GET', url: '/admin/tour-guide-jobs?format=csv', headers: { authorization: `Bearer ${tokens.admin}` } })).body), /Test Guide/);
+
+  // A full refund goes back against both payments (the deposit and the rest).
+  const rf = await call('POST', `/admin/trips/${t.id}/refund`, 'admin', { cents: total, reason: 'Test' });
+  assert.equal(rf.status, 200, JSON.stringify(rf));
+  const refs = await q(`SELECT provider_ref, amount_cents FROM payments WHERE trip_id = $1 AND kind = 'refund' ORDER BY amount_cents`, [t.id]);
+  assert.equal(refs.length, 2);
+  assert.equal(refs.reduce((n, r) => n + r.amount_cents, 0), -total);
+  assert.deepEqual(new Set(refs.map((r) => r.provider_ref)), new Set(paid.map((r) => r.provider_ref)));
+
+  // Guided tour cancelled late with a guide booked: the guide gets the same share of their fee.
+  const late = await book(25, 47);
+  await call('POST', `/admin/trips/${late.id}/guide`, 'admin', { guide_id: gd.item.id });
+  await q(`UPDATE trips SET requested_at = now() - interval '15 minutes' WHERE id = $1`, [late.id]);
+  await call('POST', `/trips/${late.id}/cancel`, 'tr2', {});
+  assert.deepEqual(Object.values(await one(`SELECT status, owed_cents FROM tour_guide_jobs WHERE trip_id = $1`, [late.id])), ['owed', 4500]);
+  void riderId;
+});
+
+test('round 19: heat and closure advisories — booking blocked, booked guests told, cancelling free; ops only', async () => {
+  await login('tr3', '+61400001903');
+  await q(`UPDATE users SET wallet_cents = 200000 WHERE phone = '+61400001903'`);
+  const tours = (await call('GET', '/tours', 'tr3')).tours;
+  const west = tours.find((t: any) => t.slug === 'west-macs-gaps');
+  const slot = await tourSlot('west-macs-gaps', 60);
+  const day = new Intl.DateTimeFormat('en-CA', { timeZone: 'Australia/Darwin' }).format(new Date(slot));
+  const t = await call('POST', '/trips', 'tr3', { kind: 'ride', service: 'tour', tour_package_id: west.id, pickup: TODD_MALL, dropoff: TODD_MALL, payment_method: 'wallet', scheduled_for: slot });
+  assert.equal(t.status, 201, JSON.stringify(t));
+  await q(`UPDATE trips SET requested_at = now() - interval '1 day', scheduled_for = $2 WHERE id = $1`, [t.trip.id, slot]);
+
+  assert.equal((await call('POST', '/admin/tour-advisories', 'rider', { kind: 'heat', title: 'x', message: 'y', starts_on: day, ends_on: day })).status, 403);
+  assert.equal((await call('POST', '/admin/tour-advisories', 'admin', { kind: 'heat', title: 'Extreme heat', message: 'Forecast 45 degrees.', starts_on: day, ends_on: day })).error, 'latest_start_required');
+  const a = await call('POST', '/admin/tour-advisories', 'admin', { kind: 'heat', title: 'Extreme heat', message: 'Forecast 45 degrees. Walks start by 6:30 am.', starts_on: day, ends_on: day, latest_start: '06:30' });
+  assert.equal(a.status, 201, JSON.stringify(a));
+  assert.equal(a.notified, 1, 'the booked guest is told');
+  await flushBackground(1000);
+  assert.ok(await one(`SELECT 1 FROM notifications WHERE user_id = $1 AND title = 'Extreme heat'`, [await userIdOf('+61400001903')]));
+  const pub = await call('GET', '/public/tours');
+  assert.ok(pub.advisories.some((x: any) => x.id === a.item.id));
+  const av = await call('GET', `/public/tours/west-macs-gaps/availability?from=${day}&days=1`);
+  assert.deepEqual(av.days[0].times.map((x: any) => x.reason), ['heat_advisory', 'heat_advisory']);
+  assert.equal((await call('POST', '/trips', 'tr3', { kind: 'ride', service: 'tour', tour_package_id: west.id, pickup: TODD_MALL, dropoff: TODD_MALL, payment_method: 'wallet', scheduled_for: slot })).error, 'heat_advisory');
+  // Town tour isn't heat-sensitive: still bookable that day.
+  const terms = await call('GET', `/trips/${t.trip.id}/cancel-terms`, 'tr3');
+  assert.deepEqual([terms.terms.reason, terms.terms.fee_cents], ['advisory', 0], 'heat on a walking tour: cancelling is free');
+  // A closure of one tour; turned off again, booking works.
+  await call('PATCH', `/admin/tour-advisories/${a.item.id}`, 'admin', { active: false });
+  const cl2 = await call('POST', '/admin/tour-advisories', 'admin', { kind: 'closure', title: 'Park closed', message: 'Fire danger: Tjoritja closed.', starts_on: day, ends_on: day, tour_ids: [west.id], closes: true, notify: false });
+  assert.equal(cl2.notified, 0);
+  assert.equal((await call('POST', '/trips', 'tr3', { kind: 'ride', service: 'tour', tour_package_id: west.id, pickup: TODD_MALL, dropoff: TODD_MALL, payment_method: 'wallet', scheduled_for: slot })).error, 'tour_closed');
+  await call('PATCH', `/admin/tour-advisories/${cl2.item.id}`, 'admin', { active: false });
+  const c = await call('POST', `/trips/${t.trip.id}/cancel`, 'tr3', {});
+  assert.equal(c.trip.status, 'cancelled_rider');
+  assert.equal((await call('GET', '/admin/tour-advisories', 'admin')).items.length >= 2, true);
+});
+
+test('round 19: hotel / visitor-centre desk books a tour for a guest on its account; commission earned on completion, void on cancel, paid by month', async () => {
+  const acct = (await one(`INSERT INTO corporate_accounts (name, kind, billing_email) VALUES ('Desert Palms Resort (test)', 'business', 'acc@example.com') RETURNING id`)).id;
+  const p = await call('POST', '/admin/partners', 'admin', { name: 'Desert Palms Resort (test)', kind: 'hotel', address: '74 Barrett Dr, Alice Springs', lat: -23.7128, lng: 133.8823,
+    tour_commission_pct: 10, corporate_account_id: acct, active: true });
+  assert.equal(p.status, 201, JSON.stringify(p));
+  assert.equal((await call('POST', '/admin/partners', 'admin', { name: 'Bad', kind: 'hotel', corporate_account_id: '00000000-0000-0000-0000-000000000000' })).error, 'invalid_account');
+  await q(`INSERT INTO users (phone, name, role, partner_id, referral_code) VALUES ('+61400001920', 'Front Desk', 'partner', $1, 'DESK1920') ON CONFLICT (phone) DO NOTHING`, [p.item.id]);
+  await login('desk', '+61400001920', 'partner');
+  assert.equal((await call('GET', '/partner/tours', 'cafe')).status, 403, 'cafés don\'t book tours');
+  const mine = await call('GET', '/partner/tours', 'desk');
+  assert.deepEqual([mine.partner.commission_pct, mine.partner.account_linked], [10, true]);
+  const town = mine.tours.find((t: any) => t.slug === 'town-heritage');
+  assert.ok((await call('GET', '/public/tour-pickups')).pickups.some((x: any) => x.name === 'Desert Palms Resort (test)'));
+  const body = { tour_id: town.id, scheduled_for: await tourSlot('town-heritage', 72), guests: 2, guest_name: 'Hanna Weber', guest_phone: '+61400001921' };
+  const b = await call('POST', '/partner/tours/bookings', 'desk', body);
+  assert.equal(b.status, 201, JSON.stringify(b));
+  assert.equal(b.booking.commission_cents, Math.round(town.price_cents * 0.1));
+  const trip = await one(`SELECT * FROM trips WHERE id = $1`, [b.booking.id]);
+  assert.deepEqual([trip.channel, trip.payment_method, trip.corporate_account_id, trip.pickup_address], ['partner', 'corporate', acct, '74 Barrett Dr, Alice Springs']);
+  const list = await call('GET', '/partner/tours', 'desk');
+  assert.deepEqual([list.bookings[0].guest, list.bookings[0].guest_phone_last3, list.bookings[0].commission_status], ['Hanna', '921', 'pending']);
+  assert.equal(JSON.stringify(list.bookings).includes('+61400001921'), false, 'no full guest phone for the desk');
+
+  // Cancelled: commission void.
+  const cx = await call('POST', `/partner/tours/bookings/${b.booking.id}/cancel`, 'desk', {});
+  assert.deepEqual([cx.booking.status, cx.booking.cancel_fee_cents], ['cancelled_rider', 0]);
+  assert.equal((await one(`SELECT status FROM tour_commissions WHERE trip_id = $1`, [b.booking.id])).status, 'void');
+  assert.equal((await call('POST', `/partner/tours/bookings/00000000-0000-4000-8000-000000000000/cancel`, 'desk', {})).status, 404, 'only its own bookings');
+
+  // Another, completed: earned; paid once the month is over.
+  const b2 = await call('POST', '/partner/tours/bookings', 'desk', { ...body, scheduled_for: await tourSlot('town-heritage', 96) });
+  const { onTourCompleted } = await import('../src/services/tours.js');
+  const c = await pool.connect();
+  try { await onTourCompleted(c, { id: b2.booking.id, service: 'tour' }); } finally { c.release(); }
+  assert.equal((await one(`SELECT status FROM tour_commissions WHERE trip_id = $1`, [b2.booking.id])).status, 'earned');
+  const month = new Intl.DateTimeFormat('en-CA', { timeZone: 'Australia/Darwin' }).format(new Date()).slice(0, 7);
+  assert.equal((await call('POST', '/admin/tour-commissions/pay', 'admin', { partner_id: p.item.id, month, paid_ref: 'EFT-77' })).error, 'month_open');
+  await q(`UPDATE tour_commissions SET earned_at = now() - interval '40 days' WHERE trip_id = $1`, [b2.booking.id]);
+  const last = new Intl.DateTimeFormat('en-CA', { timeZone: 'Australia/Darwin' }).format(new Date(Date.now() - 40 * 86400e3)).slice(0, 7);
+  const st = await call('GET', '/partner/tours/commissions', 'desk');
+  assert.equal(st.months.find((m: any) => m.month === last).earned_cents, b2.booking.commission_cents);
+  assert.deepEqual(await call('POST', '/admin/tour-commissions/pay', 'admin', { partner_id: p.item.id, month: last, paid_ref: 'EFT-77' }).then((r) => [r.paid, r.cents]), [1, b2.booking.commission_cents]);
+  assert.equal((await call('GET', '/admin/tour-commissions', 'admin')).partners.some((r: any) => r.partner_id === p.item.id), true);
+  assert.equal((await call('GET', '/admin/tour-bookings', 'admin')).items.some((r: any) => r.id === b2.booking.id && r.partner_name === 'Desert Palms Resort (test)'), true);
+
+  // Not linked to an account: refused plainly.
+  await call('PATCH', `/admin/partners/${p.item.id}`, 'admin', { corporate_account_id: null });
+  assert.equal((await call('POST', '/partner/tours/bookings', 'desk', body)).error, 'partner_account_required');
+  await q(`UPDATE trips SET status = 'cancelled_admin' WHERE id = $1`, [b2.booking.id]);
+});
+
+test('round 19: hire quotes — calculator, admin sends a quote, customer opens the private link and accepts once; expired links refused', async () => {
+  const calc = await call('POST', '/public/hire/quote', undefined, { hours_per_day: 10, days: 3, vehicles: 2 });
+  assert.equal(calc.quote.charged_hours_per_day, 8);
+  assert.equal(calc.quote.discount_cents > 0, true);
+  assert.equal((await call('POST', '/public/hire/quote', undefined, { hours_per_day: 11, days: 1, vehicles: 1 })).error, 'hire_hours');
+  const r = await call('POST', '/public/hire-requests', undefined, { kind: 'conference', contact_name: 'Jordan Lee', contact_email: 'jordan@example.com', contact_phone: '+61400001930',
+    organisation: 'Desert Knowledge (test)', event_date: '2027-05-10', passengers: 30, vehicles: 3 }, '10.19.0.1');
+  assert.equal(r.status, 201, JSON.stringify(r));
+  const sent = await call('POST', `/admin/hire-requests/${r.id}/quote`, 'admin', { hours_per_day: 6, days: 2, vehicles: 3, note: 'Airport runs and venue shuttles' });
+  assert.equal(sent.status, 200, JSON.stringify(sent));
+  assert.equal(typeof sent.texted, 'boolean');   // texts are logged, not sent, in tests
+  const token = sent.url.split('/hire/')[1];
+  const pub = await call('GET', `/public/hire/${token}`);
+  assert.deepEqual([pub.quote.total_cents, pub.quote.vehicles, pub.quote.expired, pub.quote.terms.free_cancel_hours], [sent.item.quote_cents, 3, false, 24]);
+  assert.equal(pub.quote.contact_email, undefined, 'only what the customer needs');
+  assert.equal((await call('GET', '/public/hire/not-a-real-token-at-all-xx')).status, 404);
+  assert.equal((await call('POST', `/public/hire/${token}/accept`, undefined, { name: 'Jordan Lee' })).status, 400, 'must agree to the terms');
+  const acc = await call('POST', `/public/hire/${token}/accept`, undefined, { name: 'Jordan Lee', agree: true });
+  assert.deepEqual([acc.quote.status, acc.quote.accepted_name], ['confirmed', 'Jordan Lee']);
+  assert.equal((await call('POST', `/public/hire/${token}/accept`, undefined, { name: 'Someone Else', agree: true })).quote.accepted_name, 'Jordan Lee', 'accepted once');
+  assert.equal((await call('POST', `/admin/hire-requests/${r.id}/quote`, 'admin', { hours_per_day: 6, days: 2, vehicles: 3 })).error, 'already_accepted');
+  // Expired.
+  const r2 = await call('POST', '/public/hire-requests', undefined, { kind: 'wedding', contact_name: 'Sam Ray', contact_email: 'sam@example.com' }, '10.19.0.2');
+  const s2 = await call('POST', `/admin/hire-requests/${r2.id}/quote`, 'admin', { hours_per_day: 4, days: 1, vehicles: 1, total_override_cents: 30000 });
+  assert.deepEqual([s2.item.quote_cents, s2.texted], [30000, false]);
+  await q(`UPDATE hire_requests SET quote_expires_at = now() - interval '1 day' WHERE id = $1`, [r2.id]);
+  assert.equal((await call('POST', `/public/hire/${s2.url.split('/hire/')[1]}/accept`, undefined, { name: 'Sam Ray', agree: true })).error, 'quote_expired');
+});
+
+test('before migration 023: tours list, quote, book and cancel with the built-in itineraries; no advisories; new admin parts say migration_pending', async () => {
+  const cols = ['itinerary', 'season_months', 'days', 'start_times', 'min_notice_hours', 'heat_sensitive', 'hotel_pickup', 'guided_by', 'guide_fee_cents', 'deposit_pct', 'translations'];
+  const tables = ['tour_advisories', 'tour_guide_jobs', 'tour_commissions', 'tour_guides'];
+  const guided = await q(`SELECT id FROM tour_packages WHERE guided_by = 'aboriginal_guide'`);
+  await q(`UPDATE tour_packages SET active = false WHERE id = ANY($1)`, [guided.map((r) => r.id)]);
+  for (const c of cols) await q(`ALTER TABLE tour_packages RENAME COLUMN ${c} TO ${c}_off`);
+  await q(`ALTER TABLE partners RENAME COLUMN tour_commission_pct TO tour_commission_pct_off`);
+  for (const t of tables) await q(`ALTER TABLE ${t} RENAME TO ${t}_off`);
+  resetToursReady(); invalidateConfig();
+  try {
+    await login('tr9', '+61400001909');
+    const list = await call('GET', '/public/tours');
+    assert.equal(list.status, 200, JSON.stringify(list));
+    const west = list.tours.find((t: any) => t.slug === 'west-macs-gaps');
+    assert.deepEqual([west.start_times, west.itinerary.length, list.advisories.length], [['07:00', '08:00'], 2, 0]);
+    assert.equal((await call('GET', '/public/tours/west-macs-gaps/availability?days=3')).status, 200);
+    const slot = await tourSlot('west-macs-gaps', 72);
+    const t = await call('POST', '/trips', 'tr9', { kind: 'ride', service: 'tour', tour_package_id: west.id, pickup: TODD_MALL, dropoff: TODD_MALL, payment_method: 'card', scheduled_for: slot });
+    assert.equal(t.status, 201, JSON.stringify(t));
+    assert.ok(t.trip.fare_breakdown.deposit, 'deposit needs no migration');
+    assert.equal((await call('POST', `/trips/${t.trip.id}/cancel`, 'tr9', {})).trip.cancel_fee_cents, 0);
+    assert.equal((await call('PATCH', `/admin/tours/${west.id}`, 'admin', { stops: ['Rungutjirba', 'Angkerle Atwatye'] })).status, 200, 'old fields still edit');
+    assert.equal((await call('PATCH', `/admin/tours/${west.id}`, 'admin', { start_times: ['07:00'] })).error, 'migration_pending');
+    assert.equal((await call('POST', '/admin/tour-advisories', 'admin', { kind: 'heat', title: 'Heat', message: 'Hot day', starts_on: '2027-01-05', ends_on: '2027-01-05', latest_start: '07:00' })).error, 'migration_pending');
+    assert.deepEqual((await call('GET', '/admin/tour-advisories', 'admin')).ready, false);
+    assert.equal((await call('GET', '/admin/tour-bookings', 'admin')).status, 200);
+    assert.equal((await call('GET', '/partner/tours', 'cafe')).error, 'migration_pending');
+    assert.equal((await call('POST', '/public/hire/quote', undefined, { hours_per_day: 4, days: 1, vehicles: 1 })).status, 200);
+    assert.equal((await call('GET', '/public/tours/west-macs-gaps')).pickups.length, 0);
+  } finally {
+    for (const c of cols) await q(`ALTER TABLE tour_packages RENAME COLUMN ${c}_off TO ${c}`);
+    await q(`ALTER TABLE partners RENAME COLUMN tour_commission_pct_off TO tour_commission_pct`);
+    for (const t of tables) await q(`ALTER TABLE ${t}_off RENAME TO ${t}`);
+    await q(`UPDATE tour_packages SET active = true WHERE id = ANY($1)`, [guided.map((r) => r.id)]);
+    resetToursReady(); invalidateConfig();
   }
 });

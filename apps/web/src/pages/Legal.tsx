@@ -63,7 +63,9 @@ export default function Legal() {
       body: <>
         <ul>
           <li>Cancel for free before a driver accepts, and within 2 minutes after.</li>
-          <li>After 2 minutes, or once your driver has waited 3 minutes at pickup, a cancellation fee applies ($6 for rides, $5 for parcels, $25 for tours and hourly hire). Most of the fee goes to the driver for their time.</li>
+          <li>After 2 minutes, or once your driver has waited 3 minutes at pickup, a cancellation fee applies ($3 for rides and parcels). Most of the fee goes to the driver for their time.</li>
+          <li>Tours: free to cancel up to 48 hours before the start; after that, 50% of the price (free in the first 10 minutes after booking, and free when a heat or closure advisory covers the day). Card bookings pay a 20% deposit, which counts towards the price or the fee and is otherwise refunded.</li>
+          <li>Hourly hire: free to cancel up to 24 hours before the start; after that, 50% of the price.</li>
           <li>If your driver cancels, or no driver is available, you are never charged and any hold on your card is released.</li>
           <li>Dingo Points and promo codes used on a cancelled trip are returned.</li>
         </ul>

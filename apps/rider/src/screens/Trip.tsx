@@ -442,9 +442,14 @@ function CancelDialog({ open, onClose, trip, onDone }: { open: boolean; onClose:
     if (!open) return;
     get('/public/config').then((c) => setFee(c.services.find((s: any) => s.service === trip.service)?.cancel_fee_cents ?? null)).catch(() => {});
   }, [open, trip.service]);
+  // Round 19: tours and hire booked ahead have their own terms (48 / 24 hours, deposit); ask the API what cancelling costs now.
+  const booked = (trip.service === 'tour' || trip.service === 'hourly') && !!trip.scheduled_for;
+  const [terms, setTerms] = useState<any>(null);
+  useEffect(() => { if (open && booked) get(`/trips/${trip.id}/cancel-terms`).then(setTerms).catch(() => setTerms(null)); }, [open, booked, trip.id]);
   const assigned = !!trip.driver_id;
   const sinceAccept = trip.accepted_at ? (Date.now() - new Date(trip.accepted_at).getTime()) / 1000 : 0;
-  const likelyFee = assigned && (trip.status === 'arrived' || sinceAccept > 120);
+  const likelyFee = !booked && assigned && (trip.status === 'arrived' || sinceAccept > 120);
+  const bookedFee = booked ? terms?.terms?.fee_cents ?? null : null;
 
   async function go() {
     setBusy(true); setErr(null);
@@ -454,11 +459,18 @@ function CancelDialog({ open, onClose, trip, onDone }: { open: boolean; onClose:
   }
   return (
     <Dialog open={open} onClose={onClose} title="Cancel this trip?">
-      {!assigned && <p>No driver has been assigned yet, so there's no charge.</p>}
+      {booked && terms?.terms && (bookedFee ? (
+        <p className="callout callout--earth">Cancelling now costs <strong>{money(bookedFee)}</strong> because it starts soon (free until {new Date(terms.terms.free_until).toLocaleString('en-AU', { timeZone: 'Australia/Darwin', weekday: 'short', hour: 'numeric', minute: '2-digit' })}).
+          {terms.deposit_cents > 0 && <> Your deposit of {money(terms.deposit_cents)} pays for {terms.extra_charge_cents > 0 ? `part of it; ${money(terms.extra_charge_cents)} more goes on your card` : 'it'}{terms.deposit_back_cents > 0 ? `, and ${money(terms.deposit_back_cents)} comes back` : ''}.</>}</p>
+      ) : (
+        <p>{terms.terms.reason === 'advisory' ? 'An advisory covers that day, so cancelling is free.' : terms.terms.reason === 'change_of_mind' ? 'You booked a few minutes ago, so cancelling is free.' : 'Cancelling is free at this point.'}
+          {terms.deposit_cents > 0 && <> Your deposit of {money(terms.deposit_cents)} goes back to your card.</>}</p>
+      ))}
+      {!booked && !assigned && <p>No driver has been assigned yet, so there's no charge.</p>}
       {assigned && !likelyFee && <p>Your driver is on the way. You can cancel free within 2 minutes of them accepting.</p>}
       {likelyFee && <p className="callout callout--earth">A cancellation fee of <strong>{money(fee ?? 600)}</strong> applies because your driver {trip.status === 'arrived' ? 'is already waiting for you' : 'has been driving to you for more than 2 minutes'}. Most of it goes to the driver.</p>}
       {err && <p className="dg-error">{err}</p>}
-      <button className="dg-btn dg-btn--danger dg-btn--block" disabled={busy} onClick={go}>{busy ? 'Cancelling…' : likelyFee ? `Cancel and pay ${money(fee ?? 600)}` : 'Cancel trip'}</button>
+      <button className="dg-btn dg-btn--danger dg-btn--block" disabled={busy} onClick={go}>{busy ? 'Cancelling…' : likelyFee ? `Cancel and pay ${money(fee ?? 600)}` : bookedFee ? `Cancel and pay ${money(bookedFee)}` : 'Cancel trip'}</button>
       <button className="dg-btn dg-btn--ghost dg-btn--block" style={{ marginTop: 10 }} onClick={onClose}>Keep my trip</button>
     </Dialog>
   );

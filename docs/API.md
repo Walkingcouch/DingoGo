@@ -1000,3 +1000,95 @@ Data export adds `loyalty_profile` and `gift_vouchers_bought`; deleting an accou
   startup parameters are sent). `/health/deep` details add `performance` (pool use, limits, cache hits).
 - Migration `022_hot_path_indexes.sql`: partial indexes for live trips by driver, searching trips, bookings waiting for release
   and offers on screen.
+
+## Tours, hire and tourism (Round 19)
+Migration `023_tours.sql`. Before it is applied, tours keep working: the seeded tours take their itinerary, start times,
+notice and heat rule from `BUILT_IN` in `services/api/src/lib/tours.ts`, visitor-language text from `SEED_TRANSLATIONS`,
+there are no advisories, and the new admin and partner parts answer 503 `migration_pending`.
+
+**Catalogue (public and rider)**
+- `GET /public/tours?lang=` and `GET /tours?lang=` (signed in) → `{ tours, lang, languages, advisories, terms }`. Each tour has
+  `itinerary [{ name, minutes, note, protocols }]`, `protocols` (code → wording), `season_months`, `days` (0 = Sunday),
+  `start_times` (Darwin, `HH:MM`), `min_notice_hours`, `heat_sensitive`, `hotel_pickup`, `guided_by` (`driver` |
+  `aboriginal_guide`), `guide_fee_cents`, `deposit_pct`. `lang` is `de`, `fr`, `it`, `ja`, `ko` or `zh` (anything else is
+  English): translated fields replace English where there are some (`translated_fields`), `machine_translated` is true until
+  a reviewer is named. `terms` = `{ deposit_pct, change_of_mind_min, free_cancel_hours, hire_free_cancel_hours, late_pct, hire }`.
+- `GET /public/tours/:slug?lang=&guests=` → `{ tour, safety [text], pickups, terms }` (safety: water a litre per person per
+  hour, hat and shoes, phone coverage, summer heat, permits). 404 for unknown or hidden tours.
+- `GET /public/tours/:slug/availability?from=YYYY-MM-DD&days=` (1–62, default 14) → `{ days [{ date, times [{ time, ok,
+  reason? }], advisories }] }`. Reasons: `tour_too_soon`, `tour_out_of_season`, `tour_not_that_day`, `tour_closed`,
+  `heat_advisory`.
+- `GET /public/tour-advisories` → `{ advisories }`; `GET /public/tour-pickups` → partner hotels and visitor centres with a
+  location (`{ pickups [{ id, name, kind, address, lat, lng }] }`).
+
+**Booking a tour** (`POST /trips` with `service: 'tour'`): needs `scheduled_for` at one of the tour's start times, in season, on
+a day it runs, at least `min_notice_hours` ahead (staff phone bookings may be later) and `passengers` ≤ `max_passengers`; 400
+`tour_needs_date`, `tour_start_time`, `too_many_guests`, `tour_too_soon`, `tour_out_of_season`, `tour_not_that_day`,
+`tour_closed`, `heat_advisory`. A tour led by an Aboriginal guide adds the line "Aboriginal guide (paid in full to your guide)"
+(`guide_fee_cents`, after discounts, outside the driver's fare). Paid by card: a deposit (`deposit_pct` of the tour, else
+`tour_policy.deposit_pct`, 20%) is charged at booking as its own payment (`payments.kind = 'deposit'`, `fare_breakdown.deposit
+{ cents, ref, provider, status }`); the rest is held when the booking is released and captured at the end (two capture rows).
+Credit is taken in full at booking as before; accounts are invoiced.
+
+**Cancelling a tour or hire**: free until `cancellation_policy.scheduled_free_hours` (tour 48, hourly 24) before the start;
+inside that, `scheduled_late_pct` (50%) of the price, except within `tour_policy.change_of_mind_min` (10) minutes of booking
+and when a closure, or heat on a heat-sensitive tour, covers the day. The deposit pays the fee first and the rest of it is
+refunded (`payments.kind = 'deposit_refund'`); a no-drivers outcome, a card declined at release or a free cancel refunds it in
+full. `GET /trips/:id/cancel-terms` (rider) → `{ terms { fee_cents, reason free_before|change_of_mind|advisory|late,
+free_until }, deposit_cents, deposit_back_cents, extra_charge_cents }`. Staff refunds of a deposit-paid tour go back against
+each card payment in turn.
+
+**Hourly hire** (`POST /quotes` / `POST /trips` with `service: 'hourly'`): `hire_hours` (`tour_policy.hire.min_hours` to
+`max_hours_per_day`, 1–10) prices it as hours × the hourly rate (was priced by the drive); needs `scheduled_for` at least
+`hire.notice_hours` (24) ahead online; 400 `hire_hours`, `hire_needs_date`, `hire_too_soon`.
+
+**Hire quotes**
+- `POST /public/hire/quote { hours_per_day, days (1–30), vehicles (1–20) }` → `{ quote { lines, hourly_cents,
+  charged_hours_per_day, subtotal_cents, discount_cents, levy_cents, total_cents, gst_cents } }`: a minimum per day, a long day
+  charged at `day_cap_hours` (8), `multi_day_pct` (10%) off from `multi_day_min_days` (3), the levy per car per day; at most 10
+  hours a day per driver (fatigue rules).
+- `POST /admin/hire-requests/:id/quote { hours_per_day, days, vehicles, start_date?, note?, total_override_cents? }` (ops,
+  audited) → `{ item, url, texted }`: stores the quote, a private link valid `quote_valid_days` (14), texts the contact; 400
+  `already_accepted`.
+- `GET /public/hire/:token` → `{ quote { …, expires_at, expired, accepted_at, accepted_name, status, terms } }`;
+  `POST /public/hire/:token/accept { name, agree: true }` → the quote with `status: 'confirmed'` (once; later taps return it);
+  400 `quote_expired`, `quote_withdrawn`. Rate-limited per IP.
+
+**Partners: hotels, visitor centres and tour desks** (partner `kind` `hotel` | `visitor_centre` | `tour_desk`, with
+`tour_commission_pct` and a linked `corporate_account_id`):
+- `GET /partner/tours` → `{ partner { commission_pct, account_linked, … }, tours, bookings, terms }` (guests by first name and
+  the last 3 digits of the phone).
+- `POST /partner/tours/bookings { tour_id, scheduled_for, guests, guest_name, guest_phone, pickup? }` → 201 `{ booking { id, ref,
+  status, scheduled_for, quote_cents, commission_cents } }`: booked for the guest (`channel: 'partner'`), billed to the desk's
+  account, picked up at the desk unless another pickup is given, the guest texted; commission (tour price × rate) fixed at
+  booking, earned on completion, void on cancel. 409 `partner_account_required`; 403 for cafés and shops.
+- `POST /partner/tours/bookings/:id/cancel` → the same 48-hour terms; `GET /partner/tours/commissions?format=json|csv` →
+  `{ commission_pct, months [{ month, earned_cents, paid_cents, pending_cents, bookings }], items }`.
+
+**Admin**
+- `GET /admin/tour-policy`, `PUT /admin/tour-policy { policy }` (admin; also `PUT /admin/settings/tour_policy`) → `{ policy }`
+  checked whole (`deposit_pct`, `change_of_mind_min`, `hire { min_hours, max_hours_per_day, day_cap_hours, multi_day_min_days,
+  multi_day_pct, quote_valid_days, notice_hours }`).
+- `POST /admin/tours`, `PATCH /admin/tours/:id` take the new fields, checked: itinerary within the duration, protocols from the
+  list, `HH:MM` start times, guide fee only for guided tours, translations only in visitor languages and `reviewed` only with
+  `reviewed_by` and `reviewed_on`. `stops`/`itinerary` are written as JSON (a list used to fail). 503 `migration_pending` for the
+  new fields before 023.
+- `GET /admin/tour-advisories` → `{ items, ready }`; `POST /admin/tour-advisories { kind heat|closure|fire|flood|road|water,
+  title, message, starts_on, ends_on, tour_ids?, latest_start?, closes?, active?, notify? }` (ops) → 201 `{ item, notified }`:
+  riders with a booked tour on those days are told (and that cancelling is free when it closes their tour or limits a walk);
+  a heat advisory needs `latest_start` or `closes`. `PATCH /admin/tour-advisories/:id`.
+- `GET /admin/tour-guides`, `POST /admin/tour-guides`, `PATCH /admin/tour-guides/:id` (name, phone, email, community, bio,
+  `show_name`, ABN, payment reference, active). `POST /admin/trips/:id/guide { guide_id | null }` (ops) assigns a guide to a
+  guided tour booking and texts them; 400 `not_guided`, `already_settled`.
+- `GET /admin/tour-guide-jobs?format=json|csv` → jobs (`assigned` → `owed` on completion, or the late fee's share of the guide
+  fee on a late cancel, `cancelled` on a free one → `paid`); `POST /admin/tour-guide-jobs/pay { trip_ids, paid_ref }` (admin) →
+  `{ paid, cents }` (only what is owed, once).
+- `GET /admin/tour-commissions` → per partner and Darwin month; `POST /admin/tour-commissions/pay { partner_id, month, paid_ref }`
+  (admin) → `{ paid, cents }`; 400 `month_open`.
+- `GET /admin/tour-bookings` → upcoming and last-7-day tour and hire bookings with guide, partner, commission and deposit.
+- Partners take `kind` (`cafe`, `shop`, `community`, `hotel`, `visitor_centre`, `tour_desk`, `other`), `tour_commission_pct`
+  (0–50) and `corporate_account_id` (400 `invalid_account`).
+
+Messages: `tour_booked_for_you` (guest text), `tour_advisory` (in-app, safety), `guide_assigned` (guide text), `hire_quote`
+(contact text). Visitor-language words for the tour and hire screens are in `packages/shared/src/i18n/visitor.json` (machine
+translations, flagged until reviewed; `tv()`), kept apart from the community languages, which are never machine-translated.

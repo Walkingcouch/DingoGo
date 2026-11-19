@@ -38,6 +38,7 @@ const quoteSchema = z.object({
   redeem_points: z.number().int().min(0).optional(),
   corporate_account_id: z.string().uuid().nullable().optional(),
   tour_package_id: z.string().uuid().nullable().optional(),
+  hire_hours: z.number().min(0.5).max(24).nullable().optional(),
 });
 
 /** Parcel details. Sizes, weights, phones and the checklist are checked in lib/courier.ts (`checkParcel`). */
@@ -445,5 +446,5 @@ export default async function riderRoutes(app: FastifyInstance) {
     return { tickets: await q('SELECT * FROM support_tickets WHERE user_id = $1 ORDER BY created_at DESC', [me.id]) };
   });
 
-  app.get('/tours', async () => ({ tours: await q('SELECT * FROM tour_packages WHERE active ORDER BY price_cents') }));
+  // /tours: routes/tours.ts (Round 19).
 }

@@ -54,7 +54,7 @@ export const PAGES: Page[] = [
 ];
 
 /** Paths that are private or per-person: never indexed, never in the sitemap. */
-export const PRIVATE_PREFIXES = ['/track/', '/drive/status/', '/invite/'];
+export const PRIVATE_PREFIXES = ['/track/', '/drive/status/', '/invite/', '/hire/'];
 /** Other apps and the API on the same domain: kept out of search. */
 export const APP_PREFIXES = ['/rider/', '/driver/', '/admin/', '/partner/', '/roof/', '/api/'];
 

@@ -1,0 +1,631 @@
+{
+  "_about": "Visitor languages for the tour and hire screens (German, French, Italian, Japanese, Korean, Simplified Chinese). These are MACHINE TRANSLATIONS, flagged in the apps as \"being checked\" until a fluent reviewer signs them off: set status to reviewed with reviewed_by and reviewed_on. English is the source and the version that counts. Community languages (Arrernte, Kriol) are in strings.json and are never machine-translated.",
+  "languages": {
+    "de": {
+      "name": "Deutsch",
+      "english_name": "German",
+      "status": "machine"
+    },
+    "fr": {
+      "name": "Français",
+      "english_name": "French",
+      "status": "machine"
+    },
+    "it": {
+      "name": "Italiano",
+      "english_name": "Italian",
+      "status": "machine"
+    },
+    "ja": {
+      "name": "日本語",
+      "english_name": "Japanese",
+      "status": "machine"
+    },
+    "ko": {
+      "name": "한국어",
+      "english_name": "Korean",
+      "status": "machine"
+    },
+    "zh": {
+      "name": "简体中文",
+      "english_name": "Chinese (Simplified)",
+      "status": "machine"
+    }
+  },
+  "strings": {
+    "tours_title": {
+      "en": "Private tours from town",
+      "de": {
+        "text": "Private Touren ab der Stadt",
+        "status": "machine"
+      },
+      "fr": {
+        "text": "Visites privées au départ de la ville",
+        "status": "machine"
+      },
+      "it": {
+        "text": "Tour privati dalla città",
+        "status": "machine"
+      },
+      "ja": {
+        "text": "町から出発するプライベートツアー",
+        "status": "machine"
+      },
+      "ko": {
+        "text": "시내 출발 프라이빗 투어",
+        "status": "machine"
+      },
+      "zh": {
+        "text": "从市区出发的私人游",
+        "status": "machine"
+      }
+    },
+    "tours_intro": {
+      "en": "Your own car and local driver. One price per car.",
+      "de": {
+        "text": "Ihr eigenes Auto mit ortskundigem Fahrer. Ein Preis pro Auto.",
+        "status": "machine"
+      },
+      "fr": {
+        "text": "Votre voiture et un chauffeur local. Un prix par voiture.",
+        "status": "machine"
+      },
+      "it": {
+        "text": "La vostra auto con un autista del posto. Un prezzo per auto.",
+        "status": "machine"
+      },
+      "ja": {
+        "text": "専用車と地元のドライバー。料金は1台ごとです。",
+        "status": "machine"
+      },
+      "ko": {
+        "text": "전용 차량과 현지 기사. 차량당 한 가격입니다.",
+        "status": "machine"
+      },
+      "zh": {
+        "text": "专车配当地司机，按车计价。",
+        "status": "machine"
+      }
+    },
+    "duration": {
+      "en": "Duration",
+      "de": {
+        "text": "Dauer",
+        "status": "machine"
+      },
+      "fr": {
+        "text": "Durée",
+        "status": "machine"
+      },
+      "it": {
+        "text": "Durata",
+        "status": "machine"
+      },
+      "ja": {
+        "text": "所要時間",
+        "status": "machine"
+      },
+      "ko": {
+        "text": "소요 시간",
+        "status": "machine"
+      },
+      "zh": {
+        "text": "时长",
+        "status": "machine"
+      }
+    },
+    "up_to_guests": {
+      "en": "Up to {n} guests",
+      "de": {
+        "text": "Bis zu {n} Gäste",
+        "status": "machine"
+      },
+      "fr": {
+        "text": "Jusqu'à {n} personnes",
+        "status": "machine"
+      },
+      "it": {
+        "text": "Fino a {n} ospiti",
+        "status": "machine"
+      },
+      "ja": {
+        "text": "最大{n}名",
+        "status": "machine"
+      },
+      "ko": {
+        "text": "최대 {n}명",
+        "status": "machine"
+      },
+      "zh": {
+        "text": "最多 {n} 位客人",
+        "status": "machine"
+      }
+    },
+    "stops": {
+      "en": "Stops",
+      "de": {
+        "text": "Stopps",
+        "status": "machine"
+      },
+      "fr": {
+        "text": "Arrêts",
+        "status": "machine"
+      },
+      "it": {
+        "text": "Tappe",
+        "status": "machine"
+      },
+      "ja": {
+        "text": "立ち寄り先",
+        "status": "machine"
+      },
+      "ko": {
+        "text": "방문지",
+        "status": "machine"
+      },
+      "zh": {
+        "text": "停靠点",
+        "status": "machine"
+      }
+    },
+    "respect_country": {
+      "en": "Respecting Country",
+      "de": {
+        "text": "Respekt vor dem Land (Country)",
+        "status": "machine"
+      },
+      "fr": {
+        "text": "Respecter le Pays (Country)",
+        "status": "machine"
+      },
+      "it": {
+        "text": "Rispettare il Paese (Country)",
+        "status": "machine"
+      },
+      "ja": {
+        "text": "土地(カントリー)への敬意",
+        "status": "machine"
+      },
+      "ko": {
+        "text": "땅(컨트리)에 대한 존중",
+        "status": "machine"
+      },
+      "zh": {
+        "text": "尊重这片土地（Country）",
+        "status": "machine"
+      }
+    },
+    "date": {
+      "en": "Date",
+      "de": {
+        "text": "Datum",
+        "status": "machine"
+      },
+      "fr": {
+        "text": "Date",
+        "status": "machine"
+      },
+      "it": {
+        "text": "Data",
+        "status": "machine"
+      },
+      "ja": {
+        "text": "日付",
+        "status": "machine"
+      },
+      "ko": {
+        "text": "날짜",
+        "status": "machine"
+      },
+      "zh": {
+        "text": "日期",
+        "status": "machine"
+      }
+    },
+    "start_time": {
+      "en": "Start time (Alice Springs time)",
+      "de": {
+        "text": "Startzeit (Ortszeit Alice Springs)",
+        "status": "machine"
+      },
+      "fr": {
+        "text": "Heure de départ (heure d'Alice Springs)",
+        "status": "machine"
+      },
+      "it": {
+        "text": "Ora di partenza (ora di Alice Springs)",
+        "status": "machine"
+      },
+      "ja": {
+        "text": "出発時刻(アリススプリングス時間)",
+        "status": "machine"
+      },
+      "ko": {
+        "text": "출발 시간(앨리스스프링스 시간)",
+        "status": "machine"
+      },
+      "zh": {
+        "text": "出发时间（爱丽斯泉当地时间）",
+        "status": "machine"
+      }
+    },
+    "guests": {
+      "en": "Guests",
+      "de": {
+        "text": "Gäste",
+        "status": "machine"
+      },
+      "fr": {
+        "text": "Personnes",
+        "status": "machine"
+      },
+      "it": {
+        "text": "Ospiti",
+        "status": "machine"
+      },
+      "ja": {
+        "text": "人数",
+        "status": "machine"
+      },
+      "ko": {
+        "text": "인원",
+        "status": "machine"
+      },
+      "zh": {
+        "text": "人数",
+        "status": "machine"
+      }
+    },
+    "pickup": {
+      "en": "Pickup",
+      "de": {
+        "text": "Abholung",
+        "status": "machine"
+      },
+      "fr": {
+        "text": "Prise en charge",
+        "status": "machine"
+      },
+      "it": {
+        "text": "Ritiro",
+        "status": "machine"
+      },
+      "ja": {
+        "text": "お迎え場所",
+        "status": "machine"
+      },
+      "ko": {
+        "text": "픽업 장소",
+        "status": "machine"
+      },
+      "zh": {
+        "text": "接送地点",
+        "status": "machine"
+      }
+    },
+    "pickup_hotel": {
+      "en": "Pick me up from my hotel",
+      "de": {
+        "text": "Abholung von meinem Hotel",
+        "status": "machine"
+      },
+      "fr": {
+        "text": "Me prendre à mon hôtel",
+        "status": "machine"
+      },
+      "it": {
+        "text": "Ritiro dal mio hotel",
+        "status": "machine"
+      },
+      "ja": {
+        "text": "ホテルまでお迎え",
+        "status": "machine"
+      },
+      "ko": {
+        "text": "호텔에서 픽업",
+        "status": "machine"
+      },
+      "zh": {
+        "text": "从我的酒店接我",
+        "status": "machine"
+      }
+    },
+    "book_tour": {
+      "en": "Book this tour",
+      "de": {
+        "text": "Diese Tour buchen",
+        "status": "machine"
+      },
+      "fr": {
+        "text": "Réserver cette visite",
+        "status": "machine"
+      },
+      "it": {
+        "text": "Prenota questo tour",
+        "status": "machine"
+      },
+      "ja": {
+        "text": "このツアーを予約",
+        "status": "machine"
+      },
+      "ko": {
+        "text": "이 투어 예약",
+        "status": "machine"
+      },
+      "zh": {
+        "text": "预订此行程",
+        "status": "machine"
+      }
+    },
+    "deposit_now": {
+      "en": "Deposit now: {pct}% on your card. The rest is charged on the day.",
+      "de": {
+        "text": "Anzahlung jetzt: {pct} % auf Ihre Karte. Der Rest wird am Tourtag abgebucht.",
+        "status": "machine"
+      },
+      "fr": {
+        "text": "Acompte maintenant : {pct} % sur votre carte. Le reste est débité le jour même.",
+        "status": "machine"
+      },
+      "it": {
+        "text": "Acconto ora: {pct}% sulla carta. Il resto viene addebitato il giorno del tour.",
+        "status": "machine"
+      },
+      "ja": {
+        "text": "今すぐ{pct}%をカードでお支払い。残額は当日に請求されます。",
+        "status": "machine"
+      },
+      "ko": {
+        "text": "지금 카드로 {pct}% 선결제, 나머지는 당일 결제됩니다.",
+        "status": "machine"
+      },
+      "zh": {
+        "text": "现在用银行卡支付 {pct}% 定金，余款当天收取。",
+        "status": "machine"
+      }
+    },
+    "cancel_terms": {
+      "en": "Free to cancel up to {h} hours before the start. After that, {pct}% of the price.",
+      "de": {
+        "text": "Kostenlose Stornierung bis {h} Stunden vor Beginn. Danach {pct} % des Preises.",
+        "status": "machine"
+      },
+      "fr": {
+        "text": "Annulation gratuite jusqu'à {h} heures avant le départ. Ensuite, {pct} % du prix.",
+        "status": "machine"
+      },
+      "it": {
+        "text": "Cancellazione gratuita fino a {h} ore prima della partenza. Dopo, il {pct}% del prezzo.",
+        "status": "machine"
+      },
+      "ja": {
+        "text": "開始{h}時間前までキャンセル無料。それ以降は料金の{pct}%がかかります。",
+        "status": "machine"
+      },
+      "ko": {
+        "text": "출발 {h}시간 전까지 무료 취소. 이후에는 요금의 {pct}%가 부과됩니다.",
+        "status": "machine"
+      },
+      "zh": {
+        "text": "出发前 {h} 小时内可免费取消，之后收取 {pct}% 费用。",
+        "status": "machine"
+      }
+    },
+    "safety_title": {
+      "en": "Outback safety",
+      "de": {
+        "text": "Sicherheit im Outback",
+        "status": "machine"
+      },
+      "fr": {
+        "text": "Sécurité dans l'Outback",
+        "status": "machine"
+      },
+      "it": {
+        "text": "Sicurezza nell'Outback",
+        "status": "machine"
+      },
+      "ja": {
+        "text": "アウトバックでの安全",
+        "status": "machine"
+      },
+      "ko": {
+        "text": "아웃백 안전 수칙",
+        "status": "machine"
+      },
+      "zh": {
+        "text": "内陆地区安全须知",
+        "status": "machine"
+      }
+    },
+    "water": {
+      "en": "Bring {l} L of water (a litre each per hour).",
+      "de": {
+        "text": "Bringen Sie {l} l Wasser mit (ein Liter pro Person und Stunde).",
+        "status": "machine"
+      },
+      "fr": {
+        "text": "Apportez {l} L d'eau (un litre par personne et par heure).",
+        "status": "machine"
+      },
+      "it": {
+        "text": "Portate {l} L d'acqua (un litro a persona per ogni ora).",
+        "status": "machine"
+      },
+      "ja": {
+        "text": "水を{l}リットルお持ちください(1人1時間あたり1リットル)。",
+        "status": "machine"
+      },
+      "ko": {
+        "text": "물 {l}L를 챙기세요(1인당 시간당 1L).",
+        "status": "machine"
+      },
+      "zh": {
+        "text": "请携带 {l} 升水（每人每小时一升）。",
+        "status": "machine"
+      }
+    },
+    "hat_shoes": {
+      "en": "Wear a hat, sunscreen and closed shoes.",
+      "de": {
+        "text": "Tragen Sie Hut, Sonnencreme und feste Schuhe.",
+        "status": "machine"
+      },
+      "fr": {
+        "text": "Portez un chapeau, de la crème solaire et des chaussures fermées.",
+        "status": "machine"
+      },
+      "it": {
+        "text": "Indossate cappello, crema solare e scarpe chiuse.",
+        "status": "machine"
+      },
+      "ja": {
+        "text": "帽子、日焼け止め、つま先の覆われた靴をご用意ください。",
+        "status": "machine"
+      },
+      "ko": {
+        "text": "모자, 자외선 차단제, 막힌 신발을 착용하세요.",
+        "status": "machine"
+      },
+      "zh": {
+        "text": "请戴帽子、涂防晒霜并穿包脚鞋。",
+        "status": "machine"
+      }
+    },
+    "heat_advisory": {
+      "en": "Heat advisory",
+      "de": {
+        "text": "Hitzewarnung",
+        "status": "machine"
+      },
+      "fr": {
+        "text": "Alerte chaleur",
+        "status": "machine"
+      },
+      "it": {
+        "text": "Allerta caldo",
+        "status": "machine"
+      },
+      "ja": {
+        "text": "猛暑注意報",
+        "status": "machine"
+      },
+      "ko": {
+        "text": "폭염 주의보",
+        "status": "machine"
+      },
+      "zh": {
+        "text": "高温警告",
+        "status": "machine"
+      }
+    },
+    "closure": {
+      "en": "Closed",
+      "de": {
+        "text": "Geschlossen",
+        "status": "machine"
+      },
+      "fr": {
+        "text": "Fermé",
+        "status": "machine"
+      },
+      "it": {
+        "text": "Chiuso",
+        "status": "machine"
+      },
+      "ja": {
+        "text": "閉鎖",
+        "status": "machine"
+      },
+      "ko": {
+        "text": "폐쇄",
+        "status": "machine"
+      },
+      "zh": {
+        "text": "关闭",
+        "status": "machine"
+      }
+    },
+    "aboriginal_guide": {
+      "en": "Led by an Aboriginal guide",
+      "de": {
+        "text": "Geführt von einem Aboriginal-Guide",
+        "status": "machine"
+      },
+      "fr": {
+        "text": "Guidée par un guide aborigène",
+        "status": "machine"
+      },
+      "it": {
+        "text": "Guidato da una guida aborigena",
+        "status": "machine"
+      },
+      "ja": {
+        "text": "アボリジナルのガイドが案内",
+        "status": "machine"
+      },
+      "ko": {
+        "text": "원주민 가이드 동행",
+        "status": "machine"
+      },
+      "zh": {
+        "text": "由原住民向导带领",
+        "status": "machine"
+      }
+    },
+    "machine_note": {
+      "en": "Machine translation, being checked. The English version is the one that counts.",
+      "de": {
+        "text": "Maschinelle Übersetzung, wird geprüft. Maßgeblich ist die englische Fassung.",
+        "status": "machine"
+      },
+      "fr": {
+        "text": "Traduction automatique en cours de vérification. Seule la version anglaise fait foi.",
+        "status": "machine"
+      },
+      "it": {
+        "text": "Traduzione automatica in fase di verifica. Fa fede la versione inglese.",
+        "status": "machine"
+      },
+      "ja": {
+        "text": "機械翻訳です(確認中)。英語版が正式なものです。",
+        "status": "machine"
+      },
+      "ko": {
+        "text": "기계 번역이며 검토 중입니다. 영어판이 기준입니다.",
+        "status": "machine"
+      },
+      "zh": {
+        "text": "机器翻译，正在审核。以英文版本为准。",
+        "status": "machine"
+      }
+    },
+    "language": {
+      "en": "Language",
+      "de": {
+        "text": "Sprache",
+        "status": "machine"
+      },
+      "fr": {
+        "text": "Langue",
+        "status": "machine"
+      },
+      "it": {
+        "text": "Lingua",
+        "status": "machine"
+      },
+      "ja": {
+        "text": "言語",
+        "status": "machine"
+      },
+      "ko": {
+        "text": "언어",
+        "status": "machine"
+      },
+      "zh": {
+        "text": "语言",
+        "status": "machine"
+      }
+    }
+  }
+}

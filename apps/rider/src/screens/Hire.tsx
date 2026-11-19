@@ -1,8 +1,61 @@
 import { useState } from 'react';
-import { ApiError, post } from '@dingogo/shared';
+import { useNavigate } from 'react-router-dom';
+import { ApiError, get, money, post, useLoad } from '@dingogo/shared';
+import { PlaceField, type Place } from '../components/PlaceField';
 import { useMe } from '../ctx';
 
-export function HirePanel() {
+const dayAfter = () => {
+  const d = new Date(Date.now() + 26 * 3600e3); d.setMinutes(0, 0, 0);
+  return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+};
+
+/** Round 19: a car and driver by the hour, booked in the app (priced by the hours, not the drive). */
+function ByTheHour({ pickup, setPickup, onFocusPickup }: { pickup: Place | null; setPickup: (p: Place | null) => void; onFocusPickup: () => void }) {
+  const { reload } = useMe();
+  const nav = useNavigate();
+  const cfg = useLoad(() => get('/public/tours'), []);
+  const hp = cfg.data?.terms?.hire;
+  const [hrs, setHrs] = useState(2);
+  const [when, setWhen] = useState(dayAfter());
+  const [quote, setQuote] = useState<any>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const body = () => ({ service: 'hourly', pickup, dropoff: pickup, hire_hours: hrs, scheduled_for: new Date(when).toISOString() });
+  async function price() {
+    if (!pickup) return;
+    setErr(null);
+    try { setQuote((await post('/quotes', body())).quote); } catch (e) { setErr(e instanceof ApiError ? e.message : 'Could not price it'); }
+  }
+  async function book() {
+    setBusy(true); setErr(null);
+    try {
+      const r = await post('/trips', { ...body(), kind: 'ride', payment_method: 'card' });
+      void reload(); nav(`/trips/${r.trip.id}`);
+    } catch (e) { setErr(e instanceof ApiError ? e.message : 'Could not book'); }
+    finally { setBusy(false); }
+  }
+  return (
+    <section style={{ marginBottom: '1.2rem' }}>
+      <h3 style={{ fontSize: 'var(--fs-md)', margin: '0 0 .4rem' }}>Book a car by the hour</h3>
+      <div className="places"><PlaceField label="Pickup" dot="A" value={pickup} onChange={(p) => { setPickup(p); setQuote(null); }} placeholder="Where should we start?" active onFocusField={onFocusPickup} /></div>
+      <div className="grid2" style={{ marginTop: '.6rem' }}>
+        <label className="dg-field"><span>Start</span><input className="dg-input" type="datetime-local" value={when} onChange={(e) => { setWhen(e.target.value); setQuote(null); }} /></label>
+        <label className="dg-field"><span>Hours</span>
+          <select className="dg-select" value={hrs} onChange={(e) => { setHrs(Number(e.target.value)); setQuote(null); }}>
+            {Array.from({ length: hp?.max_hours_per_day ?? 10 }, (_, i) => i + 1).filter((n) => n >= (hp?.min_hours ?? 1)).map((n) => <option key={n} value={n}>{n}</option>)}
+          </select></label>
+      </div>
+      <p className="dg-muted" style={{ fontSize: 'var(--fs-sm)', marginTop: 0 }}>Book at least {hp?.notice_hours ?? 24} hours ahead. Free to cancel until {cfg.data?.terms?.hire_free_cancel_hours ?? 24} hours before, then {cfg.data?.terms?.late_pct ?? 50}%. For several days or cars, ask for a quote below.</p>
+      {quote && <p className="quote__total dg-money" style={{ margin: '.2rem 0 .6rem' }}>{money(quote.total_cents)} <small className="dg-muted" style={{ fontSize: 'var(--fs-sm)', fontWeight: 400 }}>incl. GST and levy, card held before the start</small></p>}
+      {err && <p className="dg-error" role="alert">{err}</p>}
+      {quote
+        ? <button className="dg-btn dg-btn--dark dg-btn--block" disabled={busy} onClick={book}>{busy ? 'Booking…' : `Book ${hrs} hour${hrs > 1 ? 's' : ''}`}</button>
+        : <button className="dg-btn dg-btn--ghost dg-btn--block" disabled={!pickup} onClick={price}>See the price</button>}
+    </section>
+  );
+}
+
+export function HirePanel(props: { pickup: Place | null; setPickup: (p: Place | null) => void; onFocusPickup: () => void }) {
   const { me } = useMe();
   const [f, setF] = useState({ kind: 'event', contact_name: me?.user.name ?? '', contact_email: me?.user.email ?? '', contact_phone: me?.user.phone ?? '', organisation: '', event_date: '', passengers: '', vehicles: '1', details: '' });
   const [busy, setBusy] = useState(false);
@@ -29,7 +82,9 @@ export function HirePanel() {
       <button className="dg-btn dg-btn--ghost dg-btn--sm" style={{ marginTop: '.6rem' }} onClick={() => setDone(false)}>Send another</button>
     </div>
   );
-  return (
+  return (<>
+    <ByTheHour {...props} />
+    <h3 style={{ fontSize: 'var(--fs-md)', margin: '0 0 .4rem' }}>Events, several days or several cars</h3>
     <form onSubmit={submit}>
       <p className="dg-muted" style={{ marginTop: 0 }}>Weddings, conferences, festivals, airport transfers for a group, or a car for the day. Tell us what you need and we'll send a quote. Hourly hire starts at $75 an hour.</p>
       <label className="dg-field"><span>What's it for?</span>
@@ -49,5 +104,5 @@ export function HirePanel() {
       {err && <p className="dg-error" role="alert">{err}</p>}
       <button className="dg-btn dg-btn--dark dg-btn--block" disabled={busy}>{busy ? 'Sending…' : 'Ask for a quote'}</button>
     </form>
-  );
+  </>);
 }

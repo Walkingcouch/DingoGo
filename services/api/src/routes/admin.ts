@@ -57,6 +57,8 @@ async function saveDriverPay(actorId: string, body: unknown) {
   return next;
 }
 
+import { ROUND19_TOUR_COLUMNS, checkTourFields, checkTourPolicy, tourFields } from '../lib/tours.js';
+import { migrationPending as toursPending, toursReady } from '../services/tours.js';
 const ops = (req: FastifyRequest) => requireUser(req, 'admin', 'dispatcher');
 const admin = (req: FastifyRequest) => requireUser(req, 'admin');
 
@@ -344,7 +346,18 @@ export default async function adminRoutes(app: FastifyInstance) {
       const farePart = Math.min(b.cents, Math.max(farePaid - fareRefunded, 0));
       const tipPart = b.cents - farePart;
       const parts: { cents: number; gst: number; method: string; ref: string | null; which: string }[] = [];
-      if (farePart > 0) parts.push({ cents: farePart, gst: Math.round(farePart / 11), method: t.payment_method, ref: t.payment_ref, which: 'fare' });
+      if (farePart > 0 && t.payment_method === 'card' && t.fare_breakdown?.deposit) {
+        // Round 19: a tour fare paid partly by its deposit is refunded against each payment in turn (what's left on each).
+        const caps = await q(`SELECT provider_ref, sum(amount_cents)::int cents FROM payments WHERE trip_id = $1 AND kind = 'capture' AND status = 'succeeded' AND provider_ref IS NOT NULL
+                              GROUP BY provider_ref ORDER BY min(created_at) DESC`, [id], c);
+        let need = farePart;
+        for (const cap of caps) {
+          const done = rows.filter((r: any) => r.provider_ref === cap.provider_ref).reduce((n: number, r: any) => n + r.cents, 0);
+          const take = Math.min(need, Math.max(0, cap.cents - done));
+          if (take > 0) { parts.push({ cents: take, gst: Math.round(take / 11), method: 'card', ref: cap.provider_ref, which: `fare-${parts.length}` }); need -= take; }
+        }
+        if (need > 0) throw bad('refund_too_large', 'Nothing left to refund on the card payments for this trip');
+      } else if (farePart > 0) parts.push({ cents: farePart, gst: Math.round(farePart / 11), method: t.payment_method, ref: t.payment_ref, which: 'fare' });
       if (tipPart > 0) parts.push({ cents: tipPart, gst: 0, method: tip!.provider === 'wallet' ? 'wallet' : 'card', ref: tip!.provider_ref, which: 'tip' });
       for (const p of parts) {
         let provider = p.method;
@@ -779,12 +792,50 @@ export default async function adminRoutes(app: FastifyInstance) {
     } });
   crud(app, 'holidays', 'public_holidays', ['day', 'name'], { pk: 'day', order: 'day' });
   crud(app, 'plans', 'plans', ['code', 'name', 'price_cents', 'ride_discount_pct', 'free_deliveries', 'waive_booking_fee', 'perks', 'active'], { pk: 'code', order: 'price_cents' });
+  // Round 19: itinerary, season, start times, notice, heat rule, hotel pickup, Aboriginal guide and fee, deposit, visitor-language
+  // text; checked first. JSON lists are written as JSON (a plain array would be sent as a Postgres array and fail on jsonb).
   crud(app, 'tours', 'tour_packages',
-    ['slug', 'name', 'summary', 'description', 'duration_min', 'price_cents', 'max_passengers', 'stops', 'cultural_note', 'requires_permit', 'image_url', 'active'],
-    { order: 'name' });
+    ['slug', 'name', 'summary', 'description', 'duration_min', 'price_cents', 'max_passengers', 'stops', 'cultural_note', 'requires_permit', 'image_url', 'active',
+      ...ROUND19_TOUR_COLUMNS],
+    { order: 'name', prepare: async (d, id) => {
+      // The admin form sends every field: empty lists and blanks mean "leave it" (or every month / day), numbers may come as text.
+      for (const k of ['season_months', 'days'] as const) {
+        if (Array.isArray(d[k])) d[k] = d[k].length ? d[k].map(Number) : (k === 'days' ? [0, 1, 2, 3, 4, 5, 6] : [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+      }
+      for (const k of ['itinerary', 'season_months', 'days', 'start_times', 'min_notice_hours', 'translations', 'guided_by', 'guide_fee_cents', 'heat_sensitive', 'hotel_pickup', 'stops']) {
+        if (d[k] === null) delete d[k];
+      }
+      const v = parse(tourFields, d);
+      const before = id ? await one('SELECT * FROM tour_packages WHERE id = $1', [id]) : null;
+      const out = checkTourFields(v, before);
+      const ready = await toursReady();
+      if (!ready) {
+        // Before 023: the form's defaults (unticked boxes, "Your driver", blanks) are fine and left out; anything real needs the migration.
+        const plain = (k: string, x: unknown) => x === undefined || x === null || x === false || x === 0 || x === 'driver' || (Array.isArray(x) && !x.length)
+          || (k === 'hotel_pickup' && x === true) || (typeof x === 'object' && !Array.isArray(x) && !Object.keys(x as object).length)
+          || ((k === 'season_months' || k === 'days') && Array.isArray(x) && x.length === (k === 'days' ? 7 : 12));
+        if (ROUND19_TOUR_COLUMNS.some((k) => !plain(k, out[k]))) throw toursPending();
+        for (const k of ROUND19_TOUR_COLUMNS) delete out[k];
+      }
+      for (const k of ['stops', 'itinerary'] as const) if (Array.isArray(out[k])) out[k] = JSON.stringify(out[k]);
+      return out;
+    } });
 
   // ───────────── Loyalty partners ─────────────
-  crud(app, 'partners', 'partners', ['name', 'kind', 'address', 'lat', 'lng', 'phone', 'email', 'logo_url', 'aboriginal_owned', 'settlement_cents_per_redemption', 'active'], { order: 'name' });
+  // Round 19: hotels, visitor centres and tour desks book tours for guests (commission, billed to a linked business account).
+  crud(app, 'partners', 'partners', ['name', 'kind', 'address', 'lat', 'lng', 'phone', 'email', 'logo_url', 'aboriginal_owned', 'settlement_cents_per_redemption', 'active',
+    'tour_commission_pct', 'corporate_account_id'], { order: 'name', prepare: async (d) => {
+      const v = parse(z.object({ kind: z.enum(['cafe', 'shop', 'community', 'hotel', 'visitor_centre', 'tour_desk', 'other']).optional(),
+        tour_commission_pct: z.number().min(0).max(50).nullable().optional(), corporate_account_id: z.string().uuid().nullable().optional() }).passthrough(), d);
+      if (v.tour_commission_pct === null) delete v.tour_commission_pct;
+      if (!(await toursReady())) {
+        // Before 023: blanks from the form are left out; a real rate or account needs the migration.
+        if (v.tour_commission_pct || v.corporate_account_id) throw toursPending();
+        delete v.tour_commission_pct; delete v.corporate_account_id;
+      }
+      if (v.corporate_account_id && !(await one('SELECT 1 FROM corporate_accounts WHERE id = $1 AND active', [v.corporate_account_id]))) throw bad('invalid_account', 'No active business account with that id');
+      return v;
+    } });
   crud(app, 'rewards', 'rewards', ['partner_id', 'title', 'description', 'points_cost', 'kind', 'credit_cents', 'active'], { order: 'points_cost' });
   app.get('/admin/redemptions', async (req) => {
     await ops(req);
@@ -1069,6 +1120,12 @@ export default async function adminRoutes(app: FastifyInstance) {
     const b = parse(z.object({ value: z.any() }), req.body);
     // Driver pay goes through its own validation.
     if ((req.params as any).key === 'driver_pay') return { item: { key: 'driver_pay', value: await saveDriverPay(me.id, b.value) } };
+    if ((req.params as any).key === 'tour_policy') {
+      const value = checkTourPolicy(b.value);
+      await q(`INSERT INTO settings (key, value) VALUES ('tour_policy', $1) ON CONFLICT (key) DO UPDATE SET value = $1`, [JSON.stringify(value)]);
+      await audit(me.id, 'update', 'settings', 'tour_policy', value);
+      return { item: { key: 'tour_policy', value } };
+    }
     if ((req.params as any).key === 'community_pricing') return { item: { key: 'community_pricing', value: await saveCommunityPricing(me.id, b.value) } };
     if ((req.params as any).key === 'safety_policy') {
       const value = checkSafetyPolicy(b.value);

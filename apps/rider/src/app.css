@@ -135,6 +135,8 @@ body { overscroll-behavior: none; }
 
 /* Tours */
 .tours { display: grid; gap: 10px; }
+.tour-stops { margin: .2rem 0 .6rem; padding-left: 1.2rem; }
+.tour-stops > li { margin: .35rem 0; }
 .tour { display: grid; gap: 6px; text-align: left; padding: 1rem; border-radius: var(--r-md); border: 2px solid var(--line); background: var(--surface); cursor: pointer; }
 .tour:hover { border-color: var(--ochre); }
 .tour__top { display: flex; justify-content: space-between; gap: 8px; font-family: var(--font-display); font-size: var(--fs-lg); }
