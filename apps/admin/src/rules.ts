@@ -34,17 +34,5 @@ export function jurisdictionList(data: any): Jurisdiction[] {
 export const findJ = (list: Jurisdiction[], code?: string | null) => list.find((j) => j.code === (code ?? 'NT')) ?? list[0];
 export const minYearFor = (j: Pick<Jurisdiction, 'vehicle_max_age_years'>) => new Date().getFullYear() - (Number(j.vehicle_max_age_years) - 1);
 
-// ───────── VIN ─────────
-const YEAR_CODES = 'ABCDEFGHJKLMNPRSTVWXY123456789'; // 1980…2009; the cycle repeats every 30 years
-
-/** Model year from VIN position 10 (most recent year in the cycle no later than next year). A hint only. */
-export function vinYear(raw?: string | null): number | null {
-  const vin = String(raw ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '');
-  if (vin.length !== 17 || /[IOQ]/.test(vin)) return null;
-  const i = YEAR_CODES.indexOf(vin[9]);
-  if (i < 0) return null;
-  const max = new Date().getFullYear() + 1;
-  let y = 1980 + i;
-  while (y + 30 <= max) y += 30;
-  return y;
-}
+// VIN year hints: one decoder for the admin and driver apps (packages/shared/src/vin.ts).
+export { vinYear } from '@dingogo/shared';

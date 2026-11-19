@@ -187,9 +187,41 @@ export function quoteFare(rule: FareRule, ctx: FareContext): FareQuote {
   };
 }
 
-/** Final fare after the trip: re-meter on actual distance/time but never exceed quote by more than 20% without review. */
-export function finalFare(quoteCents: number, rule: FareRule, ctx: FareContext): { cents: number; capped: boolean } {
-  const metered = quoteFare(rule, ctx).total_cents;
-  const cap = Math.round(quoteCents * 1.2);
-  return metered > cap ? { cents: cap, capped: true } : { cents: Math.max(metered, 0), capped: false };
+/** Fare breakdown as stored on trips.fare_breakdown: the quote at booking plus what happened on the road
+ *  (route change line, return-to-sender line and fee). */
+export type FareBreakdown = Partial<FareQuote> & { lines: FareLine[]; return_fee_cents?: number };
+
+export const ROUTE_CHANGE_LABEL = 'Route change adjustment';
+export const RETURN_FEE_LABEL = 'Return to sender';
+
+/** Upfront pricing after the trip: the rider pays the quote unless the driven distance is more than 25% over the estimate;
+ *  then the extra kilometres are charged at the per-km rate, capped at +20% of the quote. Tours (package price) never change.
+ *  Pure; returns the extra cents (0 when the quote stands). */
+export function routeChangeExtra(o: { quoteCents: number; estDistanceM: number; actualDistanceM: number | null | undefined; perKmCents: number; service: string }): number {
+  const actual = o.actualDistanceM ?? 0;
+  if (!actual || o.service === 'tour' || !(o.estDistanceM > 0) || actual <= o.estDistanceM * 1.25) return 0;
+  const extra = Math.round((actual - o.estDistanceM) * (o.perKmCents / 1000));
+  return Math.max(0, Math.min(extra, Math.round(o.quoteCents * 1.2) - o.quoteCents));
 }
+
+/** Return-to-sender fee for a failed delivery: a percent of the trip fare (before discounts), at least the minimum,
+ *  5c-rounded; 0 when the percent is 0. */
+export function returnFeeCents(tripCents: number, policy: { return_fee_pct: number; return_fee_min_cents: number }): number {
+  if (!(policy.return_fee_pct > 0)) return 0;
+  return Math.max(policy.return_fee_min_cents, round5((tripCents * policy.return_fee_pct) / 100));
+}
+
+/** Late-cancellation fee actually charged: never more than the trip's price (a free Pass delivery or a heavily discounted
+ *  fare can't cost more to cancel than to take), and nothing on cash trips (DingoGo can't collect it). */
+export function cancelFeeCharged(feeCents: number, t: { quote_cents: number; payment_method: string }): { cents: number; waived?: 'cash' | 'capped' } {
+  if (feeCents <= 0) return { cents: 0 };
+  if (t.payment_method === 'cash') return { cents: 0, waived: 'cash' };
+  if (feeCents > t.quote_cents) return { cents: Math.max(0, t.quote_cents), waived: 'capped' };
+  return { cents: feeCents };
+}
+
+/** Points earned on what the rider paid (whole points, nothing on $0). */
+export const pointsEarned = (paidCents: number, pointsPerDollar: number) => Math.max(0, Math.floor((paidCents / 100) * pointsPerDollar));
+
+/** GST in a GST-inclusive amount (1/11th, to the cent). */
+export const gstOf = (cents: number) => Math.round(cents / 11);

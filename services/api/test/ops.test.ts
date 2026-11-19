@@ -157,6 +157,19 @@ test('bootstrap: fresh database gets every migration, RLS, Supabase roles locked
   Object.assign(cfg.ops, { apiRole: '', apiRolePassword: '' });
 });
 
+test('migrations 011 on: additive and re-runnable (the coordinator may paste one into the Supabase SQL editor twice), in order with no gaps', async () => {
+  const files = M.listMigrations();
+  files.forEach((m, i) => assert.equal(Number(m.name.slice(0, 3)), i + 1, `migration ${m.name} in order with no gap`));
+  const c = await dbm.pool.connect();
+  try {
+    for (const m of files.filter((f) => Number(f.name.slice(0, 3)) >= 11)) {
+      assert.doesNotMatch(m.sql.replace(/--.*$/gm, ''), /\bDROP\s+(TABLE|COLUMN)\b|\bRENAME\b|\bALTER\s+COLUMN\b[^;]*\bTYPE\b/i, `${m.name} is additive`);
+      await c.query('BEGIN');
+      try { await c.query(m.sql); } catch (e: any) { assert.fail(`${m.name} fails when run a second time: ${e.message}`); } finally { await c.query('ROLLBACK'); }
+    }
+  } finally { c.release(); }
+});
+
 test('migrator: concurrent runners apply each migration once; a held lock means "busy"; a failing migration rolls back; a table lock times out instead of queueing', async () => {
   const url = urlFor(DB2);
   const first = await M.migrate({ url, upTo: '013_ops_indexes.sql' });

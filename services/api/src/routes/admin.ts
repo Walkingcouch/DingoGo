@@ -1,5 +1,5 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
-import { one, q, tx } from '../db.js';
+import { one, pool, q, tx } from '../db.js';
 import { requireUser } from '../auth.js';
 import { ApiError, bad, conflict, notFound } from '../lib/errors.js';
 import { APPLICATION_STAGES, STAGE_KEYS, applicationsPending, applicationsReady } from '../lib/growth.js';
@@ -25,6 +25,7 @@ import { gstReport, levyReport, tripFilters } from '../services/reports.js';
 import { audit as writeAudit } from '../lib/audit.js';
 import { saveCommunityPricing } from './community.js';
 import { checkSafetyPolicy, safetyReady } from '../lib/safety.js';
+import { ACCOUNT_KINDS } from '../lib/community.js';
 import { sessionOnline } from '../services/safety.js';
 
 /** Driver pay rules (all optional on update; merged over what is stored). Bounds keep a typo from paying out wildly. */
@@ -90,6 +91,26 @@ function crud(app: FastifyInstance, path: string, table: string, cols: string[],
     await audit(me.id, 'update', table, String(row[pk]), data);
     return { item: out(row) };
   });
+}
+
+/** Business account fields an admin can set. The discount feeds every fare on the account, so it is bounded (the admin form
+ *  says 0–50%); an empty limit means no limit. */
+const corporateFields = z.object({
+  name: z.string().trim().min(1).max(120).nullable().optional(),
+  kind: z.enum(ACCOUNT_KINDS).nullable().optional(),
+  abn: z.preprocess((v) => (typeof v === 'string' ? v.replace(/\s+/g, '') || null : v), z.string().regex(/^\d{11}$/, 'ABN is 11 digits').nullable().optional()),
+  billing_email: z.string().trim().email().max(200).nullable().optional(),
+  monthly_limit_cents: z.number().int().min(0).max(10_000_000).nullable().optional(),
+  invoice_terms_days: z.number().int().min(0).max(120).nullable().optional(),
+  discount_pct: z.number().min(0).max(50).nullable().optional(),
+  active: z.boolean().nullable().optional(),
+});
+/** Validated account fields; a cleared field that can't be empty is left as it was. */
+function corporateInput(d: Record<string, any>) {
+  const o: Record<string, any> = parse(corporateFields, d);
+  for (const k of ['name', 'kind', 'billing_email', 'invoice_terms_days', 'discount_pct', 'active']) if (o[k] === null) delete o[k];
+  if (!Object.keys(o).length) throw bad('empty');
+  return o;
 }
 
 const PPSR_URL = 'https://www.ppsr.gov.au/carcheck';
@@ -782,7 +803,7 @@ export default async function adminRoutes(app: FastifyInstance) {
   app.get('/admin/charging', async (req) => {
     await ops(req);
     const { month } = req.query as { month?: string };
-    const m = month && /^\d{4}-\d{2}$/.test(month) ? month : new Date().toISOString().slice(0, 7);
+    const m = month && /^\d{4}-\d{2}$/.test(month) ? month : trips.localMonth();
     const by = await q(
       `SELECT v.rego, u.name AS driver_name, s.driver_id, count(*)::int sessions, sum(s.kwh)::numeric(8,1) kwh, sum(s.cost_cents)::int cost_cents,
               sum(s.cost_cents) FILTER (WHERE s.reimbursable AND s.reimbursed_at IS NULL)::int unreimbursed_cents,
@@ -912,7 +933,8 @@ export default async function adminRoutes(app: FastifyInstance) {
     return gstReport(from, to);
   });
 
-  crud(app, 'corporate', 'corporate_accounts', ['name', 'kind', 'abn', 'billing_email', 'monthly_limit_cents', 'invoice_terms_days', 'discount_pct', 'active'], { order: 'name' });
+  crud(app, 'corporate', 'corporate_accounts', ['name', 'kind', 'abn', 'billing_email', 'monthly_limit_cents', 'invoice_terms_days', 'discount_pct', 'active'], {
+    order: 'name', prepare: async (d) => corporateInput(d) });
   app.post('/admin/corporate/:id/members', async (req) => {
     await admin(req);
     const b = parse(z.object({ phone, role: z.enum(['member', 'manager']).default('member') }), req.body);
@@ -924,19 +946,26 @@ export default async function adminRoutes(app: FastifyInstance) {
   app.get('/admin/corporate/:id/statement', async (req) => {
     await ops(req);
     const { month } = req.query as { month?: string };
-    const m = month && /^\d{4}-\d{2}$/.test(month) ? month : new Date().toISOString().slice(0, 7);
+    const m = month && /^\d{4}-\d{2}$/.test(month) ? month : trips.localMonth();
     const acct = await one('SELECT * FROM corporate_accounts WHERE id = $1', [(req.params as any).id]);
     if (!acct) throw notFound('Account');
     const lines = await q(
       `SELECT t.ref, coalesce(t.completed_at, t.cancelled_at) AS completed_at, u.name AS rider, t.pickup_address, t.dropoff_address,
-              coalesce(t.final_cents, t.cancel_fee_cents)::int AS final_cents, t.ndis_number, (t.status <> 'completed') AS cancellation_fee
+              coalesce(t.final_cents, t.cancel_fee_cents)::int AS final_cents, t.ndis_number, (t.status <> 'completed') AS cancellation_fee,
+              coalesce((SELECT -sum(p.amount_cents) FROM payments p WHERE p.trip_id = t.id AND p.kind = 'refund' AND p.status = 'succeeded'), 0)::int AS refunded_cents
        FROM trips t JOIN users u ON u.id = t.rider_id
        WHERE t.corporate_account_id = $1 AND t.payment_method = 'corporate'
          AND (t.status = 'completed' OR (t.status::text LIKE 'cancelled%' AND t.cancel_fee_cents > 0))
          AND to_char(coalesce(t.completed_at, t.cancelled_at) AT TIME ZONE 'Australia/Darwin', 'YYYY-MM') = $2
        ORDER BY coalesce(t.completed_at, t.cancelled_at)`, [acct.id, m]);
-    const total = lines.reduce((s, l) => s + l.final_cents, 0);
-    return { account: acct, month: m, lines, total_cents: total, gst_cents: Math.round(total / 11),
+    // Refunds are credits on the statement (a refund on a business trip moves no money: it comes off the invoice).
+    const charges = lines.reduce((s, l) => s + l.final_cents, 0);
+    const refunds = lines.reduce((s, l) => s + l.refunded_cents, 0);
+    const total = charges - refunds;
+    const limit = Number(acct.monthly_limit_cents ?? 0);
+    const used = limit > 0 ? await trips.accountMonthCents(pool, acct.id, m) : 0;
+    return { account: acct, month: m, lines, charges_cents: charges, refunds_cents: refunds, total_cents: total, gst_cents: Math.round(total / 11),
+      limit: limit > 0 ? { limit_cents: limit, used_cents: used, left_cents: Math.max(0, limit - used) } : null,
       members: await q('SELECT u.id, u.name, u.phone, m.role FROM corporate_members m JOIN users u ON u.id = m.user_id WHERE m.account_id = $1', [acct.id]) };
   });
 

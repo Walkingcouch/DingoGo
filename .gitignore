@@ -9,3 +9,4 @@ apps/*/screenshots-v2
 backups
 *.dump
 i18n-review.csv
+smoke-shots

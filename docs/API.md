@@ -9,6 +9,7 @@ Base URL: `http://localhost:4000` in development. Auth: `Authorization: Bearer <
 | --- | --- |
 | GET | `/health` |
 | GET | `/health/deep` (Round 10: database, schema version, pending migrations, integrations; details for admins / `X-Health-Token`) |
+| GET | `/health/routing` (which routing provider answered a fixed Alice Springs route: `osrm`, `ors` or `estimate` with the last error) |
 | GET | `/public/config` |
 | GET | `/public/places` |
 | POST | `/public/estimate` |
@@ -689,6 +690,8 @@ are drafts until a named community reviewer approves them; missing words fall ba
 
 **Simple mode:** `accessibility.simple: true` on the profile (rider app: big pictures, short words, status read aloud). Not sent to drivers.
 
+`GET /admin/languages` (ops): the app languages with their review state (Arrernte and Kriol drafts).
+
 **Concession fares** (setting `community_pricing`, off by default): `GET/PUT /admin/community-pricing` (PUT admin only) `{ enabled, concession_pct
 (0–75), concession_max_cents (0–$100, 0 = no cap), services[], types[] (pensioner, health_care, seniors, dva, student) }`; `PUT
 /admin/settings/community_pricing` goes through the same checks. Rider: `PUT /me/concession { type, last4, expires }` (400 `concession_off`,
@@ -783,8 +786,8 @@ straight after `complete`), offers withdrawn, `fatigue_offline` with the time th
 /admin/safety/fatigue` → online and resting drivers.
 
 **Driver photo check** (off by default): with `photo_review` or `face_match`, `POST /driver/online` → 409 `identity_check_needed` (no photo in
-`every_hours`) or `identity_check_rejected`. Upload purpose `selfie` (drivers only, private like documents), then `POST /driver/identity-check
-{ photo_url }` → 201 `{ check: { status, method, match_score } }` (image only; taken in the last 10 minutes, 400 `photo_too_old`; 409 `photo_used`).
+`every_hours`) or `identity_check_rejected`. Upload purpose `selfie` (drivers only, private like documents), then
+`POST /driver/identity-check { photo_url }` → 201 `{ check: { status, method, match_score } }` (image only; taken in the last 10 minutes, 400 `photo_too_old`; 409 `photo_used`).
 `face_match` with `FACE_MATCH_URL` set: the provider gets `{ selfie, reference }` (base64; reference = last approved photo) and answers
 `{ score }`; ≥ `match_threshold` → approved at once, else pending; provider down or no reference yet → pending (`photo_review`). Drivers can drive
 while a photo is pending. Ops: `GET /admin/identity-checks?status=pending|approved|rejected|all` (signed photo, last approved photo, licence),
@@ -819,3 +822,25 @@ Without lat/lng it uses the car's last position on the caller's live trip. A str
 timeout), otherwise the nearest known landmark.
 
 Uploads: purposes `selfie` (drivers) and `evidence` (anyone signed in) are private (signed links, owner and staff only).
+
+## Consolidation (Round 15)
+
+- **Business account monthly limit** (`corporate_accounts.monthly_limit_cents`; empty or 0 = no limit), checked on every booking billed to the account
+  (`payment_method: 'corporate'`, rider app, organisation and phone bookings, each drop of a run): 402 `account_limit_reached`
+  `{ details: { limit_cents, used_cents, left_cents, month } }`. Used = this Darwin-time month's completed trips (final price), late-cancel fees and
+  trips booked or on the road (their quote), less refunds; a booking counts in the month of its pickup. The account row is locked while checking, so two
+  bookings at once can't both squeeze under the limit. Paying another way still works.
+- `GET /admin/corporate/:id/statement?month=YYYY-MM` (default: this month in Darwin time, was UTC) adds per line `refunded_cents`, and
+  `charges_cents`, `refunds_cents`, `total_cents` (= charges − refunds; GST on the net) and `limit { limit_cents, used_cents, left_cents } | null`.
+  A refund on a business trip moves no money: it is a credit on the statement.
+- `POST/PATCH /admin/corporate` fields are validated: `kind` one of `business, ndis_plan_manager, community_org, aboriginal_corporation,
+  health_service, government`; `discount_pct` 0–50; `abn` 11 digits (spaces ignored); `monthly_limit_cents` ≥ 0 or null; `invoice_terms_days`
+  0–120; a cleared required field is left as it was (400 `validation_error` / `empty`).
+- **Late-cancellation fee is never more than the trip's price** (a $1 trip whose fare a promo or Pass covered costs $1 to cancel late, not $3):
+  event data `fee_waived: 'capped'`. Cash trips stay `fee_waived: 'cash'`.
+- **DingoGo credit trips and route changes:** the route-change adjustment (distance > 125% of the estimate, capped at +20%) is taken from the credit
+  that is left and never below zero; the rest is waived (line "Route change adjustment (part waived: not enough DingoGo credit)"), as the return fee
+  already was. The driver is paid what was charged.
+- Concession cards are valid until midnight Darwin time on their expiry date (was 9:30 am, UTC midnight); `PUT /me/concession` uses the same date.
+- Docs drift is a test: every route the API registers must appear in this file, and every environment variable it reads in `services/api/.env.example`
+  (`test/docs.test.ts`).

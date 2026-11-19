@@ -64,9 +64,17 @@ applied from somewhere other than this repo's runners; `AUTO_MIGRATE` re-applies
   Safe while the API is running — the same lock is used.
 - **Supabase MCP / SQL editor:** paste the file's SQL and then `INSERT INTO schema_migrations (name) VALUES ('0NN_name.sql');` in the same
   transaction, or the runner will try the file again.
+  Migrations 011 onwards are re-runnable (`IF NOT EXISTS`, no drops or renames; checked by `test/ops.test.ts`), so pasting one a second time
+  is harmless. 001–010 are not: never paste those into a database that already has them.
 - Migrations must stay additive and backward compatible (ground rules in `docs/improvement-rounds.md`): code that is ahead of the schema answers 503
   `migration_pending` for the affected feature, not a crash.
 - `db:reset` drops everything and **refuses a non-local database** unless `ALLOW_DB_RESET=yes`. Never set that against production.
+
+### After a deploy: browser smoke test
+`node scripts/build-vercel.mjs && npm run db:reset -w services/api && npm run smoke` drives the built rider, driver and admin apps in Chromium
+against the bundled serverless API on a local demo database: driver goes online, rider books Todd Mall → Hospital, driver accepts, arrives, starts
+with the rider's PIN and completes, rider sees "Thanks for riding", admin approves the waiting car. CI runs it on every push (screenshots kept on
+failure). It needs a throwaway database (it signs in demo accounts with 000000); never point it at production.
 
 ## 3. Is it healthy?
 

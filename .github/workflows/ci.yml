@@ -20,3 +20,14 @@ jobs:
       - run: npm run db:reset -w services/api
       - run: npm test -w services/api
       - run: npm run build --workspaces --if-present
+      # Browser smoke test (rider books, driver accepts and completes, admin approves a car) against the Vercel build:
+      # the built apps and the bundled serverless API on a freshly seeded database.
+      - run: node scripts/build-vercel.mjs
+      - name: Install Playwright (not a project dependency)
+        run: npm i --no-save --no-package-lock playwright@1.63.0 && npx playwright install --with-deps chromium
+      - run: npm run db:reset -w services/api
+      - run: npm run smoke
+        env: { SMOKE_SHOTS: smoke-shots }
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with: { name: smoke-screenshots, path: smoke-shots, if-no-files-found: ignore }

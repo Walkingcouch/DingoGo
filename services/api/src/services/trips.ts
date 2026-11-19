@@ -4,7 +4,7 @@ import type pg from 'pg';
 import { config } from '../config.js';
 import { one, pool, q, tx, type Q } from '../db.js';
 import { ApiError, bad, conflict, forbidden, notFound } from '../lib/errors.js';
-import { quoteFare, type FareQuote, type FareRule } from '../lib/fares.js';
+import { RETURN_FEE_LABEL, ROUTE_CHANGE_LABEL, cancelFeeCharged, gstOf, pointsEarned, quoteFare, routeChangeExtra, type FareBreakdown, type FareQuote, type FareRule } from '../lib/fares.js';
 import { driverPay, loadDriverPay, longPickupCents, pickupPayCents, serviceFeeFor, type DriverPay, type DriverPaySettings } from '../lib/driverPay.js';
 import { haversine, route, withinZone, type LatLng } from '../lib/geo.js';
 import { pin4, shareToken, tripRef } from '../lib/ids.js';
@@ -14,8 +14,9 @@ import { send, sendSmsT } from './notify.js';
 import { sendDocExpiryReminders } from './docExpiry.js';
 import * as pay from './payments.js';
 import { autoEarningsFloor } from './earningsFloor.js';
-import { checkParcel, type ParcelIn } from '../lib/courier.js';
+import { SIZE_SERVICE, checkParcel, type ParcelIn, type ParcelSize } from '../lib/courier.js';
 import { courierReady } from '../lib/courierSchema.js';
+import type { TripMoney } from '../lib/tripTypes.js';
 import { loadCourierPolicy, onParcelsCollected, returnFeeFor } from './courier.js';
 import { NO_FAULT_CANCEL_REASONS, concessionFor, loadCommunityPricing } from '../lib/community.js';
 
@@ -197,6 +198,41 @@ export interface CreateTripInput extends QuoteInput {
   pickup_window_end?: string | null;
 }
 
+/** What a business account has been billed in one Darwin-time month: completed trips, late-cancel fees, trips booked or
+ *  on the road (their quote), less refunds. `month` is YYYY-MM. Used for the monthly limit and the admin statement. */
+export async function accountMonthCents(c: Q, accountId: string, month: string): Promise<number> {
+  const r = await one<{ n: number }>(
+    `SELECT coalesce(sum(CASE WHEN t.status = 'completed' THEN coalesce(t.final_cents, t.quote_cents)
+                              WHEN t.status::text LIKE 'cancelled%' THEN coalesce(t.cancel_fee_cents, 0)
+                              WHEN t.status = ANY($3) THEN t.quote_cents ELSE 0 END
+                         + coalesce((SELECT sum(p.amount_cents) FROM payments p WHERE p.trip_id = t.id AND p.kind = 'refund' AND p.status = 'succeeded'), 0)), 0)::int n
+     FROM trips t
+     WHERE t.corporate_account_id = $1 AND t.payment_method = 'corporate'
+       AND to_char(coalesce(t.completed_at, t.cancelled_at, t.scheduled_for, t.requested_at) AT TIME ZONE $4, 'YYYY-MM') = $2`,
+    [accountId, month, [...ACTIVE, 'scheduled'], config.timezone], c);
+  return Math.max(0, r?.n ?? 0);
+}
+
+/** YYYY-MM of a moment in Darwin time (business statements and limits are by local month). */
+export const localMonth = (at: Date = new Date()) =>
+  new Intl.DateTimeFormat('en-CA', { timeZone: config.timezone, year: 'numeric', month: '2-digit' }).format(at).slice(0, 7);
+
+/** Business account monthly limit (admin → Business accounts; 0 or empty = no limit). Holds the account row so two bookings
+ *  at once can't both squeeze under the limit. 402 `account_limit_reached` with what is left. */
+async function checkAccountLimit(c: Q, accountId: string, cents: number, at: Date) {
+  const acct = await one<{ monthly_limit_cents: number | null; name: string }>(
+    'SELECT monthly_limit_cents, name FROM corporate_accounts WHERE id = $1 FOR UPDATE', [accountId], c);
+  const limit = Number(acct?.monthly_limit_cents ?? 0);
+  if (!acct || !(limit > 0)) return;
+  const month = localMonth(at);
+  const used = await accountMonthCents(c, accountId, month);
+  if (used + cents <= limit) return;
+  const left = Math.max(0, limit - used);
+  throw new ApiError(402, 'account_limit_reached',
+    `${acct.name} has reached its monthly limit${left > 0 ? ` ($${(left / 100).toFixed(2)} left this month)` : ''}. Ask the account manager, or pay another way.`,
+    { limit_cents: limit, used_cents: used, left_cents: left, month });
+}
+
 /** Where a trip sits in a multi-drop run, and how its price is worked out. */
 interface RunPlace { batchId: string; seq: number; legFrom?: LatLng }
 
@@ -312,7 +348,7 @@ export async function createRun(userId: string, base: Omit<CreateTripInput, 'dro
   return { batch: out.batch, trips: await Promise.all(out.made.map((t) => getTrip(t.id))) };
 }
 
-export const sizeService = (s: string) => (s === 'L' ? 'courier_l' : s === 'M' ? 'courier_m' : 'courier_s');
+export const sizeService = (s: string) => SIZE_SERVICE[(s === 'L' || s === 'M' ? s : 'S') as ParcelSize];
 
 /** Price a multi-drop run without booking it (each later drop on the leg from the one before). */
 export async function quoteRun(userId: string, base: Omit<QuoteInput, 'dropoff' | 'service'>, drops: { dropoff: LatLng & { address?: string }; size: string }[]) {
@@ -336,6 +372,9 @@ async function insertTrip(c: pg.PoolClient, userId: string, input: CreateTripInp
 
     if (input.payment_method === 'wallet' && user.wallet_cents < quote.total_cents) {
       throw bad('wallet_insufficient', 'Not enough DingoGo credit for this trip');
+    }
+    if (input.payment_method === 'corporate' && input.corporate_account_id) {
+      await checkAccountLimit(c, input.corporate_account_id, quote.total_cents, scheduled ?? new Date());
     }
 
     const trip = await one(
@@ -411,7 +450,7 @@ export const payError = (r: pay.PayResult) =>
   new ApiError(402, r.code === 'card_required' || r.code === 'cards_not_available' ? r.code : 'payment_failed', r.error ?? 'Your card could not be charged', { reason: r.code });
 
 /** Hold the fare on the rider's card. Each attempt (booking, release, search again) has its own idempotency key. */
-async function placeHold(c: Q, t: any): Promise<pay.PayResult> {
+async function placeHold(c: Q, t: TripMoney): Promise<pay.PayResult> {
   const n = await one<{ n: number }>(`SELECT count(*)::int n FROM payments WHERE trip_id = $1 AND kind = 'authorise'`, [t.id], c);
   const auth = await pay.holdForTrip({ userId: t.rider_id, tripId: t.id, attempt: n!.n + 1, amountCents: t.quote_cents, description: `DingoGo ${t.ref}` });
   if (auth.ok) await c.query(`UPDATE trips SET payment_status = 'authorised', payment_ref = $2 WHERE id = $1`, [t.id, auth.ref]);
@@ -421,7 +460,7 @@ async function placeHold(c: Q, t: any): Promise<pay.PayResult> {
 }
 
 /** Take `amount` for a card trip: capture the hold, or (no hold / it lapsed) charge the saved card. Records the result. */
-async function collectCard(c: Q, t: any, amount: number, purpose: 'fare' | 'fee' | 'retry', description: string) {
+async function collectCard(c: Q, t: TripMoney, amount: number, purpose: 'fare' | 'fee' | 'retry', description: string) {
   const held = t.payment_status === 'authorised' && t.payment_ref && t.payment_ref !== 'wallet' ? t.payment_ref : null;
   let r: pay.PayResult;
   if (purpose === 'retry') {
@@ -661,7 +700,7 @@ async function failNoDrivers(c: pg.PoolClient, t: any, why: 'search' | 'missed' 
   });
 }
 
-async function releaseHoldsAndPoints(c: Q, t: any, feeCents = 0) {
+async function releaseHoldsAndPoints(c: Q, t: TripMoney, feeCents = 0) {
   if (t.payment_method === 'card') {
     if (feeCents > 0) {
       // Capture the fee from the hold; a booking cancelled before its hold was placed (tours, hire) is charged on the saved card.
@@ -1178,14 +1217,22 @@ export async function completeTrip(driverId: string, tripId: string, input: Comp
     const actualM = input.actual_distance_m ?? null;
     if (returned) {
       final = t.quote_cents + await returnFeeFor(c, t);
-    } else if (actualM && actualM > t.est_distance_m * 1.25 && t.service !== 'tour') {
-      const rule = await loadRule(t.service, c);
-      const breakdown = t.fare_breakdown;
-      const perM = rule.per_km_cents / 1000;
-      const extra = Math.round((actualM - t.est_distance_m) * perM);
-      final = Math.min(t.quote_cents + extra, Math.round(t.quote_cents * 1.2));
-      breakdown.lines.push({ label: 'Route change adjustment', cents: final - t.quote_cents });
-      await c.query('UPDATE trips SET fare_breakdown = $2 WHERE id = $1', [tripId, JSON.stringify(breakdown)]);
+    } else {
+      const rule = actualM ? await loadRule(t.service, c) : null;
+      let extra = rule ? routeChangeExtra({ quoteCents: t.quote_cents, estDistanceM: t.est_distance_m, actualDistanceM: actualM, perKmCents: rule.per_km_cents, service: t.service }) : 0;
+      let label = ROUTE_CHANGE_LABEL;
+      if (extra > 0 && t.payment_method === 'wallet') {
+        // Paid with DingoGo credit (taken at booking): the extra comes from what credit is left, never below zero.
+        const u = await one<{ wallet_cents: number }>('SELECT wallet_cents FROM users WHERE id = $1 FOR UPDATE', [t.rider_id], c);
+        const left = Math.floor(Math.max(0, Number(u?.wallet_cents ?? 0)) / 5) * 5;
+        if (left < extra) { extra = left; label = `${ROUTE_CHANGE_LABEL} (part waived: not enough DingoGo credit)`; }
+      }
+      if (extra > 0) {
+        final = t.quote_cents + extra;
+        const breakdown: FareBreakdown = t.fare_breakdown;
+        breakdown.lines.push({ label, cents: extra });
+        await c.query('UPDATE trips SET fare_breakdown = $2 WHERE id = $1', [tripId, JSON.stringify(breakdown)]);
+      }
     }
 
     const doneAt = r.key && r.clientAt ? `least(now(), greatest(started_at, now() - interval '${REPLAY_MAX_MIN} minutes', $4::timestamptz))` : 'now()';
@@ -1225,9 +1272,9 @@ export async function senderNotRider(trip: any) {
 const FEE_NOTE: Record<string, string> = { green: ' (electric/hybrid rate)', own_car: ' (own-car rate)' };
 
 /** Money movement on completion: capture payment, driver ledger, loyalty, referral. */
-async function settle(c: pg.PoolClient, t: any) {
+async function settle(c: pg.PoolClient, t: TripMoney & { final_cents: number; driver_id: string }) {
   const amount = t.final_cents;
-  const gst = Math.round(amount / 11);
+  const gst = gstOf(amount);
 
   if (t.payment_method === 'card') {
     // Capture the hold (or charge the saved card if it lapsed or was never placed). A failure leaves the trip "failed" to pay
@@ -1261,8 +1308,8 @@ async function settle(c: pg.PoolClient, t: any) {
   // Driver earnings: trip fare (before rider discounts — DingoGo funds promos/points; excludes booking fee & levy) minus the
   // service fee, plus pickup pay and fuel surcharge (no fee on either). Rate and pickup pay as fixed when the driver accepted.
   // Route changes and the return-to-sender fee are paid to the driver like the fare (less the service fee).
-  const adj = (t.fare_breakdown.lines ?? []).filter((l: any) => l.label === 'Route change adjustment' || String(l.label).startsWith('Return to sender'))
-    .reduce((n: number, l: any) => n + Number(l.cents ?? 0), 0);
+  const adj = (t.fare_breakdown.lines ?? []).filter((l) => l.label.startsWith(ROUTE_CHANGE_LABEL) || l.label.startsWith(RETURN_FEE_LABEL))
+    .reduce((n, l) => n + Number(l.cents ?? 0), 0);
   const gross = (t.fare_breakdown.trip_cents ?? amount) + adj;
   const fixed = await acceptedPay(c, t.id, t.driver_id);
   const dp = fixed ?? await offerPay(c, t, t.driver_id, null);
@@ -1281,14 +1328,14 @@ async function settle(c: pg.PoolClient, t: any) {
   }
 
   // Loyalty points on what the rider actually paid
-  const pts = Math.floor((amount / 100) * config.loyalty.pointsPerDollar);
+  const pts = pointsEarned(amount, config.loyalty.pointsPerDollar);
   if (pts > 0) {
     await c.query('UPDATE users SET loyalty_points = loyalty_points + $2 WHERE id = $1', [t.rider_id, pts]);
     await c.query(`INSERT INTO loyalty_ledger (user_id, points, reason, trip_id) VALUES ($1,$2,'trip_earned',$3)`, [t.rider_id, pts, t.id]);
   }
 
   // Subscription: count free deliveries
-  if (t.kind === 'courier' && (t.fare_breakdown.lines ?? []).some((l: any) => l.label.startsWith('Free delivery'))) {
+  if (t.kind === 'courier' && (t.fare_breakdown.lines ?? []).some((l) => l.label.startsWith('Free delivery'))) {
     await c.query('UPDATE subscriptions SET deliveries_used = deliveries_used + 1 WHERE user_id = $1', [t.rider_id]);
   }
 
@@ -1367,8 +1414,10 @@ export async function cancelTrip(actor: { id: string; role: string }, tripId: st
       else if (sinceAccept > (policy.free_window_s ?? 120)) fee = rule.cancel_fee_cents ?? 0;
     }
     // Cash trips: DingoGo can't collect a fee after the fact, so none is charged (and none is credited to the driver).
-    let feeWaived: string | undefined;
-    if (fee > 0 && t.payment_method === 'cash') { fee = 0; feeWaived = 'cash'; }
+    // Never more than the trip's price (a free Pass delivery or a big discount), so credit can't go below zero.
+    const charged = cancelFeeCharged(fee, t);
+    fee = charged.cents;
+    const feeWaived = charged.waived;
     const status = isOps ? 'cancelled_admin' : isRider ? 'cancelled_rider' : 'cancelled_driver';
     await c.query(`UPDATE trips SET status = $2, cancelled_at = now(), cancel_reason = $3, cancel_fee_cents = $4 WHERE id = $1`,
       [tripId, status, reason ?? null, fee]);

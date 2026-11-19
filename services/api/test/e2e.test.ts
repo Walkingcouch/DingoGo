@@ -3505,3 +3505,101 @@ test('before migration 019: trips, SOS, going online and sign-in all work; safet
     await clearOpenTrips();
   }
 });
+
+// ───────── Round 15: consolidation (business limits, statements, credit trips) ─────────
+
+test('business accounts: monthly limit enforced at booking (live trips count, refunds give room back), refunds on the statement, fields checked', async () => {
+  await clearOpenTrips();
+  await onlyOnline(['d1']);
+  const base = { name: 'Limit Test Pty (test)', kind: 'business', billing_email: 'limit@example.com' };
+  assert.equal((await call('POST', '/admin/corporate', 'admin', { ...base, kind: 'bogus' })).status, 400);
+  assert.equal((await call('POST', '/admin/corporate', 'admin', { ...base, discount_pct: 80 })).status, 400, 'discount is 0–50%');
+  assert.equal((await call('POST', '/admin/corporate', 'admin', { ...base, abn: '1234' })).status, 400);
+  assert.equal((await call('POST', '/admin/corporate', 'rider', base)).status, 403);
+  const made = await call('POST', '/admin/corporate', 'admin', { ...base, abn: '11 222 333 444', discount_pct: 0 });
+  assert.equal(made.status, 201, JSON.stringify(made));
+  assert.equal(made.item.abn, '11222333444');
+  const acct = made.item.id;
+  assert.equal((await call('PATCH', `/admin/corporate/${acct}`, 'admin', { name: base.name, discount_pct: null, invoice_terms_days: null })).item.discount_pct, 0, 'a cleared required field stays as it was');
+  assert.equal((await call('POST', `/admin/corporate/${acct}/members`, 'admin', { phone: '0400 000 100' })).status, 200);
+  const body = { kind: 'ride', service: 'ride', pickup: TODD_MALL, dropoff: HOSPITAL, payment_method: 'corporate', corporate_account_id: acct };
+
+  const t1 = await call('POST', '/trips', 'rider', body);
+  assert.equal(t1.status, 201, 'no limit set: books');
+  const quote = t1.trip.quote_cents as number;
+  await waitForOffer('d1');
+  assert.equal((await rideToEnd(t1.trip.id, 'd1')).final_cents, quote);
+
+  const limit = quote + Math.floor(quote / 2);
+  await call('PATCH', `/admin/corporate/${acct}`, 'admin', { monthly_limit_cents: limit });
+  const over = await call('POST', '/trips', 'rider', body);
+  assert.deepEqual([over.status, over.error], [402, 'account_limit_reached'], JSON.stringify(over));
+  assert.deepEqual([over.details.used_cents, over.details.left_cents], [quote, limit - quote]);
+  assert.match(over.message, /Limit Test Pty \(test\) has reached its monthly limit/);
+  assert.equal((await call('POST', '/trips', 'rider', { ...body, payment_method: 'card' })).status, 201, 'paying another way still works');
+  await clearOpenTrips();
+
+  // A refund on a business trip is a credit on the statement and gives the room back.
+  const refund = quote - Math.floor(quote / 2);
+  assert.equal((await call('POST', `/admin/trips/${t1.trip.id}/refund`, 'admin', { cents: refund, reason: 'Wrong pickup' })).status, 200);
+  const st = await call('GET', `/admin/corporate/${acct}/statement`, 'admin');
+  assert.equal(st.lines.length, 1);
+  assert.deepEqual([st.lines[0].final_cents, st.lines[0].refunded_cents], [quote, refund]);
+  assert.deepEqual([st.charges_cents, st.refunds_cents, st.total_cents], [quote, refund, quote - refund]);
+  assert.equal(st.gst_cents, Math.round((quote - refund) / 11));
+  assert.deepEqual(st.limit, { limit_cents: limit, used_cents: quote - refund, left_cents: limit - quote + refund });
+  const t2 = await call('POST', '/trips', 'rider', body);
+  assert.equal(t2.status, 201, JSON.stringify(t2));
+  assert.equal((await call('GET', `/admin/corporate/${acct}/statement`, 'admin')).limit.left_cents, limit - (quote - refund) - t2.trip.quote_cents, 'a live trip counts at its price');
+  await clearOpenTrips();
+  await call('PATCH', `/admin/corporate/${acct}`, 'admin', { monthly_limit_cents: null });
+  assert.equal((await call('GET', `/admin/corporate/${acct}/statement`, 'admin')).limit, null, 'empty limit = no limit');
+  await q(`UPDATE corporate_accounts SET active = false WHERE id = $1`, [acct]);
+});
+
+test('credit trips: a longer route never takes DingoGo credit below zero; a late-cancel fee is never more than the price', async () => {
+  await clearOpenTrips();
+  await onlyOnline(['d1']);
+  const start = await wallet();
+  const setWallet = (c: number) => q(`UPDATE users SET wallet_cents = $1 WHERE phone = '+61400000100'`, [c]);
+  try {
+    await setWallet(10_000);
+    const t = await call('POST', '/trips', 'rider', { kind: 'ride', service: 'ride', pickup: TODD_MALL, dropoff: HOSPITAL, payment_method: 'wallet' });
+    assert.equal(t.status, 201, JSON.stringify(t));
+    const id = t.trip.id, quote = t.trip.quote_cents as number;
+    assert.equal(await wallet(), 10_000 - quote, 'taken at booking');
+    await setWallet(123);   // spent on something else meanwhile
+    await waitForOffer('d1');
+    await call('POST', `/driver/offers/${id}/accept`, 'd1');
+    await call('POST', `/driver/trips/${id}/arrive`, 'd1');
+    const row = await one('SELECT verify_pin, est_distance_m FROM trips WHERE id = $1', [id]);
+    await call('POST', `/driver/trips/${id}/start`, 'd1', { pin: row.verify_pin });
+    const done = await call('POST', `/driver/trips/${id}/complete`, 'd1', { actual_distance_m: row.est_distance_m * 3 });
+    assert.equal(done.trip.final_cents, quote + 120, 'the extra is what credit is left (5c-rounded), not the full +20%');
+    assert.equal(await wallet(), 3);
+    const fb = (await one('SELECT fare_breakdown FROM trips WHERE id = $1', [id])).fare_breakdown;
+    assert.ok(fb.lines.some((l: any) => l.label === 'Route change adjustment (part waived: not enough DingoGo credit)' && l.cents === 120), JSON.stringify(fb.lines));
+    const led = await ledgerFor(id);
+    assert.equal(led.fare, fb.trip_cents + 120, 'the driver is paid the route change that was charged');
+
+    // A $1 trip (promo covers the fare, the levy is still paid) costs $1 to cancel late, not $3.
+    await setWallet(10_000);
+    await q(`INSERT INTO promo_codes (code, kind, value, per_user_limit) VALUES ('R15FREE', 'fixed', 99999, 5) ON CONFLICT (code) DO UPDATE SET active = true`);
+    const c = await call('POST', '/trips', 'rider', { kind: 'ride', service: 'ride', pickup: TODD_MALL, dropoff: HOSPITAL, payment_method: 'wallet', promo_code: 'R15FREE' });
+    assert.equal(c.status, 201, JSON.stringify(c));
+    assert.equal(c.trip.quote_cents, 100, 'only the levy');
+    await waitForOffer('d1');
+    await call('POST', `/driver/offers/${c.trip.id}/accept`, 'd1');
+    await q(`UPDATE trips SET accepted_at = now() - interval '5 minutes' WHERE id = $1`, [c.trip.id]);
+    assert.equal((await call('POST', `/trips/${c.trip.id}/cancel`, 'rider', {})).status, 200);
+    const after = await one('SELECT cancel_fee_cents FROM trips WHERE id = $1', [c.trip.id]);
+    assert.equal(after.cancel_fee_cents, 100);
+    assert.equal(await wallet(), 10_000 - 100, 'credit never below what the trip cost');
+    assert.equal((await one(`SELECT data FROM trip_events WHERE trip_id = $1 AND type = 'cancelled_rider'`, [c.trip.id])).data.fee_waived, 'capped');
+    assert.equal((await ledgerFor(c.trip.id)).cancel_fee, 75);
+  } finally {
+    await setWallet(start);
+    await q(`UPDATE promo_codes SET active = false WHERE code = 'R15FREE'`);
+    await clearOpenTrips();
+  }
+});

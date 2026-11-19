@@ -31,23 +31,8 @@ export const findJ = (list: Jurisdiction[], code?: string | null) => list.find((
 export const minYearFor = (j: Jurisdiction) => new Date().getFullYear() - (j.vehicle_max_age_years - 1);
 export const STATE_SHORT: Record<string, string> = { NT: 'NT', SA: 'SA' };
 
-// ───────── VIN ─────────
-const YEAR_CODES = 'ABCDEFGHJKLMNPRSTVWXY123456789'; // 1980…2009, then the cycle repeats every 30 years
-
-export function cleanVin(s: string) { return s.toUpperCase().replace(/[^A-Z0-9]/g, ''); }
-
-/** Model year from VIN position 10: the most recent year in the 30-year cycle that's no later than next year. A hint, not proof. */
-export function decodeVin(raw: string): { valid: boolean; year: number | null; note: string } {
-  const vin = cleanVin(raw);
-  if (vin.length !== 17) return { valid: false, year: null, note: vin.length ? `${vin.length} of 17 characters` : '' };
-  if (/[IOQ]/.test(vin)) return { valid: false, year: null, note: 'VINs never use the letters I, O or Q. Check for 1 or 0.' };
-  const i = YEAR_CODES.indexOf(vin[9]);
-  if (i < 0) return { valid: true, year: null, note: 'Can’t read the year from this VIN. That’s fine for some imports.' };
-  const max = new Date().getFullYear() + 1;
-  let y = 1980 + i;
-  while (y + 30 <= max) y += 30;
-  return { valid: true, year: y, note: '' };
-}
+// VIN year hints: one decoder for the admin and driver apps (packages/shared/src/vin.ts).
+export { cleanVin, decodeVin } from '@dingogo/shared';
 
 // ───────── What each paper is, in plain English ─────────
 export interface DocInfo { title: string; help: string; number?: string; expiry?: string; numberRequired?: boolean }

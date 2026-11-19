@@ -18,3 +18,4 @@ export { Acknowledgement, Words, DraftNotice } from './Acknowledgement';
 export { speak, canSpeak } from './speak';
 export * from './handoff';
 export { EmergencyCard, TrustedContacts, SafetyReportForm, MyReports, Restricted } from './Safety';
+export { cleanVin, decodeVin, vinYear } from './vin';

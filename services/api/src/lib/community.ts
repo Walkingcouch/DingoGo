@@ -76,11 +76,15 @@ export function checkCommunityPricing(v: any): CommunityPricing {
   return { enabled: s.enabled, concession_pct: s.concession_pct, concession_max_cents: s.concession_max_cents, services: [...new Set(s.services)], types: [...new Set(s.types)] };
 }
 
+/** YYYY-MM-DD in Darwin time: a card that expires today is good until local midnight, not 9:30 am (UTC midnight). */
+export const localDate = (at: Date = new Date(), tz = 'Australia/Darwin') =>
+  new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(at);
+
 /** The concession this rider gets on this service at this time, or null. `card` is users.concession. */
 export function concessionFor(card: any, service: string, rules: CommunityPricing, at = new Date()) {
   if (!rules.enabled || !rules.concession_pct || !card || card.status !== 'approved') return null;
   if (!rules.services.includes(service) || !rules.types.includes(card.type)) return null;
-  if (card.expires && String(card.expires) < at.toISOString().slice(0, 10)) return null;
+  if (card.expires && String(card.expires) < localDate(at)) return null;
   return { pct: rules.concession_pct, max_cents: rules.concession_max_cents || null, label: `Concession (−${rules.concession_pct}%)` };
 }
 

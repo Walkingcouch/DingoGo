@@ -939,3 +939,72 @@ Ideas for next rounds:
 - Trusted contacts get a text when the trip ends ("arrived safely") and can reply HELP to raise an alert (Twilio inbound already exists).
 - Driver-facing rider verification for night pickups (rider photo or ID check on first night trip) and a "this rider's PIN didn't match" report.
 - Run the safety tick on a schedule (Vercel cron hitting a protected endpoint) so check-in escalation doesn't depend on app traffic.
+
+### Round 15 — consolidation: cross-feature money bugs, tech debt, test depth and a browser smoke test in CI
+Scan: read the money paths end to end (quote → hold → settle / cancel fee / refund / courier return / redispatch / driver release), business
+accounts and statements, concessions, the dead-code and duplicate list (exports nobody imports, VIN decoders, size → service maps), the route list
+against `docs/API.md`, env vars against `.env.example`, every migration re-run on a migrated database, and the Vercel bundle in serverless mode.
+Found: a business account's **monthly limit was never enforced** (admin form, list and website all promise it; seeded demo account has one); refunds
+on business trips weren't on the monthly statement (the account was invoiced in full) and the statement's default month was UTC (the first 9.5 hours
+of each month showed last month); account fields went straight into the table (`discount_pct: 150`, any `kind`, any ABN) while `ACCOUNT_KINDS`
+sat unused; a DingoGo-credit trip whose route grew took the extra from credit **below zero** (the return fee had been guarded in Round 11, the
+route change wasn't); a late-cancel fee could be more than the trip cost (a $1 levy-only trip after a promo, or a free Pass delivery: $3 fee, credit
+negative); concession cards expired at 9:30 am Darwin (UTC date); `finalFare()` was dead and described a different rule from what completion did;
+settlement matched the route-change line by exact label (a renamed line would silently stop paying the driver); two `S/M/L → service` maps; three
+copies of the VIN decoder (API, admin, driver) with different year rules; 3 undocumented routes and 8 env vars missing from `.env.example`;
+migrations 001–010 aren't re-runnable (011+ are; nothing checked it); no browser test of any app.
+
+Suggested:
+1. [fix] Business account monthly limit enforced at booking (rider, org, phone and run bookings): 402 `account_limit_reached` with what is left;
+   used = this Darwin month's completed trips + late-cancel fees + live/booked quotes − refunds; account row locked while checking.
+2. [fix] Business statements: refunds shown as credits with net total and GST, limit used/left; default month in Darwin time (statement and
+   charging); admin account fields validated (kind from `ACCOUNT_KINDS`, discount 0–50%, ABN 11 digits with spaces allowed, limit, terms).
+3. [fix] DingoGo credit: route-change extra taken only from credit that's left (rest waived, driver paid what was charged); late-cancel fee never
+   above the trip's price (`fee_waived: 'capped'`).
+4. [fix] Concession card expiry on the Darwin date (fare and `PUT /me/concession`).
+5. [fix] Money-path tech debt: `TripMoney`/`FareBreakdown` types on hold/collect/release/settle/return fee; pure `routeChangeExtra`,
+   `returnFeeCents`, `cancelFeeCharged`, `pointsEarned`, `gstOf` replace inline maths and the dead `finalFare`; shared line-label constants
+   (settlement matches by prefix); one size → service map; one VIN decoder for the admin and driver apps in `packages/shared/src/vin.ts`.
+6. [add] Unit tests for the pure money logic: fare parts, min fare, night/holiday/demand, discount order and caps, points, Pass, tours, levy and
+   fuel after discounts, route change, return and cancel fees, driver pay and fee basis, pickup pay, floor weeks, concessions and local dates.
+7. [add] Drift tests: every registered route is in `docs/API.md`, every env var the API reads is in `.env.example`; migrations numbered with no
+   gaps and 011+ additive and re-runnable. Fixed what they found.
+8. [add] Browser smoke test (`scripts/smoke-e2e.mjs`, `npm run smoke`): Playwright drives the built rider, driver and admin apps against the
+   bundled serverless API (dispatch on requests, polling) — driver online, rider books, driver accepts/arrives/starts with the rider's PIN/completes,
+   rider sees the finished trip, admin approves the waiting car; fails on page errors or 5xx; added to CI with screenshots on failure.
+
+Done (all 8). No migration this round. Tests: 123 → 138 (`money.test.ts` 10 unit tests, `docs.test.ts` 2, ops: migrations re-runnable, e2e:
+business limit/statement/refund/field validation, credit route change + capped cancel fee), plus the 5-step browser smoke run (not part of
+`npm test`; needs `node scripts/build-vercel.mjs` and a freshly seeded database).
+- API: `lib/fares.ts` (pure helpers, `FareBreakdown`, label constants; `finalFare` removed), new `lib/tripTypes.ts`, `services/trips.ts`
+  (`checkAccountLimit`, `accountMonthCents`, `localMonth`, wallet route change, capped cancel fee, typed money functions, `sizeService` from
+  `SIZE_SERVICE`), `services/courier.ts`, `routes/admin.ts` (statement, account validation, Darwin months), `lib/community.ts` (`localDate`),
+  `routes/auth.ts`, `.env.example`.
+- Apps: admin Business statement shows refunds, net total and the limit used/left (Darwin month); admin/driver `rules.ts` re-export the shared
+  VIN decoder. Shared: `vin.ts`.
+- Docs/CI: `docs/API.md` (Round 15 section; `/health/routing`, `/admin/languages`, `/driver/identity-check` listed), README (test count, smoke),
+  OPERATIONS (smoke test, which migrations are safe to paste twice), `.github/workflows/ci.yml` (Vercel build, Playwright 1.63 installed without
+  touching the lockfile, fresh seed, smoke, screenshots artifact), `.gitignore`.
+- Behaviour changes to note: bookings on a business account over its monthly limit are refused (402) — the demo account has a $3,000 limit; live
+  accounts with a limit set start being enforced on deploy; a late-cancel fee is at most the trip's price; credit-paid route changes can be part
+  waived; statements net off refunds; the admin account form rejects a discount over 50% or a bad ABN.
+- Deploy: no migration and no env vars. Before deploying, check live business accounts' `monthly_limit_cents` (admin → Business accounts) are
+  what the customers agreed — they become hard limits. CI needs nothing new (Playwright is installed in the job).
+
+Deferred:
+- Shared wording for every label (admin `DOC_TYPE` vs driver `DOC_LABEL`, event labels in admin vs rider): the wording differs on purpose per
+  audience in places; needs a copy decision before one table. Only the VIN logic was merged.
+- Removing `any` beyond the money paths (`one()` returns `any`; route handlers use `any` rows): wants generated row types from the schema.
+- Night loading, holidays and statement months use Darwin time for SA too (Adelaide is 30 min behind, 1 h ahead in summer): SA is hidden; needs a
+  time zone per jurisdiction when it launches.
+- Dingo Points earned are not taken back on refunds, and the driver ledger isn't reversed (owner decision, as in Round 8).
+- `scripts/a11y-check.mjs` in CI: it expects dev servers; it could reuse the smoke server (static build + bundled API) — next round.
+
+Ideas for next rounds:
+- Run `scripts/a11y-check.mjs` in CI on the smoke server, and grow the smoke run: courier (PIN delivery, failed delivery → return), business CSV
+  import, partner redeem, rider cancel with fee, offline driver tap replay.
+- Time zone per jurisdiction (Adelaide) for night loading, holidays, fatigue days, floor weeks and statement months before SA launches.
+- Business account managers: spend against the limit in the rider app's Business screen, an 80% warning text/email, and a per-member cap.
+- Refund policy as data: reason codes, optional points claw-back and driver-ledger reversal by reason (driver at fault), with the GST report.
+- Generated TypeScript row types from the schema (`pg` introspection at build) to replace `any` rows in routes and services.
+- Mutation-style checks on the money helpers (property tests: total = sum of lines, never negative, GST ≤ total/11) with fast-check.

@@ -27,8 +27,11 @@ export default function Business() {
   );
 }
 
+/** This month in Darwin time (statements are by local month). */
+const darwinMonth = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'Australia/Darwin', year: 'numeric', month: '2-digit' }).format(new Date()).slice(0, 7);
+
 function Statement({ account, onClose }: { account: any; onClose: () => void }) {
-  const [month, setMonth] = useState(new Date().toISOString().slice(0, 7));
+  const [month, setMonth] = useState(darwinMonth());
   const { data, error, reload } = useLoad(() => get(`/admin/corporate/${account.id}/statement?month=${month}`), [month]);
   const [phone, setPhone] = useState('');
   const run = useRun();
@@ -50,14 +53,17 @@ function Statement({ account, onClose }: { account: any; onClose: () => void }) 
         {data && <button className="dg-btn dg-btn--sm dg-btn--ghost no-print" onClick={() => exportCsv(`${account.name}-${month}.csv`, data.lines)}>CSV</button>}
       </div>
       {data && (<>
+        {data.limit && <p className={data.limit.left_cents > 0 ? 'dg-muted' : 'dg-error'}>Monthly limit {money(data.limit.limit_cents)}: {money(data.limit.used_cents)} used (booked trips count at their price), {money(data.limit.left_cents)} left. Bookings over the limit are refused.</p>}
         <p className="dg-muted">Tax invoice period {data.month}. Payment due within {data.account.invoice_terms_days} days. {data.account.abn && `Customer ABN ${data.account.abn}.`}</p>
         <Table rows={data.lines} rowKey={(l) => l.ref} empty="No completed trips this month." cols={[
           { key: 'ref', label: 'Trip' }, { key: 'completed_at', label: 'Date', render: (l) => dateTime(l.completed_at) }, { key: 'rider', label: 'Rider' },
           { key: 'route', label: 'Route', render: (l) => <span style={{ fontSize: '.85rem' }}>{l.pickup_address} to {l.dropoff_address}</span> },
           ...(account.kind === 'ndis_plan_manager' ? [{ key: 'ndis_number', label: 'NDIS no.' }] : []),
           { key: 'final_cents', label: 'Amount', num: true, render: (l: any) => money(l.final_cents) },
+          ...(data.refunds_cents > 0 ? [{ key: 'refunded_cents', label: 'Refunded', num: true, render: (l: any) => (l.refunded_cents ? `−${money(l.refunded_cents)}` : '') }] : []),
         ]} />
         <dl className="kv" style={{ marginTop: 12, justifyContent: 'end' }}>
+          {data.refunds_cents > 0 && <><dt>Trips and fees</dt><dd className="dg-money">{money(data.charges_cents)}</dd><dt>Refunds</dt><dd className="dg-money">−{money(data.refunds_cents)}</dd></>}
           <dt>Total incl. GST</dt><dd className="dg-money">{money(data.total_cents)}</dd><dt>GST included</dt><dd className="dg-money">{money(data.gst_cents)}</dd>
         </dl>
       </>)}

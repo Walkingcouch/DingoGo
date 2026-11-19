@@ -13,7 +13,7 @@ import { disconnectUser } from '../realtime.js';
 import { sendSmsT } from '../services/notify.js';
 import { withdrawOffers } from '../services/trips.js';
 import { loadRecipient, setMarketing } from '../services/prefs.js';
-import { CONCESSION_TYPES, LANGS, communityPending, communityReady, loadCommunityPricing, normaliseLang, type ConcessionType } from '../lib/community.js';
+import { CONCESSION_TYPES, LANGS, communityPending, communityReady, loadCommunityPricing, localDate, normaliseLang, type ConcessionType } from '../lib/community.js';
 import { audit } from '../lib/audit.js';
 
 /** Compare two hex hashes in constant time. */
@@ -229,7 +229,7 @@ export default async function authRoutes(app: FastifyInstance) {
       expires: z.string().date(),
     }), req.body);
     if (!rules.types.includes(b.type)) throw bad('concession_type', 'That card is not accepted for concession fares');
-    if (b.expires < new Date().toISOString().slice(0, 10)) throw bad('concession_expired', 'That card has expired');
+    if (b.expires < localDate()) throw bad('concession_expired', 'That card has expired');
     const card = { ...b, status: 'pending', applied_at: new Date().toISOString() };
     const u = await one(`UPDATE users SET concession = $2 WHERE id = $1 RETURNING *`, [me.id, JSON.stringify(card)]);
     await audit(me.id, 'concession_applied', 'user', me.id, { type: b.type });

@@ -26,6 +26,7 @@
     "typecheck": "npm run typecheck --workspaces --if-present",
     "test": "npm test -w services/api",
     "build:vercel": "node scripts/build-vercel.mjs",
+    "smoke": "node scripts/smoke-e2e.mjs",
     "i18n:review": "node scripts/i18n-review.mjs"
   },
   "engines": {

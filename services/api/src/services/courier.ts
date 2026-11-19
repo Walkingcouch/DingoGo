@@ -9,6 +9,8 @@ import { one, pool, q, tx, type Q } from '../db.js';
 import { ApiError, bad, conflict, forbidden, notFound } from '../lib/errors.js';
 import { FAIL_REASONS, type FailReason } from '../lib/courier.js';
 import { courierPending, courierReady } from '../lib/courierSchema.js';
+import { RETURN_FEE_LABEL, returnFeeCents, type FareBreakdown } from '../lib/fares.js';
+import type { TripMoney } from '../lib/tripTypes.js';
 import { limit } from '../lib/rateLimit.js';
 import { toOps, toTrip, toUser } from '../realtime.js';
 import { send, sendSmsT } from './notify.js';
@@ -39,23 +41,22 @@ export async function loadCourierPolicy(c: Q = pool): Promise<CourierPolicy> {
   };
 }
 
-const round5 = (c: number) => Math.round(c / 5) * 5;
 const darwinTime = (d: Date) => new Intl.DateTimeFormat('en-AU', { timeZone: config.timezone, hour: 'numeric', minute: '2-digit', hour12: true })
   .format(d).replace(/\s+/g, ' ').toLowerCase();
 
 /** The return fee on a trip (set when the delivery failed). Credit-paid trips take only what credit is left: the rest is
  *  waived rather than taking the rider's balance below zero. Caller holds the trip lock and is completing the trip. */
-export async function returnFeeFor(c: pg.PoolClient, t: any): Promise<number> {
-  const fb = t.fare_breakdown ?? {};
-  const line = (fb.lines ?? []).find((l: any) => String(l.label).startsWith('Return to sender'));
+export async function returnFeeFor(c: pg.PoolClient, t: TripMoney): Promise<number> {
+  const fb: FareBreakdown = t.fare_breakdown ?? { lines: [] };
+  const line = (fb.lines ?? []).find((l) => String(l.label).startsWith(RETURN_FEE_LABEL));
   let fee = Number(line?.cents ?? 0);
-  if (fee > 0 && t.payment_method === 'wallet') {
+  if (line && fee > 0 && t.payment_method === 'wallet') {
     const u = await one('SELECT wallet_cents FROM users WHERE id = $1 FOR UPDATE', [t.rider_id], c);
     const left = Math.max(0, Number(u?.wallet_cents ?? 0));
     if (left < fee) {
       fee = Math.floor(left / 5) * 5;
       line.cents = fee;
-      line.label = 'Return to sender (part waived: not enough DingoGo credit)';
+      line.label = `${RETURN_FEE_LABEL} (part waived: not enough DingoGo credit)`;
       fb.return_fee_cents = fee;
       await c.query('UPDATE trips SET fare_breakdown = $2 WHERE id = $1', [t.id, JSON.stringify(fb)]);
     }
@@ -102,9 +103,9 @@ export async function failDelivery(driverId: string, tripId: string, b: FailInpu
     }
     const policy = await loadCourierPolicy(c);
     const fare = Number(t.fare_breakdown?.trip_cents ?? t.quote_cents);
-    const fee = policy.return_fee_pct > 0 ? Math.max(policy.return_fee_min_cents, round5((fare * policy.return_fee_pct) / 100)) : 0;
+    const fee = returnFeeCents(fare, policy);
     const fb = { ...(t.fare_breakdown ?? {}), lines: [...(t.fare_breakdown?.lines ?? [])], return_fee_cents: fee };
-    if (fee > 0) fb.lines.push({ label: 'Return to sender', cents: fee });
+    if (fee > 0) fb.lines.push({ label: RETURN_FEE_LABEL, cents: fee });
     await c.query('UPDATE trips SET fare_breakdown = $2 WHERE id = $1', [tripId, JSON.stringify(fb)]);
     await c.query(
       `UPDATE parcels SET outcome = 'returning', failed_at = now(), failed_reason = $2, failed_note = $3, failed_photo_url = $4 WHERE trip_id = $1`,

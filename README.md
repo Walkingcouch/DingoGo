@@ -39,7 +39,8 @@ npm install
 npm run db:setup                                   # migrations + demo data (local databases only)
 npm run dev:api                                    # http://localhost:4000
 npm run dev:web    # and/or dev:rider, dev:driver, dev:admin, dev:partner, dev:roof
-npm test                                           # 123 API and website tests (needs a throwaway DB: they reset it, and create/drop scratch databases)
+npm test                                           # 138 API, money and website tests (needs a throwaway DB: they reset it, and create/drop scratch databases)
+node scripts/build-vercel.mjs && npm run db:reset -w services/api && npm run smoke   # browser smoke test: rider books, driver completes, admin approves a car (built apps + serverless API; Playwright)
 node scripts/a11y-check.mjs                        # WCAG 2.2 AA check (axe-core + Playwright) of the website and rider app; needs api, web and rider running
 ```
 
@@ -98,7 +99,8 @@ They also install from the browser as web apps (PWA) — useful for testing befo
 
 - **Docker (everything on one server):** `npm run build`, then `cd deploy && docker compose up --build`. Postgres, API on :4000 and the six apps on :8080–8085 behind Caddy.
 - **Managed:** Postgres on Supabase (paste its connection string into `DATABASE_URL`), API on any Node host (Render, Fly, Railway, a VPS — it needs WebSockets and a long-running process for dispatch), static apps on Vercel/Netlify/Cloudflare Pages with `VITE_API_URL` set.
-- CI: `.github/workflows/ci.yml` runs typecheck, API tests and builds.
+- CI: `.github/workflows/ci.yml` runs typecheck, API tests, builds and the browser smoke test (`scripts/smoke-e2e.mjs`: rider books a ride, driver accepts and
+  completes it, admin approves a car, against the Vercel build with the bundled serverless API).
 
 ## Before going live
 
