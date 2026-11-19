@@ -32,7 +32,8 @@ export default function Legal() {
         <h2>Marketing</h2>
         <p>We only send offers if you opt in, and every message says how to stop them. You can turn them off in the app at any time.</p>
         <h2>Your choices</h2>
-        <p>You can see and download your information, correct it, or delete your account in the app. We keep tax records for 5 years after the transaction, as the law requires, and trip records involving a safety report for longer.</p>
+        <p>You can see and download your information, correct it, or delete your account in the app. We keep tax records for 5 years after the transaction, as the law requires, and trip records involving a safety report for longer. Trip GPS tracks, trip messages and sign-in logs are removed after a set time. We answer requests to see, correct or delete your information within 30 days.</p>
+        <p>Drivers: the ATO's Sharing Economy Reporting Regime requires DingoGo to report what each driver is paid twice a year, with their name, date of birth, address, ABN, contact and bank details. If a driver deletes their account we keep those details only for the 5 years the ATO requires.</p>
         <h2>Contact and complaints</h2>
         <p>Email <a href={`mailto:${c.email}`}>{c.email}</a>. If you're not happy with our response, you can contact the Office of the Australian Information Commissioner at oaic.gov.au.</p>
       </>,

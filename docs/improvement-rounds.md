@@ -1008,3 +1008,82 @@ Ideas for next rounds:
 - Refund policy as data: reason codes, optional points claw-back and driver-ledger reversal by reason (driver at fault), with the GST report.
 - Generated TypeScript row types from the schema (`pg` introspection at build) to replace `any` rows in routes and services.
 - Mutation-style checks on the money helpers (property tests: total = sum of lines, never negative, GST ≤ total/11) with fast-check.
+
+### Round 16 — tax, compliance and reporting
+Scan: read the GST summary, levy report and CSV exports (`services/reports.ts`, `routes/ops.ts`), the driver ledger and `settle`, the receipt,
+`/driver/earnings`, driver profile/onboarding (ABN, GST), account deletion and data export, NDIS numbers on trips and organisation bookings, the
+settings and the website privacy policy; checked the ATO's SERR page for the seller fields. Found: nothing a driver could hand to a tax agent
+(earnings has a rolling "GST in your trip pay", not quarters) and no tax invoice from DingoGo for the fees it takes; no BAS figures for DingoGo itself
+(the GST summary mixes the drivers' fares with DingoGo's own supplies); **no SERR report at all** — and we don't hold what it needs (legal names,
+date of birth, address), ABNs are only checked for 11 digits; the levy report has no monthly return, due date or record of lodging, and SA is
+CSV-only; no retention rules (GPS tracks, chat, comms log, OTP logs grow forever) although the privacy policy promises them; privacy requests
+leave no record and a 30-day clock nobody watches; **account deletion always answered 500** (the audit insert used one parameter as both uuid and
+text — the account was anonymised, the app showed an error) and left a deleted driver's bank account, licence number and address on the driver
+row; a driver's data export had none of their driver data; NDIS numbers reach the receipt but there's no NDIS invoice or claim format.
+
+Suggested:
+1. [add] Driver tax details for SERR (migration 020): seller type (individual / company or trust), given and family name, date of birth, business
+   name, address; ATO ABN check digits on every ABN a driver enters; what's missing shown to the driver (Profile → Tax, banner) and to ops.
+2. [add] Driver quarterly GST statement (BAS worksheet: G1, 1A, G11, 1B, net GST; tips and other payments outside) as JSON/CSV/PDF, and a
+   GST-inclusive tax invoice from DingoGo to the driver for the quarter's service fees and car lease (both ABNs); in the driver app.
+3. [add] DingoGo's own BAS worksheet per quarter: own sales (service fees, lease, booking fees, levy, Pass, cancel-fee share) with GST, refunds as
+   adjustments, fares collected on behalf of drivers kept apart, unregistered drivers flagged; CSV/PDF, audited.
+4. [add] SERR report per half-year (due 31 Jul / 31 Jan): operator, one line per driver per activity (ride-sourcing / delivery) with every seller
+   field, gross, GST, commission, activity dates, missing details; full bank details only in the audited CSV; missing-details list with reminders.
+5. [add] Passenger levy monthly returns for NT (and SA, ready for later): trips by day, due date setting, PDF/CSV, lodgement recorded with a
+   reference, 12-month list with overdue months.
+6. [add] Record retention policy (tax records ≥ 5 years, can't be lowered) and a purge job (preview, run, optional daily) for GPS tracks, chat,
+   comms log, notifications, sign-in and rate-limit logs, and deleted drivers' tax identities past their 5 years.
+7. [add] Privacy (APP) request register: in-app export and deletion recorded automatically; requests by email/phone logged with a 30-day due date,
+   overdue shown, outcome required to close, CSV.
+8. [fix] Account deletion returns 200 (was 500); a deleted driver's tax identity is kept apart for 5 years (SERR stays complete) and bank,
+   address, birth date, licence and authority numbers come off the driver row; the data export includes a driver's profile, papers, pay, trips and
+   time online.
+9. [add] NDIS invoices: one per participant per month (support item, GST code, bill to plan manager or participant, after refunds) as PDF/CSV, the
+   NDIA bulk payment request file once DingoGo is registered, rider download; settings validated.
+10. [add] Admin Tax & compliance page (overview with due dates; BAS, SERR, levy, NDIS, record keeping, privacy tabs), a dependency-free PDF writer,
+    driver/rider screens, browser smoke steps; docs.
+
+Done (all 10). Migration: `services/api/migrations/020_tax_compliance.sql` (columns `drivers.seller_type/given_name/family_name/date_of_birth/
+business_name/address_line/suburb/postcode/address_state/tax_details_updated_at`; tables `levy_lodgements`, `privacy_requests`,
+`retained_tax_identities`; additive, IF NOT EXISTS). Before it is applied (`lib/tax.ts` `taxReady()`, re-checked once a minute): statements, fee
+invoices, BAS, SERR (every seller "Tax details (database migration 020 pending)"), levy returns, NDIS and retention work; name/birth date/address
+saves, lodgements and the privacy register answer 503 `migration_pending`; deletion clears bank details only for drivers never paid and nothing is
+retained apart. Tests: 138 → 154 (`tax.test.ts` 7 unit tests — ABN check digits, BAS quarters/due dates/FY labels, SERR halves, levy months, SERR
+missing fields for individuals/entities/deleted, retention floor and purge dates in Darwin time, NDIS settings, driver BAS figures, PDF structure/
+escaping/page breaks/repeated headers/xref; 9 e2e — tax details validation and missing list, driver statement equals the ledger in CSV/PDF and the fee
+invoice, DingoGo BAS lines against the database, SERR totals equal every sales dollar in the period with masked/full bank details and reminders,
+driver deletion retained → still reported → purged by retention while the ledger stays, privacy register, levy returns and lodgements incl. SA,
+NDIS invoices/PDF/bulk claim/rider download, everything with the 020 columns and tables renamed away). Browser smoke: 2 new steps (driver Earnings
+GST panel and Tax details; admin Tax page, every tab) — 7/7 pass.
+- API: new `src/lib/tax.ts` (ABN check, periods, SERR fields, retention/NDIS rules, `taxReady`), `src/lib/pdf.ts` (A4 Helvetica writer: headings,
+  wrapped text, rows, tables with page breaks), `src/services/tax.ts` (statements, fee invoice, BAS, SERR, missing details, levy returns and
+  lodgements, retention + `runRetentionIfDue` in the dispatcher tick, privacy requests, retained identities, NDIS invoices and bulk claim),
+  `src/routes/tax.ts`; `routes/auth.ts` (deletion fix + retained identity + privacy record; export with driver data), `routes/driver.ts`
+  (`tax_missing`, ABN check digits, earnings GST includes cancel fees), `services/trips.ts` (tick), `scripts/seed.ts` (valid demo ABNs, one complete
+  driver).
+- Apps: admin `pages/Tax.tsx` (nav "Tax & compliance"), Reports links to it, `downloadFile`; driver `screens/Tax.tsx` (`TaxDetails` in Profile with
+  a banner, `TaxStatements` in Earnings); rider Payment → NDIS invoices (last 3 months); shared `downloadFile`. Website privacy policy: retention,
+  30-day answers, SERR for drivers. Docs: API.md (Round 16 section), OPERATIONS.md §8 (monthly/quarterly/half-yearly calendar), README count.
+- Behaviour changes to note: `DELETE /me` returns 200 (was 500 after doing the work); driver ABNs must pass the ATO check (`PATCH /driver/me`, `PUT
+  /driver/tax-details`); `/driver/earnings` `gst_on_fares_cents` includes cancellation fees; deleted drivers' bank/address/licence numbers are cleared;
+  every export/deletion in the apps writes a privacy request row; nothing is purged until an admin runs retention or ticks "automatically".
+- Deploy: apply migration 020 (AUTO_MIGRATE does it). No env vars. Then set DingoGo's real ABN/legal name in the `business` setting (base data says
+  `TBC`), confirm with the accountant the GST model in the BAS worksheet, the NDIS support item/GST code, and the levy due day with the NT Government.
+
+Deferred:
+- SERR lodgement in the ATO's XML (SBR) schema: needs the Business Implementation Guide's exact element names and activity codes, and an SBR-enabled
+  channel (software provider or machine credential); the CSV holds every field for the accountant's software today.
+- ABN Lookup (ABR web service) to confirm a driver's ABN is active, GST-registered and in their name: needs an ABR GUID (free, by application).
+- Emailing statements/invoices (and SMS link) on the first of the quarter: needs an email provider (none configured; SMS only).
+- Business-account managers downloading NDIS invoices for their participants from the rider Business screen (admin and the participant can now).
+- Taxable payments (TPAR) and PAYG: drivers are contractors under SERR, so TPAR doesn't apply to ride-sourcing; leave to the accountant.
+- Driver-facing "keep a logbook" (car expenses, km) for income tax: useful but outside GST/BAS; the km are on the earnings screen.
+
+Ideas for next rounds:
+- ABR lookup on ABN entry (name match, GST status, cancelled ABNs) and a nightly re-check that flags drivers whose GST registration lapses.
+- Quarterly "your BAS figures are ready" notice to drivers with the statement link, and a reminder 2 weeks before each due date to ops.
+- SERR XML export per the ATO schema with a validator, plus a lodgement record like the levy one (reference, date, who).
+- Business account statements as PDF tax invoices (same writer), including NDIS plan-manager statements across participants.
+- Data-retention dashboard: table sizes and oldest rows per category, and an automatic run report emailed/texted to the owner.
+- Privacy impact assessment checklist in admin for new features (face match, audio recording) with the policy text they need.

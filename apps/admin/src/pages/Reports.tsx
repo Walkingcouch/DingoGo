@@ -61,7 +61,7 @@ export default function Reports() {
         <input className="dg-input" type="date" value={range.from} onChange={(e) => setRange({ ...range, from: e.target.value })} aria-label="From" style={{ width: 'auto', minHeight: 38 }} />
         <input className="dg-input" type="date" value={range.to} onChange={(e) => setRange({ ...range, to: e.target.value })} aria-label="To" style={{ width: 'auto', minHeight: 38 }} />
       </span>} />
-      <p className="dg-muted" style={{ marginTop: 0, maxWidth: 780 }}>Fares are collected on behalf of drivers, who are each registered for GST. DingoGo's own taxable supply is its service fee to drivers, plus Pass subscriptions. Confirm the treatment with your accountant before lodging a BAS.</p>
+      <p className="dg-muted" style={{ marginTop: 0, maxWidth: 780 }}>Fares are collected on behalf of drivers, who are each registered for GST. DingoGo's own taxable supply is its service fee to drivers, plus Pass subscriptions. Confirm the treatment with your accountant before lodging a BAS. Quarterly BAS worksheets, drivers’ statements, the ATO SERR report and levy returns are in <Link to="/tax">Tax &amp; compliance</Link>.</p>
       <ErrorMsg error={gst.error} />
       {g && (<>
         <Table rows={g.rows} rowKey={(r) => r.kind + r.provider} cols={[

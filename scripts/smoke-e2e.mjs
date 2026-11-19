@@ -8,6 +8,7 @@
  *   2. Rider signs in, books a ride Todd Mall → Alice Springs Hospital and sees the trip PIN.
  *   3. Driver gets the offer, accepts, arrives, starts with the rider's PIN and completes; the rider sees it finished.
  *   4. Admin signs in and approves the waiting car (CB47JP) in Fleet → Cars to check.
+ *   5. Driver sees the quarter's GST figures (Earnings) and tax details (Profile); admin opens every Tax & compliance tab.
  *
  * Needs: `node scripts/build-vercel.mjs`, a demo-seeded database (`DATABASE_URL=… npm run db:reset -w services/api`; sign-in
  * codes can be asked for once per 30 s per number, so reset before running again) and Playwright with Chromium
@@ -165,6 +166,26 @@ try {
     const cars = token ? await apiJson('/admin/vehicles', token.replace(/^"|"$/g, '')) : null;
     const car = cars?.items?.find?.((v) => v.rego === 'CB47JP');
     if (car && car.status !== 'approved') throw new Error(`CB47JP is ${car.status}, expected approved`);
+  });
+
+  await run('driver sees the quarter’s GST figures and tax details', async () => {
+    await driver.goto(BASE + '/driver/earnings');
+    await driver.getByRole('heading', { name: 'GST and your BAS' }).waitFor({ timeout: 15000 });
+    await driver.getByText('G1 Total sales (incl. GST)').waitFor({ timeout: 15000 });
+    await driver.getByRole('button', { name: 'DingoGo tax invoice for fees' }).waitFor({ timeout: 15000 });
+    await driver.goto(BASE + '/driver/profile');
+    await driver.getByRole('heading', { name: 'Tax details' }).waitFor({ timeout: 15000 });
+  });
+
+  await run('admin opens Tax & compliance (BAS, SERR, levy, NDIS, records, privacy)', async () => {
+    const admin = pages[pages.length - 1];
+    await admin.goto(BASE + '/admin/tax');
+    await admin.getByRole('heading', { name: 'DingoGo BAS worksheet' }).waitFor({ timeout: 15000 });
+    for (const [tab, heading] of [['SERR (ATO)', 'Sharing Economy Reporting Regime'], ['Levy returns', 'Passenger levy returns'], ['NDIS invoices', 'NDIS invoices'],
+      ['Record keeping', 'Record keeping'], ['Privacy requests', 'Privacy requests']]) {
+      await admin.getByRole('tab', { name: tab }).click();
+      await admin.getByRole('heading', { name: heading, exact: true }).first().waitFor({ timeout: 15000 });
+    }
   });
 
   if (problems.length) throw new Error(`errors while running:\n  ${problems.join('\n  ')}`);

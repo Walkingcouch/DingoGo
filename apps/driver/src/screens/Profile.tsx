@@ -10,6 +10,7 @@ import { DOC_LABEL } from '../rules';
 import { AddCarForm, CarExpiries, CarPapers, CarRules } from './Car';
 import { Sheet } from '../Sheet';
 import { ExpiryList } from './Expiry';
+import { TaxDetails } from './Tax';
 
 export function Profile({ onSignOut }: { onSignOut: () => void }) {
   const { me, reloadMe, cars, myState, online, showToast, waiting } = useDriver();
@@ -40,6 +41,7 @@ export function Profile({ onSignOut }: { onSignOut: () => void }) {
   return (
     <div className="screen">
       <h1>{d?.name}</h1>
+      {(me as any).tax_missing?.length > 0 && <p className="dg-note" role="status"><a href="#tax">Add your tax details</a>: DingoGo must report your earnings to the ATO. Still needed: {(me as any).tax_missing.join(', ')}.</p>}
       <p className="dg-muted" style={{ marginTop: 0 }}>{d?.phone}{d?.state ? `, ${myState.name}` : ''}{d?.rating_avg ? `, rated ${Number(d.rating_avg).toFixed(2)} from ${d.rating_count} trips` : ''}</p>
 
       <section className="panel">
@@ -97,6 +99,11 @@ export function Profile({ onSignOut }: { onSignOut: () => void }) {
       </section>
 
       <ExpiryList />
+
+      <section className="panel" id="tax" aria-label="Tax">
+        <h2 style={{ marginTop: 0 }}>Tax</h2>
+        <TaxDetails onSaved={() => void reloadMe()} />
+      </section>
 
       <section className="panel" aria-labelledby="safety-h">
         <h2 id="safety-h" style={{ marginTop: 0 }}>Safety</h2>

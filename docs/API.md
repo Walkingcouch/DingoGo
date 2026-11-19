@@ -844,3 +844,67 @@ Uploads: purposes `selfie` (drivers) and `evidence` (anyone signed in) are priva
 - Concession cards are valid until midnight Darwin time on their expiry date (was 9:30 am, UTC midnight); `PUT /me/concession` uses the same date.
 - Docs drift is a test: every route the API registers must appear in this file, and every environment variable it reads in `services/api/.env.example`
   (`test/docs.test.ts`).
+
+## Tax, compliance and reporting (Round 16)
+
+GST model (unchanged, now written down): each driver is registered for GST and supplies the ride or delivery; DingoGo collects the fare on the
+driver's behalf. DingoGo's own sales are the service fee and car lease charged to drivers, and the booking fee, passenger levy, DingoGo Pass and its
+share of cancellation fees charged to riders. Periods are Darwin dates: quarter `2026-Q4` (calendar quarter; BAS due the 28th of the next month,
+Oct–Dec 28 Feb), SERR half `2026-H1` (Jan–Jun, due 31 Jul) / `2026-H2` (Jul–Dec, due 31 Jan), month `2026-11`. Bad keys → 400 `bad_period`.
+Reports answer JSON by default and a download with `format=csv|pdf` (400 `bad_format`); admin downloads are audited (`export`).
+
+**Driver tax details (SERR):** `GET /driver/tax-details` → `{ details { seller_type, given_name, family_name, date_of_birth, business_name,
+address_line, suburb, postcode, address_state, abn, abn_ok, gst_registered, has_bank, email, phone }, missing [..], ready, why }` (bank numbers are
+never sent back). `PUT /driver/tax-details` takes any of those fields (`seller_type individual|entity`, postcode 4 digits, state code, date of birth
+18–99 years, `abn` with spaces allowed and checked with the ATO check digits → 400 `invalid_abn`; `email` updates the account). Name, birth date
+and address fields need migration 020 (503 `migration_pending` before it; ABN/GST still save). `GET /driver/me` adds `tax_missing [..]`. `PATCH
+/driver/me { abn }` is checked the same way.
+
+**Driver GST statement:** `GET /driver/tax/statement?quarter=&format=json|csv|pdf` → `{ period, business, driver { name, abn, abn_ok,
+gst_registered }, totals, months [..], warnings, notes }`, totals/months: `sales_cents` (G1: fares + pickup pay + fuel surcharge + the driver's share
+of cancellation fees, incl. GST), `gst_on_sales_cents` (1A), `fees_cents` (G11: service fees + car lease), `gst_credits_cents` (1B), `net_gst_cents`,
+`tips_cents` (no GST), `other_payments_cents` (bonuses, earnings floor, charging, adjustments), `cash_held_cents`, `paid_out_cents`, `trips`. GST
+figures are 0 if the driver isn't marked GST-registered (warning). `GET /driver/tax/fee-invoice?quarter=&format=json|pdf` → DingoGo's tax invoice to
+the driver for the quarter's service fees and lease (`DGF-2026Q4-XXXXXXXX`, both ABNs, GST included); 409 `no_fees` when there were none.
+`/driver/earnings` `gst_on_fares_cents` now includes the driver's share of cancellation fees (same G1 as the statement).
+
+**Rider NDIS invoice:** `GET /me/ndis-invoice?month=&format=json|csv|pdf` — the rider's trips booked with an NDIS number that month (404 for a PDF
+when there are none).
+
+**Admin (admin role only):**
+- `GET /admin/tax/overview` → readiness (`ready`, DingoGo ABN set and valid), next BAS/SERR/levy periods and due dates, `missing_details` count,
+  `levy_overdue`, privacy requests open/overdue, retention policy and last run, NDIS settings.
+- `GET /admin/tax/bas?quarter=&format=` → DingoGo's BAS worksheet: `lines` (service_fees, lease, booking_fees, levy, pass, cancel_share with GST),
+  `g1_cents`, `gst_on_sales_cents`, `refunds_cents`/`gst_on_refunds_cents`/`gst_after_refunds_cents`, `on_behalf { driver_sales_cents, driver_gst_cents,
+  tips_cents, discounts_funded_cents, other_driver_payments_cents }`, `unregistered_drivers`, `warnings`.
+- `GET /admin/tax/driver-statement?driver_id=&quarter=&doc=statement|invoice&format=` — any driver's statement or fee invoice.
+- `GET /admin/tax/serr?period=&format=json|csv` — Sharing Economy Reporting Regime data: operator, one seller line per driver per activity
+  (Ride-sourcing / Delivery services) with seller type, names, date of birth, business name, ABN, address, email, phone, bank details (masked in JSON,
+  full in the CSV), activity start/end, transactions, gross payments (incl. GST), GST, commission, `missing [..]`, `deleted`; totals incl.
+  `incomplete`. Deleted drivers are reported from their retained tax identity. Lodge in the ATO's XML format from this data.
+- `GET /admin/tax/missing-details?format=json|csv` (approved drivers and anyone paid in the last 18 months with something missing);
+  `POST /admin/tax/missing-details/remind { driver_ids? }` → `{ reminded }` (inbox notice "Tax details needed" listing what's missing).
+- `GET /admin/tax/levy-return?month=&state=NT|SA&format=` → monthly return: trips by day, rate, payable, collected, due date (setting
+  `levy_returns.due_day`, default 21), `lodged`, `overdue` (400 `unknown_state`). `GET /admin/tax/levy-returns?state=` → last 12 months with
+  trips, payable, lodged/reference, overdue. `POST /admin/tax/levy-returns { state, month, reference? }` records a lodgement (400 `month_not_over`
+  for the current month; again = corrected).
+- `GET /admin/tax/ndis?month=&ndis=&format=json|csv|pdf&claim=bulk` → one invoice per participant per month (`NDIS-YYYYMM-<number>`, bill to the
+  plan manager's account or the participant, lines with date, trip, support item, quantity, amount after refunds, GST code and GST). PDF needs
+  `ndis=` (400 `choose_participant`). `claim=bulk` with `format=csv` → NDIA bulk payment request file (409 `ndis_not_set_up` without a
+  registration number and support item). `PUT /admin/tax/ndis-settings { registration_number (9 digits), support_item (02_051_0108_1_1 form),
+  support_name, gst_code P1|P2|P5, payment_terms_days 0–60 }` (400 `invalid_ndis`).
+- Record retention: `GET /admin/tax/retention` → dry run (what the policy would remove now); `PUT /admin/tax/retention { tax_years ≥ 5,
+  gps_track_months, chat_months, comms_log_months, notifications_months, security_log_days, auto }` (400 `invalid_policy`);
+  `POST /admin/tax/retention/run { dry_run (default true) }`. Removes old GPS tracks, chat, comms log, notifications, sign-in code requests,
+  rate-limit counters and deleted drivers' tax identities past their 5 years; never trips, payments, the pay ledger or the audit log. With
+  `auto: true` it runs once a day from the dispatcher tick (off by default). Audited (`retention_run`).
+- Privacy (APP) requests: `GET /admin/privacy/requests?status=open|completed|refused&format=json|csv` (with `overdue`),
+  `POST /admin/privacy/requests { kind access|correction|deletion|complaint, channel email|phone|letter|in_person|app, requester, user_id?,
+  details? }` → 201 with `ref` `PR-…` and `due_at` 30 days on; `PATCH /admin/privacy/requests/:id { status, outcome }` (outcome needed to close).
+  `GET /me/export` and `DELETE /me` are recorded automatically as completed requests.
+
+**Account deletion (fixed):** `DELETE /me` answered 500 after anonymising the account (the audit insert used one parameter as both uuid and text);
+it now returns 200. For a driver who was ever paid, the tax identity (names, date of birth, address, ABN, email, phone, bank) is kept in
+`retained_tax_identities` until 30 June five years after the financial year of their last payment, and bank, address, birth date, licence and
+authority numbers are cleared from the driver record. `GET /me/export` adds `driver { profile (bank as last 3 digits), documents, pay, trips,
+online_sessions }` for drivers.

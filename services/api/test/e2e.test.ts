@@ -3603,3 +3603,334 @@ test('credit trips: a longer route never takes DingoGo credit below zero; a late
     await clearOpenTrips();
   }
 });
+
+// ───────────── Round 16: tax, compliance and reporting ─────────────
+const TZD = `'Australia/Darwin'`;
+const thisQuarter = () => { const d = new Date(Date.now() + 9.5 * 3600e3); return `${d.getUTCFullYear()}-Q${Math.floor(d.getUTCMonth() / 3) + 1}`; };
+const thisHalf = () => { const d = new Date(Date.now() + 9.5 * 3600e3); return `${d.getUTCFullYear()}-H${d.getUTCMonth() < 6 ? 1 : 2}`; };
+const darwinMonth = (back = 0) => { const d = new Date(Date.now() + 9.5 * 3600e3); d.setUTCDate(1); d.setUTCMonth(d.getUTCMonth() - back); return d.toISOString().slice(0, 7); };
+const inQuarter = `date_trunc('quarter', created_at AT TIME ZONE ${TZD}) = date_trunc('quarter', now() AT TIME ZONE ${TZD})`;
+const SALES_KINDS = `('fare','pickup_pay','fuel_surcharge','cancel_fee')`;
+
+test('driver tax details: SERR fields checked (ABN check digits, date of birth, postcode), what is missing, ABN checked on the profile too', async () => {
+  const d1 = await call('GET', '/driver/tax-details', 'd1');
+  assert.equal(d1.status, 200, JSON.stringify(d1));
+  assert.deepEqual(d1.missing, [], 'seeded demo driver is complete');
+  assert.equal(d1.details.abn_ok, true);
+  assert.equal(d1.details.bank_account, undefined, 'bank numbers are not sent back');
+  assert.equal((await call('GET', '/driver/tax-details', 'rider')).status, 403);
+
+  const before = await call('GET', '/driver/tax-details', 'd2');
+  assert.ok(before.missing.includes('Date of birth') && before.missing.includes('Address'), JSON.stringify(before.missing));
+  assert.deepEqual((await call('GET', '/driver/me', 'd2')).tax_missing, before.missing, 'driver app banner');
+  assert.equal((await call('PUT', '/driver/tax-details', 'd2', { abn: '11 222 333 444' })).error, 'invalid_abn');
+  assert.equal((await call('PUT', '/driver/tax-details', 'd2', { date_of_birth: '2019-01-01' })).error, 'invalid_dob');
+  assert.equal((await call('PUT', '/driver/tax-details', 'd2', { postcode: '87' })).status, 400);
+  assert.equal((await call('PATCH', '/driver/me', 'd2', { abn: '11222333444' })).status, 400, 'profile ABN is checked too');
+  const put = await call('PUT', '/driver/tax-details', 'd2', { given_name: 'Sarah', family_name: 'Nampijinpa', date_of_birth: '1990-07-02',
+    address_line: '3 Example Rd', suburb: 'Braitling', postcode: '0870', address_state: 'NT', abn: '53 004 085 616' });
+  assert.equal(put.status, 200, JSON.stringify(put));
+  assert.deepEqual(put.missing, []);
+  assert.equal((await one(`SELECT abn FROM drivers d JOIN users u ON u.id = d.user_id WHERE u.phone = '+61400000012'`)).abn, '53004085616');
+  const entity = await call('PUT', '/driver/tax-details', 'd2', { seller_type: 'entity', business_name: null });
+  assert.deepEqual(entity.missing, ['Business name'], 'a company or trust needs its business name');
+  await call('PUT', '/driver/tax-details', 'd2', { seller_type: 'individual' });
+});
+
+test('driver GST statement (BAS worksheet) for the quarter: G1/1A/G11/1B from the pay ledger, CSV and PDF; DingoGo tax invoice for fees', async () => {
+  await clearOpenTrips();
+  await onlyOnline(['d1']);
+  const t = await book();
+  await waitForOffer('d1');
+  await rideToEnd(t.id, 'd1');
+  const d1 = await driverId('+61400000011');
+  const s = await call('GET', `/driver/tax/statement?quarter=${thisQuarter()}`, 'd1');
+  assert.equal(s.status, 200, JSON.stringify(s));
+  const led = Object.fromEntries((await q(`SELECT kind, sum(amount_cents)::int c FROM driver_ledger WHERE driver_id = $1 AND ${inQuarter} GROUP BY kind`, [d1])).map((r) => [r.kind, r.c]));
+  const v = (k: string) => Number(led[k] ?? 0);
+  const sales = v('fare') + v('pickup_pay') + v('fuel_surcharge') + v('cancel_fee');
+  assert.equal(s.totals.sales_cents, sales);
+  assert.equal(s.totals.gst_on_sales_cents, Math.round(sales / 11));
+  assert.equal(s.totals.fees_cents, -v('commission') - v('lease'));
+  assert.equal(s.totals.tips_cents, v('tip'));
+  assert.equal(s.months.reduce((n: number, m: any) => n + m.sales_cents, 0), sales, 'months add up');
+  assert.ok(s.totals.trips >= 1);
+  assert.equal(s.driver.gst_registered, true);
+  assert.deepEqual(s.warnings, []);
+  assert.equal(s.period.key, thisQuarter());
+
+  const csv = await rawAs('GET', `/driver/tax/statement?quarter=${thisQuarter()}&format=csv`, 'd1');
+  assert.match(String(csv.headers['content-type']), /text\/csv/);
+  const lines = parseCsv(csv.body);
+  assert.match(lines[0], /^Driver,ABN,Quarter,Month,Trips,G1 Total sales incl GST/);
+  assert.match(lines[lines.length - 1], new RegExp(`,Total,${s.totals.trips},${(sales / 100).toFixed(2)},`));
+  const pdf = await rawAs('GET', `/driver/tax/statement?format=pdf`, 'd1');
+  assert.equal(pdf.headers['content-type'], 'application/pdf');
+  assert.match(String(pdf.headers['content-disposition']), /attachment; filename="dingogo-gst-statement-\d{4}-Q\d\.pdf"/);
+  assert.ok(pdf.rawPayload.subarray(0, 8).toString() === '%PDF-1.4');
+  assert.match(pdf.rawPayload.toString('latin1'), /\(Driver GST statement \(BAS worksheet\)\) Tj|\(Driver GST statement \\\(BAS worksheet\\\)\) Tj/);
+
+  const inv = await call('GET', `/driver/tax/fee-invoice?quarter=${thisQuarter()}`, 'd1');
+  assert.equal(inv.status, 200, JSON.stringify(inv));
+  assert.match(inv.invoice.number, /^DGF-\d{4}Q[1-4]-[0-9A-F]{8}$/);
+  assert.equal(inv.invoice.total_cents, -v('commission') - v('lease'));
+  assert.equal(inv.invoice.gst_cents, Math.round(inv.invoice.total_cents / 11));
+  assert.equal(inv.invoice.customer.abn_ok, true);
+  const ipdf = await rawAs('GET', `/driver/tax/fee-invoice?format=pdf`, 'd1');
+  assert.match(ipdf.rawPayload.toString('latin1'), /\(Tax invoice\) Tj/);
+  assert.match(ipdf.rawPayload.toString('latin1'), /draft until it is/, 'DingoGo ABN still "TBC" in the demo data');
+  assert.equal((await call('GET', '/driver/tax/fee-invoice?quarter=2020-Q1', 'd1')).error, 'no_fees');
+  assert.equal((await call('GET', '/driver/tax/statement?quarter=2026-Q9', 'd1')).error, 'bad_period');
+  assert.equal((await call('GET', '/driver/tax/statement?format=xml', 'd1')).error, 'bad_format');
+  // Admin can pull any driver's statement and invoice (audited); dispatchers can't.
+  if (!tokens.dispatcher) await login('dispatcher', '+61400000002', 'admin');
+  assert.equal((await call('GET', `/admin/tax/driver-statement?driver_id=${d1}`, 'dispatcher')).status, 403);
+  assert.equal((await call('GET', `/admin/tax/driver-statement?driver_id=${d1}`, 'admin')).totals.sales_cents, sales);
+  const ap = await rawAs('GET', `/admin/tax/driver-statement?driver_id=${d1}&doc=invoice&format=pdf`, 'admin');
+  assert.equal(ap.headers['content-type'], 'application/pdf');
+  assert.ok(await one(`SELECT 1 FROM audit_log WHERE action = 'export' AND entity = 'driver' AND entity_id = $1 AND data->>'doc' = 'fee_invoice'`, [d1]));
+});
+
+test('DingoGo BAS worksheet: own sales (fees, lease, booking fees, levy, Pass, cancel share), refunds, fares on behalf of drivers; CSV/PDF audited', async () => {
+  const b = await call('GET', `/admin/tax/bas?quarter=${thisQuarter()}`, 'admin');
+  assert.equal(b.status, 200, JSON.stringify(b));
+  assert.deepEqual(b.lines.map((l: any) => l.key), ['service_fees', 'lease', 'booking_fees', 'levy', 'pass', 'cancel_share']);
+  assert.equal(b.g1_cents, b.lines.reduce((n: number, l: any) => n + l.cents, 0));
+  const fees = await one(`SELECT coalesce(-sum(amount_cents),0)::int c FROM driver_ledger WHERE kind = 'commission' AND ${inQuarter}`);
+  assert.equal(b.lines[0].cents, fees.c);
+  const levy = await one(`SELECT coalesce(sum((fare_breakdown->>'levy_cents')::int),0)::int c FROM trips WHERE status = 'completed'
+    AND date_trunc('quarter', completed_at AT TIME ZONE ${TZD}) = date_trunc('quarter', now() AT TIME ZONE ${TZD})`);
+  assert.equal(b.lines[3].cents, levy.c);
+  const onBehalf = await one(`SELECT coalesce(sum(amount_cents),0)::int c FROM driver_ledger WHERE kind IN ${SALES_KINDS} AND ${inQuarter}`);
+  assert.equal(b.on_behalf.driver_sales_cents, onBehalf.c, 'fares are the drivers’ sales');
+  assert.ok(b.refunds_cents >= 0);
+  assert.equal(b.gst_after_refunds_cents, b.gst_on_sales_cents - b.gst_on_refunds_cents);
+  assert.ok(b.warnings.some((w: string) => /ABN is not set/.test(w)), 'demo DingoGo ABN is "TBC"');
+  assert.equal((await call('GET', '/admin/tax/bas', 'dispatcher')).status, 403);
+  const csv = await rawAs('GET', `/admin/tax/bas?quarter=${thisQuarter()}&format=csv`, 'admin');
+  assert.match(parseCsv(csv.body)[0], /^Quarter,Section,Item,Amount incl GST \(\$\),GST \(\$\)$/);
+  const pdf = await rawAs('GET', `/admin/tax/bas?format=pdf`, 'admin');
+  assert.match(pdf.rawPayload.toString('latin1'), /\(DingoGo BAS worksheet\) Tj/);
+  assert.ok(await one(`SELECT 1 FROM audit_log WHERE action = 'export' AND entity_id = 'bas.pdf'`));
+});
+
+test('SERR: one line per driver and activity with gross, GST and commission; bank details only in the audited CSV; missing details and reminders', async () => {
+  const r = await call('GET', `/admin/tax/serr?period=${thisHalf()}`, 'admin');
+  assert.equal(r.status, 200, JSON.stringify(r));
+  const d1 = await driverId('+61400000011');
+  const mine = r.sellers.filter((s: any) => s.driver_id === d1);
+  assert.ok(mine.length >= 1);
+  const ride = mine.find((s: any) => s.activity === 'Ride-sourcing');
+  assert.deepEqual(ride.missing, []);
+  assert.equal(ride.bank_account, '•••456', 'masked on screen');
+  assert.equal(ride.gst_cents, Math.round(ride.gross_cents / 11));
+  assert.equal(ride.address.postcode, '0870');
+  const half = `date_trunc('year', created_at AT TIME ZONE ${TZD}) = date_trunc('year', now() AT TIME ZONE ${TZD})
+    AND (extract(month FROM created_at AT TIME ZONE ${TZD}) <= 6) = (extract(month FROM now() AT TIME ZONE ${TZD}) <= 6)`;
+  const gross = await one(`SELECT coalesce(sum(amount_cents),0)::int c FROM driver_ledger WHERE kind IN ${SALES_KINDS} AND ${half}`);
+  assert.equal(r.totals.gross_cents, gross.c, 'every dollar paid to drivers in the period is reported');
+  const comm = await one(`SELECT coalesce(-sum(amount_cents),0)::int c FROM driver_ledger WHERE kind = 'commission' AND driver_id = $1 AND ${half}`, [d1]);
+  assert.equal(mine.reduce((n: number, s: any) => n + s.commission_cents, 0), comm.c);
+  assert.match(r.period.due, /-(07|01)-31$/);
+  const d3 = await driverId('+61400000013');
+  const d3row = r.sellers.find((s: any) => s.driver_id === d3);
+  if (d3row) assert.ok(d3row.missing.includes('Date of birth'));
+
+  const csv = await rawAs('GET', `/admin/tax/serr?period=${thisHalf()}&format=csv`, 'admin');
+  const rows = parseCsv(csv.body);
+  assert.match(rows[0], /^Reporting period start,Reporting period end,Platform operator,Operator ABN,Seller type,Given name,Family name,Date of birth,Business or trading name,ABN,Address,Suburb,State,Postcode,Country,Email,Phone,BSB,Account number,Activity/);
+  assert.ok(rows.some((l) => l.includes(',Tjala,Kemarre,1985-03-14,') && l.includes(',085001,123456,Ride-sourcing,')), 'full bank details in the file');
+  assert.ok(await one(`SELECT 1 FROM audit_log WHERE action = 'export' AND entity_id = 'serr.csv'`));
+  assert.equal((await call('GET', '/admin/tax/serr?period=2026-H7', 'admin')).error, 'bad_period');
+
+  const miss = await call('GET', '/admin/tax/missing-details', 'admin');
+  assert.ok(!miss.items.some((i: any) => i.driver_id === d1));
+  const d3miss = miss.items.find((i: any) => i.driver_id === d3);
+  assert.ok(d3miss?.missing.includes('Given name'), JSON.stringify(miss.items));
+  const rem = await call('POST', '/admin/tax/missing-details/remind', 'admin', { driver_ids: [d3, d1] });
+  assert.equal(rem.reminded, 1, 'only drivers with something missing');
+  assert.match((await one(`SELECT body FROM notifications WHERE user_id = $1 AND title = 'Tax details needed' ORDER BY id DESC LIMIT 1`, [d3])).body, /Given name/);
+  const mcsv = await rawAs('GET', '/admin/tax/missing-details?format=csv', 'admin');
+  assert.match(parseCsv(mcsv.body)[0], /^Driver,Status,Missing,Account deleted$/);
+  const ov = await call('GET', '/admin/tax/overview', 'admin');
+  assert.equal(ov.ready, true);
+  assert.ok(ov.missing_details >= 1);
+  assert.equal(ov.business.abn_ok, false);
+  assert.equal(ov.retention.tax_years, 5);
+});
+
+test('deleting a driver account keeps the tax identity apart for 5 years (SERR still complete), clears bank and personal details; export and deletion recorded as privacy requests', async () => {
+  const v = await login('taxgone', '+61400001611', 'driver');
+  const id = v.user.id;
+  await q(`UPDATE drivers SET abn = '33051775556', gst_registered = true, bank_bsb = '085002', bank_account = '7654321', given_name = 'Gone', family_name = 'Driver',
+           date_of_birth = '1980-01-01', address_line = '9 Example St', suburb = 'Larapinta', postcode = '0875', address_state = 'NT', licence_no = 'NT1234' WHERE user_id = $1`, [id]);
+  await q(`UPDATE users SET name = 'Gone Driver', email = 'gone@example.com' WHERE id = $1`, [id]);
+  await q(`INSERT INTO driver_ledger (driver_id, kind, amount_cents, note) VALUES ($1,'fare',2200,'Fare test'), ($1,'commission',-550,'fee')`, [id]);
+  const ex = await call('GET', '/me/export', 'taxgone');
+  assert.equal(ex.driver.profile.bank_account, '•••321', 'own data, bank masked');
+  assert.equal(ex.driver.pay.length, 2);
+  assert.equal(ex.driver.profile.lat, undefined);
+  assert.ok(await one(`SELECT 1 FROM privacy_requests WHERE user_id = $1 AND kind = 'access' AND status = 'completed'`, [id]));
+
+  assert.equal((await call('DELETE', '/me', 'taxgone')).status, 200);
+  const row = await one(`SELECT bank_bsb, bank_account, date_of_birth, given_name, address_line, licence_no FROM drivers WHERE user_id = $1`, [id]);
+  assert.deepEqual(Object.values(row), [null, null, null, null, null, null], 'cleared from the driver record');
+  const kept = await one(`SELECT identity, purge_after FROM retained_tax_identities WHERE driver_id = $1`, [id]);
+  assert.equal(kept.identity.bank_account, '7654321');
+  assert.equal(kept.identity.given_name, 'Gone');
+  const fyEnd = (() => { const d = new Date(Date.now() + 9.5 * 3600e3); return d.getUTCMonth() >= 6 ? d.getUTCFullYear() + 1 : d.getUTCFullYear(); })();
+  assert.equal(String(kept.purge_after instanceof Date ? kept.purge_after.toISOString() : kept.purge_after).slice(0, 4), String(fyEnd + 5));
+  assert.ok(await one(`SELECT 1 FROM privacy_requests WHERE user_id = $1 AND kind = 'deletion' AND status = 'completed'`, [id]));
+
+  const serr = await call('GET', `/admin/tax/serr?period=${thisHalf()}`, 'admin');
+  const gone = serr.sellers.find((s: any) => s.driver_id === id);
+  assert.ok(gone, 'still reported');
+  assert.deepEqual([gone.name, gone.deleted, gone.missing], ['Gone Driver', true, []], JSON.stringify(gone));
+  assert.equal((await call('GET', '/admin/tax/missing-details', 'admin')).items.some((i: any) => i.driver_id === id), false);
+
+  // Retention: past their purge date the identity goes; tax records (the pay ledger) stay.
+  await q(`UPDATE retained_tax_identities SET purge_after = now()::date - 1 WHERE driver_id = $1`, [id]);
+  const pv = await call('GET', '/admin/tax/retention', 'admin');
+  assert.equal(pv.dry_run, true);
+  assert.ok(pv.removed.find((x: any) => x.key === 'tax_identities').rows >= 1);
+  await q(`INSERT INTO rate_events (bucket, key, at) VALUES ('r16_test', 'x', now() - interval '200 days')`);
+  const trip = await one(`SELECT id FROM trips WHERE status = 'completed' LIMIT 1`);
+  await q(`INSERT INTO trip_track (trip_id, at, lat, lng) VALUES ($1, now() - interval '30 months', -23.7, 133.88)`, [trip.id]);
+  const dry = await call('POST', '/admin/tax/retention/run', 'admin', {});
+  assert.ok(dry.removed.find((x: any) => x.key === 'gps').rows >= 1);
+  assert.ok(await one(`SELECT 1 FROM trip_track WHERE trip_id = $1 AND at < now() - interval '29 months'`, [trip.id]), 'a dry run removes nothing');
+  assert.equal((await call('POST', '/admin/tax/retention/run', 'dispatcher', { dry_run: false })).status, 403);
+  const run = await call('POST', '/admin/tax/retention/run', 'admin', { dry_run: false });
+  assert.equal(run.dry_run, false);
+  assert.equal(await one(`SELECT 1 FROM trip_track WHERE trip_id = $1 AND at < now() - interval '29 months'`, [trip.id]), null);
+  assert.equal(await one(`SELECT 1 FROM rate_events WHERE bucket = 'r16_test'`), null);
+  assert.equal(await one(`SELECT 1 FROM retained_tax_identities WHERE driver_id = $1`, [id]), null);
+  assert.equal((await one(`SELECT count(*)::int n FROM driver_ledger WHERE driver_id = $1`, [id])).n, 2, 'tax records are never purged by the job');
+  assert.ok(await one(`SELECT 1 FROM trips WHERE id = $1`, [trip.id]));
+  assert.ok(await one(`SELECT 1 FROM audit_log WHERE action = 'retention_run'`));
+  assert.equal((await call('GET', '/admin/tax/overview', 'admin')).last_retention_run.by, (await driverId('+61400000001')));
+
+  assert.equal((await call('PUT', '/admin/tax/retention', 'admin', { tax_years: 4 })).error, 'invalid_policy');
+  const put = await call('PUT', '/admin/tax/retention', 'admin', { ...pv.policy, gps_track_months: 36 });
+  assert.equal(put.policy.gps_track_months, 36);
+  await call('PUT', '/admin/tax/retention', 'admin', pv.policy);
+});
+
+test('privacy requests register: log a request from email, 30 days to answer, overdue shown, outcome needed to close, CSV', async () => {
+  const r = await call('POST', '/admin/privacy/requests', 'admin', { kind: 'correction', channel: 'email', requester: 'A. Rider by email', details: 'Wrong surname' });
+  assert.equal(r.status, 201, JSON.stringify(r));
+  assert.match(r.item.ref, /^PR-/);
+  const days = (Date.parse(r.item.due_at) - Date.parse(r.item.received_at)) / 864e5;
+  assert.equal(Math.round(days), 30);
+  assert.equal((await call('POST', '/admin/privacy/requests', 'admin', { kind: 'gossip', requester: 'x y' })).status, 400);
+  assert.equal((await call('GET', '/admin/privacy/requests', 'dispatcher')).status, 403);
+  await q(`UPDATE privacy_requests SET due_at = now() - interval '1 day' WHERE id = $1`, [r.item.id]);
+  const open = await call('GET', '/admin/privacy/requests?status=open', 'admin');
+  assert.equal(open.items.find((i: any) => i.id === r.item.id).overdue, true);
+  assert.ok((await call('GET', '/admin/tax/overview', 'admin')).privacy.overdue >= 1);
+  assert.equal((await call('PATCH', `/admin/privacy/requests/${r.item.id}`, 'admin', { status: 'completed' })).error, 'outcome_required');
+  const done = await call('PATCH', `/admin/privacy/requests/${r.item.id}`, 'admin', { status: 'completed', outcome: 'Surname corrected' });
+  assert.ok(done.item.completed_at);
+  assert.ok((await call('GET', '/admin/privacy/requests?status=completed', 'admin')).items.some((i: any) => i.id === r.item.id));
+  const csv = await rawAs('GET', '/admin/privacy/requests?format=csv', 'admin');
+  assert.match(parseCsv(csv.body)[0], /^Ref,Kind,Channel,Status,Person,Received,Due,Completed,Handled by,Outcome$/);
+});
+
+test('levy returns: monthly return by day (PDF/CSV), lodgement recorded once the month is over, 12-month list with overdue; SA ready for later', async () => {
+  const m = darwinMonth();
+  const r = await call('GET', `/admin/tax/levy-return?month=${m}`, 'admin');
+  assert.equal(r.status, 200, JSON.stringify(r));
+  const lr = await call('GET', `/admin/reports/levy?month=${m}`, 'admin');
+  assert.equal(r.passenger_trips, lr.passenger_trips);
+  assert.equal(r.days.reduce((n: number, d: any) => n + d.trips, 0), r.passenger_trips);
+  assert.equal(r.levy_payable_cents, r.passenger_trips * r.levy_rate_cents);
+  assert.match(r.period.due, /-21$/);
+  const pdf = await rawAs('GET', `/admin/tax/levy-return?month=${m}&format=pdf`, 'admin');
+  assert.match(pdf.rawPayload.toString('latin1'), /monthly return\) Tj/);
+  const csv = parseCsv((await rawAs('GET', `/admin/tax/levy-return?month=${m}&format=csv`, 'admin')).body);
+  assert.match(csv[csv.length - 1], new RegExp(`^NT,${m},Total,${r.passenger_trips},`));
+  assert.equal((await call('POST', '/admin/tax/levy-returns', 'admin', { month: m })).error, 'month_not_over');
+  const prev = darwinMonth(1);
+  const lodged = await call('POST', '/admin/tax/levy-returns', 'admin', { month: prev, reference: 'NT-123' });
+  assert.equal(lodged.status, 200, JSON.stringify(lodged));
+  assert.equal((await call('POST', '/admin/tax/levy-returns', 'admin', { month: prev, reference: 'NT-124' })).item.reference, 'NT-124', 'corrected, not duplicated');
+  const list = await call('GET', '/admin/tax/levy-returns', 'admin');
+  assert.equal(list.months.length, 12);
+  assert.equal(list.months[0].current, true);
+  assert.equal(list.months.find((x: any) => x.month === prev).reference, 'NT-124');
+  assert.equal((await call('GET', `/admin/tax/levy-return?month=${prev}`, 'admin')).lodged.reference, 'NT-124');
+  const sa = await call('GET', `/admin/tax/levy-return?month=${m}&state=SA`, 'admin');
+  assert.deepEqual([sa.status, sa.state, sa.passenger_trips, sa.jurisdiction.active], [200, 'SA', 0, false]);
+  assert.equal((await call('GET', `/admin/tax/levy-return?state=XX`, 'admin')).error, 'unknown_state');
+});
+
+test('NDIS invoices: one per participant per month with support item and GST code; PDF for the participant; bulk claim file once registered', async () => {
+  await clearOpenTrips();
+  await onlyOnline(['d1']);
+  const ndis = '430000016';
+  const t = await call('POST', '/trips', 'rider', { kind: 'ride', service: 'ride', pickup: TODD_MALL, dropoff: HOSPITAL, payment_method: 'card', ndis_number: ndis });
+  assert.equal(t.status, 201, JSON.stringify(t));
+  await waitForOffer('d1');
+  const done = await rideToEnd(t.trip.id, 'd1');
+  const set = await call('GET', `/admin/tax/ndis?ndis=${ndis}`, 'admin');
+  assert.equal(set.status, 200, JSON.stringify(set));
+  const inv = set.invoices[0];
+  assert.equal(inv.ndis_number, ndis);
+  assert.match(inv.number, new RegExp(`^NDIS-\\d{6}-${ndis}$`));
+  const line = inv.lines.find((l: any) => l.trip_ref === done.ref);
+  assert.deepEqual([line.unit_cents, line.gst_code, line.gst_cents, line.support_item], [done.final_cents, 'P1', Math.round(done.final_cents / 11), null]);
+  assert.match(inv.bill_to, /self-managed/);
+  const pdf = await rawAs('GET', `/admin/tax/ndis?ndis=${ndis}&format=pdf`, 'admin');
+  const text = pdf.rawPayload.toString('latin1');
+  assert.match(text, /\(Tax invoice \\\(NDIS\\\)\) Tj/);
+  assert.match(text, new RegExp(`NDIS number ${ndis}`));
+  assert.match(text, /support item number has not been set/);
+  assert.equal((await call('GET', `/admin/tax/ndis?format=pdf`, 'admin')).error, 'choose_participant');
+  assert.equal((await call('GET', `/admin/tax/ndis?format=csv&claim=bulk`, 'admin')).error, 'ndis_not_set_up');
+  assert.equal((await call('PUT', '/admin/tax/ndis-settings', 'admin', { support_item: 'taxi' })).error, 'invalid_ndis');
+  const s = await call('PUT', '/admin/tax/ndis-settings', 'admin', { registration_number: '405123456', support_item: '02_051_0108_1_1', gst_code: 'P2' });
+  assert.equal(s.settings.gst_code, 'P2');
+  const bulk = parseCsv((await rawAs('GET', `/admin/tax/ndis?format=csv&claim=bulk`, 'admin')).body);
+  assert.match(bulk[0], /^RegistrationNumber,NDISNumber,SupportsDeliveredFrom,SupportsDeliveredTo,SupportNumber,ClaimReference,Quantity,Hours,UnitPrice,GSTCode/);
+  assert.ok(bulk.some((l) => l.startsWith(`405123456,${ndis},`) && l.includes(`,02_051_0108_1_1,${done.ref},1,,${(done.final_cents / 100).toFixed(2)},P2,`)), bulk.join('\n'));
+  // The participant downloads their own invoice; nobody else's trips are on it.
+  const mine = await call('GET', '/me/ndis-invoice', 'rider');
+  assert.equal(mine.invoices.find((i: any) => i.ndis_number === ndis).lines.find((l: any) => l.trip_ref === done.ref).gst_cents, 0, 'P2: GST free');
+  assert.equal((await rawAs('GET', '/me/ndis-invoice?format=pdf', 'rider')).headers['content-type'], 'application/pdf');
+  assert.equal((await call('GET', '/me/ndis-invoice?month=2020-01&format=pdf', 'rider')).status, 404);
+  await call('PUT', '/admin/tax/ndis-settings', 'admin', {});
+});
+
+test('before migration 020: tax statements, BAS, SERR (details shown as missing), levy returns and deletion work; new details, lodgements and privacy register say migration_pending', async () => {
+  const { resetTaxReady } = await import('../src/lib/tax.js');
+  const cols = ['seller_type', 'given_name', 'family_name', 'date_of_birth', 'business_name', 'address_line', 'suburb', 'postcode', 'address_state', 'tax_details_updated_at'];
+  const tables = ['levy_lodgements', 'privacy_requests', 'retained_tax_identities'];
+  for (const c of cols) await q(`ALTER TABLE drivers RENAME COLUMN ${c} TO ${c}_off`);
+  for (const t of tables) await q(`ALTER TABLE ${t} RENAME TO ${t}_off`);
+  resetTaxReady();
+  try {
+    const d = await call('GET', '/driver/tax-details', 'd1');
+    assert.deepEqual([d.status, d.ready], [200, false]);
+    assert.equal((await call('PUT', '/driver/tax-details', 'd1', { given_name: 'Tjala' })).error, 'migration_pending');
+    assert.equal((await call('PUT', '/driver/tax-details', 'd1', { gst_registered: true })).status, 200, 'ABN/GST still save');
+    assert.deepEqual((await call('GET', '/driver/me', 'd1')).tax_missing, []);
+    assert.equal((await call('GET', '/driver/tax/statement', 'd1')).status, 200);
+    assert.equal((await call('GET', '/admin/tax/bas', 'admin')).status, 200);
+    const serr = await call('GET', '/admin/tax/serr', 'admin');
+    assert.equal(serr.status, 200);
+    assert.ok(serr.sellers.every((s: any) => s.missing[0] === 'Tax details (database migration 020 pending)'));
+    assert.equal((await call('GET', '/admin/tax/levy-return', 'admin')).status, 200);
+    assert.equal((await call('GET', '/admin/tax/levy-returns', 'admin')).months.length, 12);
+    assert.equal((await call('POST', '/admin/tax/levy-returns', 'admin', { month: darwinMonth(1) })).error, 'migration_pending');
+    assert.equal((await call('GET', '/admin/privacy/requests', 'admin')).error, 'migration_pending');
+    assert.equal((await call('GET', '/admin/tax/overview', 'admin')).ready, false);
+    assert.equal((await call('GET', '/me/export', 'rider')).status, 200);
+    await login('taxgone2', '+61400001612', 'driver');
+    assert.equal((await call('DELETE', '/me', 'taxgone2')).status, 200);
+    assert.equal((await call('GET', '/admin/tax/retention', 'admin')).status, 200);
+  } finally {
+    for (const c of cols) await q(`ALTER TABLE drivers RENAME COLUMN ${c}_off TO ${c}`);
+    for (const t of tables) await q(`ALTER TABLE ${t}_off RENAME TO ${t}`);
+    resetTaxReady();
+  }
+});

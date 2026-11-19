@@ -15,6 +15,8 @@ import { withdrawOffers } from '../services/trips.js';
 import { loadRecipient, setMarketing } from '../services/prefs.js';
 import { CONCESSION_TYPES, LANGS, communityPending, communityReady, loadCommunityPricing, localDate, normaliseLang, type ConcessionType } from '../lib/community.js';
 import { audit } from '../lib/audit.js';
+import { recordPrivacyRequest, retainDriverTaxIdentity } from '../services/tax.js';
+import { logError } from '../lib/log.js';
 
 /** Compare two hex hashes in constant time. */
 function sameHash(a: string, b: string) {
@@ -170,14 +172,23 @@ export default async function authRoutes(app: FastifyInstance) {
     const live = await one(`SELECT 1 FROM trips WHERE (rider_id = $1 OR driver_id = $1) AND status IN ('requested','accepted','arrived','in_progress')`, [me.id]);
     if (live) throw bad('trip_in_progress', 'Finish or cancel your current trip first');
     await setMarketing(me.id, false, 'app', req.ip);   // the withdrawal is recorded before the number is removed
+    // Round 16: a driver's tax identity is kept apart for the ATO's 5 years (SERR, tax invoices), then purged; bank details,
+    // address, date of birth and licence numbers come off the driver record now (before
+    // the name, email and phone are anonymised below).
+    const isDriver = await one('SELECT 1 FROM drivers WHERE user_id = $1', [me.id]);
+    if (isDriver) await retainDriverTaxIdentity(me.id);
     await q(`UPDATE users SET name = 'Deleted user', email = NULL, phone = 'deleted:' || id::text, emergency_contact = NULL,
              accessibility = '{}'::jsonb, marketing_opt_in = false, deleted_at = now() WHERE id = $1`, [me.id]);
     if (await safetyReady()) await q(`UPDATE users SET trusted_contacts = '[]'::jsonb, auto_share = 'off' WHERE id = $1`, [me.id]);
     await q('DELETE FROM push_tokens WHERE user_id = $1', [me.id]);
     await q('UPDATE drivers SET online = false WHERE user_id = $1', [me.id]);
     await withdrawOffers(me.id);
-    await q(`INSERT INTO audit_log (actor_id, action, entity, entity_id) VALUES ($1, 'account_deleted', 'user', $1)`, [me.id]);
+    // Two parameters: one value as both uuid (actor) and text (entity id) made Postgres refuse the insert, so every deletion
+    // answered 500 after the account had already been anonymised (fixed in Round 16).
+    await audit(me.id, 'account_deleted', 'user', me.id);
     disconnectUser(me.id, 'account deleted');
+    await recordPrivacyRequest({ user_id: me.id, kind: 'deletion', channel: 'app', status: 'completed', details: isDriver ? 'Driver account; tax records kept for 5 years' : undefined })
+      .catch((e) => logError('privacy request', e));
     return { ok: true };
   });
 
@@ -200,8 +211,23 @@ export default async function authRoutes(app: FastifyInstance) {
     const safety_reports = await opt(q(`SELECT ref, category, status, outcome, description, created_at FROM incident_reports WHERE reporter_id = $1 ORDER BY created_at`, [me.id]), []);
     const check_ins = await opt(q(`SELECT reason, status, created_at, answered_at FROM safety_checks WHERE user_id = $1 ORDER BY created_at`, [me.id]), []);
     const account_actions = await opt(q(`SELECT action, public_reason, until, created_at FROM account_actions WHERE user_id = $1 ORDER BY created_at`, [me.id]), []);
+    // Round 16: drivers also get their driver record (bank numbers shown as the last 3 digits), papers, pay and time online.
+    const drv = await one('SELECT * FROM drivers WHERE user_id = $1', [me.id]);
+    let driver: Record<string, unknown> | null = null;
+    if (drv) {
+      const tail = (s: string | null) => (s ? `•••${String(s).slice(-3)}` : null);
+      const { lat, lng, heading, ...rest } = drv;
+      driver = {
+        profile: { ...rest, bank_bsb: tail(drv.bank_bsb), bank_account: tail(drv.bank_account) },
+        documents: await q('SELECT type, number, expires_at, status, note, created_at, reviewed_at FROM driver_documents WHERE driver_id = $1 ORDER BY created_at', [me.id]),
+        pay: await q('SELECT kind, amount_cents, note, created_at FROM driver_ledger WHERE driver_id = $1 ORDER BY id', [me.id]),
+        trips: await q('SELECT ref, kind, service, status, pickup_address, dropoff_address, accepted_at, completed_at, final_cents FROM trips WHERE driver_id = $1 ORDER BY requested_at DESC', [me.id]),
+        online_sessions: await opt(q('SELECT started_at, ended_at, end_reason FROM driver_online_sessions WHERE driver_id = $1 ORDER BY started_at', [me.id]), []),
+      };
+    }
+    await recordPrivacyRequest({ user_id: me.id, kind: 'access', channel: 'app', status: 'completed' }).catch((e) => logError('privacy request', e));
     return { exported_at: new Date().toISOString(), user: publicUser(user), trips, loyalty, messages, marketing_consents, notification_prefs, booking_consents,
-      safety_reports, check_ins, account_actions };
+      safety_reports, check_ins, account_actions, driver };
   });
 
   app.post('/me/push-token', async (req) => {

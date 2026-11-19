@@ -110,6 +110,20 @@ export const patch = <T = any>(p: string, b?: unknown) => api<T>('PATCH', p, b ?
 export const put = <T = any>(p: string, b?: unknown) => api<T>('PUT', p, b ?? {});
 export const del = <T = any>(p: string) => api<T>('DELETE', p);
 
+/** Download a file the API makes (CSV statement, PDF invoice) with the signed-in token; the file name comes from the server. */
+export async function downloadFile(path: string, fallbackName = 'dingogo-download') {
+  const r = await fetch(BASE + path, { headers: token ? { authorization: `Bearer ${token}` } : {} });
+  if (!r.ok) {
+    const j = await r.json().catch(() => null);
+    throw new ApiError(r.status, j?.error ?? 'download_failed', j?.message ?? 'Could not download the file');
+  }
+  const name = /filename="([^"]+)"/.exec(r.headers.get('content-disposition') ?? '')?.[1] ?? fallbackName;
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(await r.blob());
+  a.download = name; document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
 /** Phone OTP sign-in. In dev the API returns dev_code and "000000" always works. */
 export async function requestOtp(phone: string) { return post<{ ok: boolean; phone: string; dev_code?: string }>('/auth/otp/request', { phone }); }
 export async function verifyOtp(phone: string, code: string, extra: { name?: string; referral_code?: string; app?: string } = {}) {

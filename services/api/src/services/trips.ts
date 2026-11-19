@@ -770,6 +770,7 @@ export async function dispatchTick() {
     await autoEarningsFloor().catch((e) => logError('earnings floor', e));
     await sendDocExpiryReminders().catch((e) => logError('document reminders', e));
     await safety.runSafetyChecks().catch((e) => logError('safety checks', e));
+    await (await import('./tax.js')).runRetentionIfDue().catch((e) => logError('record retention', e));
 
     const open = await q(`SELECT id FROM trips WHERE status = 'requested' ORDER BY requested_at LIMIT 50`);
     for (const t of open) await dispatchTrip(t.id).catch((e) => logError('dispatch', e));

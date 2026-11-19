@@ -19,6 +19,7 @@ import { expiringDocs } from '../services/docExpiry.js';
 import type { FastifyRequest } from 'fastify';
 import { ApiError } from '../lib/errors.js';
 import { LEAVE_KINDS, communityPending, communityReady, type LeaveKind } from '../lib/community.js';
+import { abnValid, missingSellerDetails, taxReady } from '../lib/tax.js';
 import { enforceFatigue, onlineBlock, sessionOnline, textContactsOnAlert } from '../services/safety.js';
 
 /** Put a driver on leave (Sorry Business, cultural business, family): offline at once, any request on screen goes to the next
@@ -114,8 +115,10 @@ export default async function driverRoutes(app: FastifyInstance) {
        FROM trip_offers WHERE driver_id = $1 AND offered_at > now() - interval '30 days'`, [me.id]);
     // Cancelling after accepting (for the driver's own reasons) this many times in 7 days is reviewed by DingoGo.
     acceptance!.cancel_review_at = config.dispatch.driverCancelFlagCount;
+    // Round 16: what the ATO's SERR report still needs from this driver (banner in the app).
+    const tax_missing = d && (await taxReady()) ? missingSellerDetails(d) : [];
     if (d) { delete d.bank_account; }
-    return { driver: d, documents: docs, today, acceptance, compliance_issues: await complianceIssues(me.id), expiring: await expiringDocs(me.id) };
+    return { driver: d, tax_missing, documents: docs, today, acceptance, compliance_issues: await complianceIssues(me.id), expiring: await expiringDocs(me.id) };
   });
 
   app.patch('/driver/me', async (req) => {
@@ -124,7 +127,8 @@ export default async function driverRoutes(app: FastifyInstance) {
       // Expiry dates are set only by DingoGo when a document is reviewed — drivers cannot extend their own credentials.
       licence_no: z.string().max(20).optional(),
       cpv_authority_no: z.string().max(20).optional(),
-      abn: z.string().regex(/^\d{11}$/, 'ABN is 11 digits').optional(), gst_registered: z.boolean().optional(),
+      abn: z.string().transform((s) => s.replace(/\s/g, '')).pipe(z.string().regex(/^\d{11}$/, 'ABN is 11 digits'))
+        .refine(abnValid, 'That ABN doesn’t pass the ATO check. Look it up on abr.business.gov.au').optional(), gst_registered: z.boolean().optional(),
       bank_bsb: z.string().regex(/^\d{6}$/).optional(), bank_account: z.string().regex(/^\d{5,10}$/).optional(),
       languages: z.array(z.string().max(20)).max(6).optional(), bio: z.string().max(300).optional(),
       accepts_courier: z.boolean().optional(), accepts_pets: z.boolean().optional(), female_driver: z.boolean().optional(),
@@ -548,8 +552,9 @@ export default async function driverRoutes(app: FastifyInstance) {
         fuel_surcharge_cents: rules.fuel_surcharge.enabled ? rules.fuel_surcharge.cents : null,
         earnings_floor_cents_per_hour: rules.earnings_floor.enabled ? rules.earnings_floor.cents_per_engaged_hour : null,
       },
-      // GST: drivers are GST-registered; 1/11 of what riders pay them for the trip (fare, pickup pay, fuel surcharge) is GST for their BAS.
-      gst_on_fares_cents: Math.round((v('fare') + v('pickup_pay') + v('fuel_surcharge')) / 11),
+      // GST: drivers are GST-registered; 1/11 of what riders pay them for the trip (fare, pickup pay, fuel surcharge, their share of
+      // cancellation fees) is GST for their BAS — the same G1 as the quarterly statement (GET /driver/tax/statement).
+      gst_on_fares_cents: Math.round((v('fare') + v('pickup_pay') + v('fuel_surcharge') + v('cancel_fee')) / 11),
     };
   });
 

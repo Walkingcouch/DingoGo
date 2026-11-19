@@ -21,6 +21,7 @@ import Business from './pages/Business';
 import Safety from './pages/Safety';
 import Support from './pages/Support';
 import Reports from './pages/Reports';
+import Tax from './pages/Tax';
 import Settings from './pages/Settings';
 
 initAuth('admin');
@@ -34,7 +35,7 @@ const NAV: { group: string; items: { to: string; label: string; icon: string; ba
     { to: '/drivers', label: 'Drivers', icon: 'users', badge: 'drivers' }, { to: '/fleet', label: 'Fleet & charging', icon: 'car', badge: 'cars' }, { to: '/business', label: 'Business accounts', icon: 'receipt' }] },
   { group: 'Commercial', items: [
     { to: '/pricing', label: 'Pricing & tours', icon: 'cash' }, { to: '/loyalty', label: 'Loyalty & vouchers', icon: 'gift' }, { to: '/ads', label: 'Roof advertising', icon: 'bolt' }] },
-  { group: 'Admin', items: [{ to: '/reports', label: 'Reports', icon: 'document' }, { to: '/settings', label: 'Settings & broadcast', icon: 'settings' }] },
+  { group: 'Admin', items: [{ to: '/reports', label: 'Reports', icon: 'document' }, { to: '/tax', label: 'Tax & compliance', icon: 'receipt' }, { to: '/settings', label: 'Settings & broadcast', icon: 'settings' }] },
 ];
 
 const GO: Record<string, string> = { l: '/live', d: '/dashboard', t: '/trips', s: '/safety', i: '/support', r: '/drivers', f: '/fleet' };
@@ -146,6 +147,7 @@ function Shell({ me, onSignOut }: { me: any; onSignOut: () => void }) {
             <Route path="/safety" element={<Safety />} />
             <Route path="/support" element={<Support />} />
             <Route path="/reports" element={<Reports />} />
+            <Route path="/tax" element={<Tax />} />
             <Route path="/settings" element={<Settings />} />
             <Route path="*" element={<Navigate to="/live" replace />} />
           </Routes>

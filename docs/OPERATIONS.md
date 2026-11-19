@@ -146,3 +146,25 @@ Migration `019_safety.sql` turns them on (AUTO_MIGRATE applies it). Until then S
   without it the card gives the nearest landmark and GPS.
 - **Account standing:** Settings → Users → Standing (or from a report) to suspend (optionally until a date), ban, warn or lift. People who are
   restricted see the reason at sign-in and can appeal; the private note is never shown to them.
+
+## 8. Tax, compliance and record keeping (Round 16)
+
+Migration `020_tax_compliance.sql` (AUTO_MIGRATE applies it). Before it, statements, the BAS worksheet, SERR and levy returns still work (driver
+names, birth dates and addresses show as missing); lodgement records and the privacy register say "needs migration 020". Admin → Tax & compliance.
+
+- **First:** enter DingoGo's real ABN and legal name in the `business` setting (it is `TBC` in the base data): fee tax invoices say "draft" and the
+  SERR report has no operator ABN until then. Ask drivers to complete Profile → Tax details (Tax → SERR → "Remind them all").
+- **Every month (by the 21st, a setting — confirm the real date with the NT Government):** Tax → Levy returns → download last month's PDF/CSV,
+  lodge and pay, then "Mark lodged" with the receipt number. SA returns are ready for when SA launches.
+- **Every quarter:** Tax → BAS → download the worksheet for the accountant (due the 28th of the month after the quarter; Oct–Dec is due 28 Feb).
+  Drivers download their own GST statement and DingoGo's tax invoice for fees in the driver app (Earnings → GST and your BAS).
+- **Twice a year (SERR):** January–June by **31 July**, July–December by **31 January**: Tax → SERR → download the CSV (it holds full bank
+  details: store it encrypted, delete the local copy after lodging) and lodge it in the ATO's SERR XML format through the accounting software or the
+  ATO's online services. Chase drivers listed under Missing details first.
+- **NDIS:** set the support item number and GST code (Tax → NDIS invoices) after checking the current NDIS Pricing Arrangements with the
+  accountant; add the provider registration number only if DingoGo becomes NDIS-registered (that also enables the NDIA bulk claim file).
+- **Record keeping:** tax records (trips, payments, driver pay, invoices, audit log) are kept at least 5 years and never removed by the job. Old
+  GPS tracks, chat, comms log, notifications and sign-in logs are removed per the policy (Tax → Record keeping; manual until "automatically" is
+  ticked). A deleted driver's tax details are kept apart until 30 June five years after their last payment's financial year, then removed.
+- **Privacy requests:** log requests that come by email, phone or letter in Tax → Privacy requests and close them within 30 days with the outcome;
+  in-app downloads and deletions appear there automatically.

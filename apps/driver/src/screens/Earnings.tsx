@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { get, money, dayName, useLoad, Ranges, Icon } from '@dingogo/shared';
 import { FEE_BASIS } from '../state';
+import { TaxStatements } from './Tax';
 
 const KIND: Record<string, string> = {
   fare: 'Fares', commission: 'DingoGo fee', pickup_pay: 'Pickup pay', fuel_surcharge: 'Fuel surcharge', cancel_fee: 'Cancellation fees',
@@ -115,8 +116,10 @@ export function Earnings() {
           <section className="panel">
             <div className="info-row"><span>Balance to be paid</span><strong className="dg-money">{money(data.balance_cents)}</strong></div>
             {Number(data.gst_on_fares_cents) > 0 && <div className="info-row"><span>GST in your trip pay</span><strong className="dg-money">{money(data.gst_on_fares_cents)}</strong></div>}
-            <p className="fine-print"><Icon name="info" size={16} />Set the GST (1/11 of fares, pickup pay and fuel surcharge) aside for your BAS. Cash you collect comes off what DingoGo pays you.</p>
+            <p className="fine-print"><Icon name="info" size={16} />Set the GST (1/11 of fares, pickup pay, fuel surcharge and cancellation fees) aside for your BAS. Cash you collect comes off what DingoGo pays you.</p>
           </section>
+
+          <TaxStatements />
 
           {(data.ledger ?? []).length > 0 && <h2>Recent activity</h2>}
           <ul className="list">

@@ -113,7 +113,7 @@ export function AskProvider({ children }: { children: ReactNode }) {
   );
 }
 
-/** Download a server-made CSV (signed-in request, so not a plain link). */
+/** Download a server-made CSV or PDF (signed-in request, so not a plain link); the file name comes from the server. */
 export async function downloadCsv(path: string) {
   const r = await fetch(apiBase() + path, { headers: { authorization: `Bearer ${getToken()}` } });
   if (!r.ok) {
@@ -126,6 +126,8 @@ export async function downloadCsv(path: string) {
   a.download = name; document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
+
+export const downloadFile = downloadCsv;
 
 export const Loading = () => <p className="dg-muted">Loading…</p>;
 export const ErrorMsg = ({ error }: { error: string | null }) => (error ? <p className="dg-error" role="alert">{error}</p> : null);

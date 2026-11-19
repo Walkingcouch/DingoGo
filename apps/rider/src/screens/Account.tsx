@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link, Route, Routes, useNavigate, useSearchParams } from 'react-router-dom';
-import { Acknowledgement, ApiError, DraftNotice, Icon, MyReports, NotifySettings, SafetyReportForm, TrustedContacts, ago, date, del, get, langInfo, money, normaliseLang, patch, post, put, t, useLoad, Ranges } from '@dingogo/shared';
+import { Acknowledgement, ApiError, DraftNotice, Icon, downloadFile, MyReports, NotifySettings, SafetyReportForm, TrustedContacts, ago, date, del, get, langInfo, money, normaliseLang, patch, post, put, t, useLoad, Ranges } from '@dingogo/shared';
 import { Dialog, Page, Spinner } from '../components/ui';
 import { useMe } from '../ctx';
 import { CLIENT_KINDS } from './Clients';
@@ -275,6 +275,7 @@ function Payment() {
           <button className="dg-btn dg-btn--dark" disabled={busy || code.length < 6}>Add to credit</button>
         </form>
       </section>
+      <NdisInvoices />
       <Dialog open={!!removing} onClose={() => setRemoving(null)} title="Remove this card?">
         <p>{removing ? `${removing.brand} ending ${removing.last4}` : ''} will be removed from DingoGo.{removing?.is_default && methods.length > 1 ? ' Your newest other card becomes the default.' : ''}</p>
         <div className="tips__row">
@@ -506,5 +507,30 @@ function Organisations() {
         <ul className="list">{past.map((c) => <li key={c.id} className="row"><span className="row__main"><strong>{c.organisation}</strong>
           <span className="dg-muted">{c.withdrawn_at ? `Stopped ${date(c.withdrawn_at)}` : `Ended ${date(c.expires_at)}`}</span></span></li>)}</ul></>}
     </Page>
+  );
+}
+
+/** Round 16: monthly NDIS invoices for trips booked with an NDIS number (last 3 months), for self-managed participants and plan managers. */
+function NdisInvoices() {
+  const months = [0, 1, 2].map((b) => { const d = new Date(Date.now() + 9.5 * 3600e3); d.setUTCDate(1); d.setUTCMonth(d.getUTCMonth() - b); return d.toISOString().slice(0, 7); });
+  const { data } = useLoad(() => Promise.all(months.map((m) => get(`/me/ndis-invoice?month=${m}`).catch(() => null))), []);
+  const [err, setErr] = useState<string | null>(null);
+  const rows = (data ?? []).flatMap((r: any) => (r?.invoices ?? []).map((i: any) => ({ ...i, month: r.period.key, label: r.period.label })));
+  if (!rows.length) return null;
+  return (
+    <section className="section" aria-labelledby="ndis-h">
+      <h2 className="section__title" id="ndis-h">NDIS invoices</h2>
+      <p className="dg-muted" style={{ marginTop: 0 }}>One invoice a month for trips booked with your NDIS number. Send it to your plan manager or claim it yourself.</p>
+      <ul className="list">
+        {rows.map((i: any) => (
+          <li key={i.number} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+            <span>{i.label}: {i.lines.length} trip{i.lines.length === 1 ? '' : 's'}, {money(i.total_cents)}</span>
+            <button className="dg-btn dg-btn--ghost dg-btn--sm" onClick={() => { setErr(null); downloadFile(`/me/ndis-invoice?month=${i.month}&format=pdf`).catch((e) => setErr(e instanceof ApiError ? e.message : 'Could not download')); }}>
+              <Icon name="document" size={18} />Invoice</button>
+          </li>
+        ))}
+      </ul>
+      {err && <p className="dg-error" role="alert">{err}</p>}
+    </section>
   );
 }

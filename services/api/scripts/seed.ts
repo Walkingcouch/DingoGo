@@ -59,13 +59,21 @@ const drivers = [
   { phone: '+61400000013', name: 'Ben Okafor', v: v3, lat: -23.6920, lng: 133.8900, pets: false, female: false, langs: ['en'] },
 ];
 const driverRows: any[] = [];
+/** A made-up ABN that passes the ATO check (demo data only). */
+function validAbn(): string {
+  const w = [10, 1, 3, 5, 7, 9, 11, 13, 15, 17, 19];
+  for (;;) {
+    const d = String(10_000_000_000 + Math.floor(Math.random() * 89_999_999_999)).split('').map(Number);
+    if (d.reduce((n, x, i) => n + (x - (i === 0 ? 1 : 0)) * w[i], 0) % 89 === 0) return d.join('');
+  }
+}
 for (const d of drivers) {
   const u = await user(d.phone, d.name, 'driver', { email: `${d.name.split(' ')[0].toLowerCase()}@example.com` });
   await q(`INSERT INTO drivers (user_id, status, vehicle_id, licence_no, licence_expiry, cpv_authority_no, h_endorsement_expiry, abn, gst_registered,
              bank_bsb, bank_account, languages, accepts_pets, female_driver, police_check_date, medical_date, da_training_date, lat, lng, last_seen_at, bio)
            VALUES ($1,'approved',$2,$3,$4,$5,$4,$6,true,'085001','123456',$7,$8,$9,$10,$10,$10,$11,$12, now(), $13)`,
     [u.id, d.v.id, `NT${Math.floor(1e6 + Math.random() * 9e6)}`, plusDays(700), `H${Math.floor(1e5 + Math.random() * 9e5)}`,
-      String(51824753556 + Math.floor(Math.random() * 1000)), d.langs, d.pets, d.female, plusDays(-30), d.lat, d.lng,
+      validAbn(), d.langs, d.pets, d.female, plusDays(-30), d.lat, d.lng,
       `Local driver, ${d.langs.join(' & ')} speaker.`]);
   // NT driver documents (jurisdictions.driver_docs for NT) + disability awareness
   for (const type of ['licence', 'h_endorsement', 'cpvid', 'police_check', 'medical', 'abn', 'gst', 'disability_awareness']) {
@@ -74,6 +82,9 @@ for (const d of drivers) {
   }
   driverRows.push(u);
 }
+// Round 16: the first demo driver has full tax details for the ATO's SERR report; the others show up as missing details.
+await q(`UPDATE drivers SET given_name = 'Tjala', family_name = 'Kemarre', date_of_birth = '1985-03-14', address_line = '12 Example St',
+           suburb = 'Gillen', postcode = '0870', address_state = 'NT', tax_details_updated_at = now() WHERE user_id = $1`, [driverRows[0].id]);
 // An applicant awaiting review
 const applicant = await user('+61400000014', 'Jordan Pepperill', 'driver');
 await q(`INSERT INTO drivers (user_id, status, licence_no, abn) VALUES ($1, 'pending_documents', 'NT7712345', '51824753999')`, [applicant.id]);
