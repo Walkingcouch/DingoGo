@@ -25,6 +25,7 @@ import healthRoutes from './routes/health.js';
 import businessRoutes from './routes/business.js';
 import clientRoutes from './routes/clients.js';
 import communityRoutes from './routes/community.js';
+import safetyRoutes from './routes/safety.js';
 import { log, logError, reportError, requestId, safePath } from './lib/log.js';
 import { autoMigrateOnce } from './lib/bootstrap.js';
 
@@ -180,6 +181,7 @@ export async function buildServer() {
   await app.register(businessRoutes);
   await app.register(clientRoutes);
   await app.register(communityRoutes);
+  await app.register(safetyRoutes);
   return app;
 }
 

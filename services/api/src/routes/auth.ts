@@ -2,7 +2,9 @@ import type { FastifyInstance } from 'fastify';
 import crypto from 'node:crypto';
 import { config } from '../config.js';
 import { one, q, tx } from '../db.js';
-import { requireUser, signToken } from '../auth.js';
+import { requireUser, signAppealToken, signToken } from '../auth.js';
+import { currentRestriction, liftIfEnded } from '../services/safety.js';
+import { safetyReady } from '../lib/safety.js';
 import { bad, ApiError } from '../lib/errors.js';
 import { referralCode, sha256 } from '../lib/ids.js';
 import { parse, phone, z } from '../lib/validate.js';
@@ -26,6 +28,7 @@ const publicUser = (u: any) => ({
   accessibility: u.accessibility, emergency_contact: u.emergency_contact, referral_code: u.referral_code,
   loyalty_points: u.loyalty_points, wallet_cents: u.wallet_cents, marketing_opt_in: u.marketing_opt_in,
   rating_avg: u.rating_avg, partner_id: u.partner_id, created_at: u.created_at, concession: u.concession ?? null,
+  trusted_contacts: u.trusted_contacts ?? [], auto_share: u.auto_share ?? 'off',
 });
 
 // Demo sign-in only for the exact seeded demo numbers, and only when demo mode is switched on (OTP_DEMO_PREFIXES set).
@@ -115,6 +118,14 @@ export default async function authRoutes(app: FastifyInstance) {
       if (body.app === 'partner' && u.role !== 'partner' && u.role !== 'admin') throw new ApiError(403, 'forbidden', 'This account is not linked to a partner business');
       return { ...u, isNew };
     });
+    // Suspended or banned: no sign-in. They see why, and get a short token that can only ask us to look again (/appeal).
+    if (user.blocked && !(await liftIfEnded(user.id))) {
+      const r = await currentRestriction(user.id);
+      throw new ApiError(403, 'account_restricted', r?.public_reason ?? 'This account is on hold. Please call DingoGo.', {
+        kind: r?.action ?? 'ban', reason: r?.public_reason ?? null, until: r?.until ?? null,
+        appeal_token: (await safetyReady()) ? signAppealToken(user.id) : null,
+      });
+    }
     return { token: signToken(user), user: publicUser(user), is_new: user.isNew };
   });
 
@@ -161,6 +172,7 @@ export default async function authRoutes(app: FastifyInstance) {
     await setMarketing(me.id, false, 'app', req.ip);   // the withdrawal is recorded before the number is removed
     await q(`UPDATE users SET name = 'Deleted user', email = NULL, phone = 'deleted:' || id::text, emergency_contact = NULL,
              accessibility = '{}'::jsonb, marketing_opt_in = false, deleted_at = now() WHERE id = $1`, [me.id]);
+    if (await safetyReady()) await q(`UPDATE users SET trusted_contacts = '[]'::jsonb, auto_share = 'off' WHERE id = $1`, [me.id]);
     await q('DELETE FROM push_tokens WHERE user_id = $1', [me.id]);
     await q('UPDATE drivers SET online = false WHERE user_id = $1', [me.id]);
     await withdrawOffers(me.id);
@@ -184,7 +196,12 @@ export default async function authRoutes(app: FastifyInstance) {
     // Round 12: organisations I let book rides for me (migration 017).
     const booking_consents = await opt(q(`SELECT a.name AS organisation, c.method, c.given_at, c.expires_at, c.withdrawn_at FROM client_consents c
       JOIN corporate_accounts a ON a.id = c.account_id WHERE c.client_id = $1 ORDER BY c.given_at`, [me.id]), []);
-    return { exported_at: new Date().toISOString(), user: publicUser(user), trips, loyalty, messages, marketing_consents, notification_prefs, booking_consents };
+    // Round 14: my safety reports, check-ins and account standing (migration 019). Trusted contacts are on `user`.
+    const safety_reports = await opt(q(`SELECT ref, category, status, outcome, description, created_at FROM incident_reports WHERE reporter_id = $1 ORDER BY created_at`, [me.id]), []);
+    const check_ins = await opt(q(`SELECT reason, status, created_at, answered_at FROM safety_checks WHERE user_id = $1 ORDER BY created_at`, [me.id]), []);
+    const account_actions = await opt(q(`SELECT action, public_reason, until, created_at FROM account_actions WHERE user_id = $1 ORDER BY created_at`, [me.id]), []);
+    return { exported_at: new Date().toISOString(), user: publicUser(user), trips, loyalty, messages, marketing_consents, notification_prefs, booking_consents,
+      safety_reports, check_ins, account_actions };
   });
 
   app.post('/me/push-token', async (req) => {

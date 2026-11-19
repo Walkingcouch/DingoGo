@@ -3003,3 +3003,505 @@ test('before migration 018: driver applications are still taken (no status link)
     resetApplicationsReady();
   }
 });
+
+// ───────────── Round 14: safety and trust ─────────────
+const textCount = async (template: string, tripId?: string) =>
+  (await one<{ n: number }>(`SELECT count(*)::int n FROM comms_log WHERE template = $1 ${tripId ? 'AND trip_id = $2' : ''}`, tripId ? [template, tripId] : [template]))!.n;
+async function rideInProgress() {
+  await clearOpenTrips();
+  await onlyOnline(['d1']);
+  const t = await call('POST', '/trips', 'rider', { kind: 'ride', service: 'ride', pickup: TODD_MALL, dropoff: HOSPITAL, payment_method: 'card' });
+  assert.equal(t.status, 201, JSON.stringify(t));
+  await waitForOffer('d1');
+  assert.equal((await call('POST', `/driver/offers/${t.trip.id}/accept`, 'd1')).status, 200);
+  await call('POST', `/driver/trips/${t.trip.id}/arrive`, 'd1');
+  const pin = (await one('SELECT verify_pin FROM trips WHERE id = $1', [t.trip.id])).verify_pin;
+  assert.equal((await call('POST', `/driver/trips/${t.trip.id}/start`, 'd1', { pin })).trip.status, 'in_progress');
+  return t.trip;
+}
+const setPolicy = async (v: any) => { const r = await call('PUT', '/admin/safety/policy', 'admin', v); assert.equal(r.status, 200, JSON.stringify(r)); return r.policy; };
+const resetPolicy = () => q(`DELETE FROM settings WHERE key = 'safety_policy'`);
+/** Sign in with the dev code (no new code request: those are limited to one per 30 s per number). */
+const code0 = (phone: string) => call('POST', '/auth/otp/verify', undefined, { phone, code: '000000' }, `10.214.${++loginIp % 250}.9`);
+const SELFIE = 'data:image/jpeg;base64,' + Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 16, 0x4a, 0x46, 0x49, 0x46, 0, 1, 1, 0, 0, 1, 0, 1, 0, 0, 0xff, 0xd9]).toString('base64');
+
+test('safety rules: fatigue limits and breaks, policy validation, night window, contacts list', async () => {
+  const { fatigueStatus, checkSafetyPolicy, SAFETY_POLICY_DEFAULTS, isNight, contactsOf, darwinHour } = await import('../src/lib/safety.js');
+  const p = SAFETY_POLICY_DEFAULTS.fatigue;           // 12 h in 24 h then a 6 h rest; 20 min break after 5 h
+  const now = new Date('2026-11-19T12:00:00Z');
+  const h = (n: number) => new Date(now.getTime() - n * 3600e3).toISOString();
+  // Online 4 h 50 min straight: 10 min left before a break.
+  let s = fatigueStatus([{ started_at: h(4 + 50 / 60), ended_at: null }], p, now);
+  assert.deepEqual([s.reason, s.minutes_left, s.continuous_min], [null, 10, 290]);
+  // 5 h straight, now offline 5 min: break needed until 20 min after stopping. A 10-minute gap doesn't count as a break.
+  s = fatigueStatus([{ started_at: h(5 + 5 / 60), ended_at: h(5 / 60) }], p, now);
+  assert.equal(s.reason, 'break');
+  assert.equal(s.rest_until, new Date(now.getTime() + 15 * 60e3).toISOString());
+  s = fatigueStatus([{ started_at: h(5), ended_at: h(3) }, { started_at: h(3 - 10 / 60), ended_at: null }], p, now);
+  assert.equal(s.continuous_min, 300, 'short gap: still one stretch (5 h since it started)');
+  // After a 30-minute break the stretch starts again.
+  s = fatigueStatus([{ started_at: h(7), ended_at: h(3) }, { started_at: h(2.5), ended_at: null }], p, now);
+  assert.deepEqual([s.reason, s.continuous_min, s.online_min_24h], [null, 150, 390]);
+  // 12 h online in short stretches with breaks: the daily limit, then a 6 h rest. A 6 h rest resets the count.
+  const day = [0, 1, 2, 3].map((i) => ({ started_at: h(14 - i * 3.5), ended_at: h(14 - i * 3.5 - 3) }));
+  s = fatigueStatus(day, p, now);
+  assert.deepEqual([s.online_min_24h, s.reason], [720, 'daily_limit']);
+  assert.equal(s.rest_until, new Date(Date.parse(day[3].ended_at) + 360 * 60e3).toISOString());
+  s = fatigueStatus(day, p, new Date(Date.parse(day[3].ended_at) + 361 * 60e3));
+  assert.deepEqual([s.reason, s.rest_until, s.online_min_24h], [null, null, 0], 'rested: free to go online');
+  assert.equal(fatigueStatus(day, { ...p, enabled: false }, now).reason, null);
+  // Policy: validated with clear messages, defaults filled in.
+  assert.deepEqual(checkSafetyPolicy({}).fatigue, p);
+  assert.throws(() => checkSafetyPolicy({ fatigue: { max_online_min_24h: 2000 } }), /daily|24 hours/i);
+  assert.throws(() => checkSafetyPolicy({ identity_check: { mode: 'retina' } }), /Photo check/);
+  assert.throws(() => checkSafetyPolicy({ fatigue: { break_after_min: 480, max_online_min_24h: 300 } }), /before the daily limit/);
+  // Night window wraps past midnight (Darwin time).
+  assert.equal(isNight({ from_hour: 21, to_hour: 6 }, new Date('2026-11-19T13:00:00Z')), true, '10:30 pm');
+  assert.equal(isNight({ from_hour: 21, to_hour: 6 }, new Date('2026-11-19T03:00:00Z')), false, '12:30 pm');
+  assert.equal(darwinHour(new Date('2026-11-19T13:00:00Z')), 22);
+  // Contacts: trusted contacts + the emergency contact, one per number.
+  assert.deepEqual(contactsOf({ trusted_contacts: [{ name: 'A', phone: '+61411000001' }], emergency_contact: { name: 'A again', phone: '+614 1100 0001' } }).length, 1);
+});
+
+test('trusted contacts: validated; trips shared automatically (always / at night) or on demand; SOS texts every contact; driver SOS gives the car position only', async () => {
+  const mine = [{ name: 'Aunty May', phone: '0411 000 001' }, { name: 'Jo', phone: '+61411000002' }];
+  assert.equal((await call('PUT', '/me/safety', 'rider', { trusted_contacts: [{ name: 'Me', phone: '0400 000 100' }] })).status, 400, 'not your own number');
+  assert.equal((await call('PUT', '/me/safety', 'rider', { trusted_contacts: [mine[0], mine[0]] })).status, 400, 'no duplicates');
+  assert.equal((await call('PUT', '/me/safety', 'rider', { trusted_contacts: Array.from({ length: 6 }, (_, i) => ({ name: `C${i}`, phone: `+6141100010${i}` })) })).status, 400);
+  assert.equal((await call('PUT', '/me/safety', 'rider', { auto_share: 'sometimes' })).status, 400);
+  const saved = await call('PUT', '/me/safety', 'rider', { trusted_contacts: mine, auto_share: 'night' });
+  assert.deepEqual([saved.status, saved.trusted_contacts[0].phone, saved.auto_share], [200, '+61411000001', 'night']);
+  const { darwinHour } = await import('../src/lib/safety.js');
+  const hr = darwinHour();
+  try {
+    // Night trips only, and it's not night: nothing sent.
+    await setPolicy({ night: { from_hour: (hr + 2) % 24, to_hour: (hr + 3) % 24 } });
+    let trip = await rideInProgress();
+    await flushBackground(3000);
+    assert.equal(await textCount('trip_shared', trip.id), 0);
+    // It's night: shared when the driver accepts.
+    await setPolicy({ night: { from_hour: hr, to_hour: (hr + 1) % 24 } });
+    trip = await rideInProgress();
+    await flushBackground(3000);
+    assert.equal(await textCount('trip_shared', trip.id), 2, 'both contacts texted the live link');
+    const ev = await one(`SELECT data FROM trip_events WHERE trip_id = $1 AND type = 'shared_with_contacts'`, [trip.id]);
+    assert.deepEqual([ev.data.count, ev.data.auto], [2, true], 'no phone numbers on the timeline');
+    assert.equal((await call('GET', '/me/safety', 'rider')).trusted_contacts.length, 2);
+    // On demand, at most 3 times a trip; strangers can't.
+    for (let i = 0; i < 3; i++) assert.equal((await call('POST', `/trips/${trip.id}/share-contacts`, 'rider')).sent, 2);
+    assert.equal((await call('POST', `/trips/${trip.id}/share-contacts`, 'rider')).status, 429);
+    assert.equal((await call('POST', `/trips/${trip.id}/share-contacts`, 'd2')).status, 404);
+    // SOS: trusted contacts and the emergency contact (one text each).
+    const sos = await call('POST', `/trips/${trip.id}/sos`, 'rider', { lat: -23.70, lng: 133.88 });
+    assert.deepEqual([sos.status, sos.contacts_texted], [200, 3]);
+    await flushBackground(3000);
+    assert.equal(await textCount('sos_contact', trip.id), 3);
+    // Driver SOS: on the trip timeline; the driver's contact gets a map link to the car, never the rider's trip link.
+    assert.equal((await call('PUT', '/me/safety', 'd1', { trusted_contacts: [{ name: 'Partner', phone: '0411 000 009' }] })).status, 200);
+    await withComms(async () => {
+      comms.sms = [];
+      const d = await call('POST', '/driver/sos', 'd1', { lat: -23.71, lng: 133.87, message: 'Passenger threatening' });
+      assert.deepEqual([d.status, d.contacts_texted], [200, 1]);
+      await flushBackground(3000);
+      const text = comms.sms.find((x) => x.params.To === '+61411000009')!;
+      assert.match(text.params.Body, /maps\.google\.com\/\?q=-23\.71000,133\.87000/);
+      assert.ok(!text.params.Body.includes('/track/'), 'no trip link (the rider\'s addresses)');
+    });
+    assert.ok(await one(`SELECT 1 FROM trip_events WHERE trip_id = $1 AND type = 'sos' AND data->>'role' = 'driver'`, [trip.id]));
+    // "Every trip": shared even by day.
+    await call('PUT', '/me/safety', 'rider', { auto_share: 'always' });
+    await setPolicy({ night: { from_hour: (hr + 2) % 24, to_hour: (hr + 3) % 24 } });
+    trip = await rideInProgress();
+    await flushBackground(3000);
+    assert.equal(await textCount('trip_shared', trip.id), 2);
+    assert.equal((await call('GET', '/me/export', 'rider')).user.trusted_contacts.length, 2, 'in the data export');
+  } finally {
+    await call('PUT', '/me/safety', 'rider', { trusted_contacts: [], auto_share: 'off' });
+    await call('PUT', '/me/safety', 'd1', { trusted_contacts: [] });
+    await resetPolicy();
+    await q(`UPDATE sos_alerts SET status = 'resolved' WHERE status <> 'resolved'`);
+    await clearOpenTrips();
+  }
+});
+
+test('check-ins: a long stop asks "Are you OK?"; OK closes it; no answer or "Get help" raises an SOS and texts contacts; route deviation and ops ask too', async () => {
+  const { runSafetyChecks } = await import('../src/services/safety.js');
+  await call('PUT', '/me/safety', 'rider', { trusted_contacts: [{ name: 'Aunty May', phone: '0411 000 001' }] });
+  const STOP = { lat: -23.7300, lng: 133.8650 };   // 2.5 km past the hospital: not the pickup or drop-off
+  const stopFor = async (tripId: string, minutes: number) => {
+    await q(`UPDATE trips SET started_at = now() - interval '20 minutes' WHERE id = $1`, [tripId]);
+    await q(`INSERT INTO trip_track (trip_id, lat, lng, at) VALUES ($1,$2,$3, now() - make_interval(mins => $4)), ($1,$2,$3, now() - interval '1 minute'), ($1,$2,$3, now())`,
+      [tripId, STOP.lat, STOP.lng, minutes]);
+  };
+  try {
+    let trip = await rideInProgress();
+    // Moving car: nothing.
+    await q(`UPDATE trips SET started_at = now() - interval '20 minutes' WHERE id = $1`, [trip.id]);
+    await q(`INSERT INTO trip_track (trip_id, lat, lng, at) VALUES ($1, -23.7200, 133.8700, now() - interval '6 minutes'), ($1, $2, $3, now())`, [trip.id, STOP.lat, STOP.lng]);
+    await runSafetyChecks({ force: true });
+    assert.deepEqual((await call('GET', `/safety/checks?trip_id=${trip.id}`, 'rider')).checks, []);
+    // Stopped 6 minutes away from either end: asked.
+    await stopFor(trip.id, 6);
+    await runSafetyChecks({ force: true });
+    const [check] = (await call('GET', `/safety/checks?trip_id=${trip.id}`, 'rider')).checks;
+    assert.equal(check.reason, 'long_stop');
+    assert.ok(Date.parse(check.answer_by) > Date.now(), 'answer by');
+    await flushBackground(3000);
+    assert.ok(await one(`SELECT 1 FROM notifications WHERE user_id = (SELECT rider_id FROM trips WHERE id = $1) AND title = 'Are you OK?'`, [trip.id]));
+    await runSafetyChecks({ force: true });
+    assert.equal((await one<{ n: number }>(`SELECT count(*)::int n FROM safety_checks WHERE trip_id = $1`, [trip.id]))!.n, 1, 'asked once');
+    assert.equal((await call('POST', `/safety/checks/${check.id}`, 'd1', { answer: 'ok' })).status, 404, 'only the rider answers');
+    assert.equal((await call('POST', `/safety/checks/${check.id}`, 'rider', { answer: 'ok' })).status, 'ok');
+    assert.ok(await one(`SELECT 1 FROM trip_events WHERE trip_id = $1 AND type = 'check_in_ok'`, [trip.id]));
+
+    // No answer within the time: escalated to an SOS alert (ops runbook) and the rider's contacts are texted.
+    trip = await rideInProgress();
+    await stopFor(trip.id, 7);
+    await runSafetyChecks({ force: true });
+    const c2 = (await call('GET', `/safety/checks?trip_id=${trip.id}`, 'rider')).checks[0];
+    await q(`UPDATE safety_checks SET created_at = now() - interval '4 minutes' WHERE id = $1`, [c2.id]);
+    await runSafetyChecks({ force: true });
+    const esc = await one(`SELECT status, sos_id FROM safety_checks WHERE id = $1`, [c2.id]);
+    assert.equal(esc.status, 'escalated');
+    const alert = await one(`SELECT role, message, trip_id FROM sos_alerts WHERE id = $1`, [esc.sos_id]);
+    assert.deepEqual([alert.role, alert.trip_id], ['rider', trip.id]);
+    assert.match(alert.message, /No answer to a safety check \(long stop\)/);
+    await flushBackground(3000);
+    assert.equal(await textCount('check_in_escalated_contact', trip.id), 2, 'trusted contact + emergency contact');
+    const inc = await call('GET', `/admin/sos/${esc.sos_id}`, 'admin');
+    assert.equal(inc.status, 200, 'the usual incident view and runbook');
+    // A late "I'm OK" is recorded on the incident for ops.
+    assert.equal((await call('POST', `/safety/checks/${c2.id}`, 'rider', { answer: 'ok' })).status, 'escalated');
+    assert.ok((await call('GET', `/admin/sos/${esc.sos_id}`, 'admin')).timeline.some((e: any) => /after the check-in was escalated/.test(e.text)));
+
+    // Route deviation asks the same question; "Get help" raises an SOS at once.
+    await clearOpenTrips();
+    trip = await rideInProgress();
+    await call('POST', '/driver/location', 'd1', { lat: -23.60, lng: 133.70 });
+    const dev = (await call('GET', `/safety/checks?trip_id=${trip.id}`, 'rider')).checks[0];
+    assert.equal(dev.reason, 'route_deviation');
+    const help = await call('POST', `/safety/checks/${dev.id}`, 'rider', { answer: 'help' });
+    assert.deepEqual([help.status, help.emergency_number], ['help', '000']);
+    assert.match((await one(`SELECT message FROM sos_alerts WHERE id = $1`, [help.sos_id])).message, /Asked for help/);
+    // Ops can ask (a worried family member rang); one at a time; admin list.
+    const ask = await call('POST', `/admin/trips/${trip.id}/check-in`, 'dispatcher');
+    assert.equal(ask.check.reason, 'ops');
+    assert.equal((await call('POST', `/admin/trips/${trip.id}/check-in`, 'dispatcher')).error, 'check_pending');
+    assert.ok((await call('GET', '/admin/safety/checks', 'dispatcher')).items.some((x: any) => x.id === ask.check.id));
+    assert.equal((await call('POST', `/admin/trips/${trip.id}/check-in`, 'rider')).status, 403);
+    // Switched off: no long-stop checks.
+    await setPolicy({ check_ins: { enabled: false } });
+    trip = await rideInProgress();
+    await stopFor(trip.id, 8);
+    await runSafetyChecks({ force: true });
+    assert.deepEqual((await call('GET', `/safety/checks?trip_id=${trip.id}`, 'rider')).checks, []);
+  } finally {
+    await call('PUT', '/me/safety', 'rider', { trusted_contacts: [] });
+    await resetPolicy();
+    await q(`UPDATE safety_checks SET status = 'ok' WHERE status = 'pending'`);
+    await q(`UPDATE sos_alerts SET status = 'resolved' WHERE status <> 'resolved'`);
+    await clearOpenTrips();
+  }
+});
+
+test('fatigue: time online is recorded; over the break limit the driver goes offline after the trip, is told when to come back and can\'t go online until then', async () => {
+  const { runSafetyChecks, enforceFatigue } = await import('../src/services/safety.js');
+  const d1 = await driverId('+61400000011');
+  try {
+    await onlyOnline(['d1']);
+    assert.ok(await one(`SELECT 1 FROM driver_online_sessions WHERE driver_id = $1 AND ended_at IS NULL`, [d1]), 'session open while online');
+    // Pretend d1 has been online for 4 h 45 min: warned once, 15 min left.
+    await q(`UPDATE driver_online_sessions SET started_at = now() - interval '285 minutes', warned_at = NULL WHERE driver_id = $1 AND ended_at IS NULL`, [d1]);
+    let s = await call('GET', '/driver/safety', 'd1');
+    assert.deepEqual([s.fatigue.reason, s.fatigue.minutes_left], [null, 15]);
+    await enforceFatigue(d1); await enforceFatigue(d1);
+    await flushBackground(3000);
+    assert.equal((await one<{ n: number }>(`SELECT count(*)::int n FROM notifications WHERE user_id = $1 AND title = 'Break coming up' AND created_at > now() - interval '1 minute'`, [d1]))!.n, 1);
+    // Over the limit on a trip: kept online until it ends, then offline at once.
+    const t = await call('POST', '/trips', 'rider', { kind: 'ride', service: 'ride', pickup: TODD_MALL, dropoff: HOSPITAL, payment_method: 'card' });
+    await waitForOffer('d1');
+    await q(`UPDATE driver_online_sessions SET started_at = now() - interval '301 minutes' WHERE driver_id = $1 AND ended_at IS NULL`, [d1]);
+    await rideToEnd(t.trip.id, 'd1');
+    assert.equal((await one(`SELECT online FROM drivers WHERE user_id = $1`, [d1])).online, false, 'offline after the trip');
+    assert.equal((await one(`SELECT end_reason FROM driver_online_sessions WHERE driver_id = $1 ORDER BY id DESC LIMIT 1`, [d1])).end_reason, 'fatigue');
+    await flushBackground(3000);
+    assert.ok(await one(`SELECT 1 FROM notifications WHERE user_id = $1 AND title = 'Time for a break'`, [d1]));
+    const r = await call('POST', '/driver/online', 'd1', { online: true, lat: TODD_MALL.lat, lng: TODD_MALL.lng, battery_pct: 90 });
+    assert.deepEqual([r.status, r.error], [409, 'fatigue_rest']);
+    assert.match(r.message, /break/i);
+    assert.ok(Date.parse(r.details.fatigue.rest_until) > Date.now());
+    // The admin list shows who is resting.
+    assert.ok((await call('GET', '/admin/safety/fatigue', 'dispatcher')).items.some((x: any) => x.driver_id === d1 && x.reason === 'break'));
+    // After the break: back online.
+    await q(`UPDATE driver_online_sessions SET ended_at = now() - interval '21 minutes' WHERE driver_id = $1 AND end_reason = 'fatigue'`, [d1]);
+    assert.equal((await call('POST', '/driver/online', 'd1', { online: true, lat: TODD_MALL.lat, lng: TODD_MALL.lng, battery_pct: 90 })).status, 200);
+    // The tick also takes an idle driver offline; sessions follow the online flag whatever changed it.
+    await q(`UPDATE driver_online_sessions SET started_at = now() - interval '13 hours' WHERE driver_id = $1 AND ended_at IS NULL`, [d1]);
+    await runSafetyChecks({ force: true });
+    assert.equal((await one(`SELECT online FROM drivers WHERE user_id = $1`, [d1])).online, false);
+    assert.equal((await call('POST', '/driver/online', 'd1', { online: true, lat: TODD_MALL.lat, lng: TODD_MALL.lng, battery_pct: 90 })).message.includes('daily limit'), true);
+    // Limits off: no refusal.
+    await setPolicy({ fatigue: { enabled: false } });
+    assert.equal((await call('POST', '/driver/online', 'd1', { online: true, lat: TODD_MALL.lat, lng: TODD_MALL.lng, battery_pct: 90 })).status, 200);
+    assert.equal((await call('PUT', '/admin/safety/policy', 'dispatcher', { fatigue: { enabled: true } })).status, 403, 'admins only');
+    assert.equal((await call('PUT', '/admin/safety/policy', 'admin', { fatigue: { break_min: 2 } })).status, 400);
+    assert.ok(await one(`SELECT 1 FROM audit_log WHERE action = 'safety_policy_updated'`));
+  } finally {
+    await resetPolicy();
+    await q(`DELETE FROM driver_online_sessions WHERE driver_id = $1`, [d1]);
+    await call('POST', '/driver/online', 'd1', { online: false });
+    await clearOpenTrips();
+  }
+});
+
+test('photo check: off by default; when on, a fresh selfie of your own before going online; DingoGo reviews; not accepted takes you offline; face match when set up', async () => {
+  const d3 = await driverId('+61400000013');
+  const face = { score: 0.95, calls: 0 };
+  const srv = http.createServer((req, res) => { let b = ''; req.on('data', (c) => { b += c; }); req.on('end', () => { face.calls++; const j = JSON.parse(b); res.end(JSON.stringify(j.selfie && j.reference ? { score: face.score } : {})); }); });
+  await new Promise<void>((r) => srv.listen(0, '127.0.0.1', r));
+  const prev = { ...config.safety };
+  const selfie = async (who = 'd3') => (await call('POST', '/uploads', who, { data_url: SELFIE, purpose: 'selfie' })).url as string;
+  try {
+    await call('POST', '/driver/online', 'd3', { online: false });
+    assert.equal((await call('GET', '/driver/safety', 'd3')).identity.due, false, 'off by default');
+    await setPolicy({ identity_check: { mode: 'photo_review' } });
+    const r = await call('POST', '/driver/online', 'd3', { online: true, lat: -23.70, lng: 133.88, battery_pct: 90 });
+    assert.deepEqual([r.status, r.error], [409, 'identity_check_needed']);
+    assert.equal((await call('POST', '/uploads', 'rider', { data_url: SELFIE, purpose: 'selfie' })).status, 403, 'drivers only');
+    const other = await selfie('d2');
+    assert.equal((await call('POST', '/driver/identity-check', 'd3', { photo_url: other })).error, 'invalid_file', 'your own photo');
+    const old = await selfie();
+    await q(`UPDATE uploads SET created_at = now() - interval '11 minutes' WHERE name = $1`, [old.slice(9)]);
+    assert.equal((await call('POST', '/driver/identity-check', 'd3', { photo_url: old })).error, 'photo_too_old');
+    const p1 = await selfie();
+    const c1 = await call('POST', '/driver/identity-check', 'd3', { photo_url: p1 });
+    assert.deepEqual([c1.status, c1.check.status, c1.check.method], [201, 'pending', 'photo_review']);
+    assert.equal((await call('POST', '/driver/identity-check', 'd3', { photo_url: p1 })).error, 'photo_used');
+    assert.equal((await call('POST', '/driver/online', 'd3', { online: true, lat: -23.70, lng: 133.88, battery_pct: 90 })).status, 200, 'online while it waits for review');
+    // Private file: no plain link.
+    assert.equal((await app.inject({ method: 'GET', url: p1 })).statusCode, 401);
+    const queue = await call('GET', '/admin/identity-checks', 'dispatcher');
+    const item = queue.items.find((x: any) => x.id === c1.check.id);
+    assert.match(item.photo_url, /sig=/, 'signed for staff');
+    assert.equal((await call('PATCH', `/admin/identity-checks/${c1.check.id}`, 'dispatcher', { status: 'rejected' })).status, 400, 'say why');
+    await call('PATCH', `/admin/identity-checks/${c1.check.id}`, 'dispatcher', { status: 'rejected', note: 'Face covered' });
+    assert.equal((await one(`SELECT online FROM drivers WHERE user_id = $1`, [d3])).online, false, 'taken offline');
+    assert.equal((await call('POST', '/driver/online', 'd3', { online: true, lat: -23.70, lng: 133.88, battery_pct: 90 })).error, 'identity_check_rejected');
+    const c2 = await call('POST', '/driver/identity-check', 'd3', { photo_url: await selfie() });
+    await call('PATCH', `/admin/identity-checks/${c2.check.id}`, 'dispatcher', { status: 'approved' });
+    assert.equal((await call('POST', '/driver/online', 'd3', { online: true, lat: -23.70, lng: 133.88, battery_pct: 90 })).status, 200);
+    // Daily: yesterday's photo isn't enough.
+    await q(`UPDATE identity_checks SET created_at = created_at - interval '25 hours' WHERE driver_id = $1`, [d3]);
+    await call('POST', '/driver/online', 'd3', { online: false });
+    assert.equal((await call('POST', '/driver/online', 'd3', { online: true, lat: -23.70, lng: 133.88, battery_pct: 90 })).error, 'identity_check_needed');
+    // Face match: approved at once against the last approved photo; a poor match waits for review; provider down → review.
+    await setPolicy({ identity_check: { mode: 'face_match' } });
+    Object.assign(config.safety, { faceMatchUrl: `http://127.0.0.1:${(srv.address() as AddressInfo).port}/match`, faceMatchKey: 'k' });
+    const m1 = await call('POST', '/driver/identity-check', 'd3', { photo_url: await selfie() });
+    assert.deepEqual([m1.check.status, m1.check.method, Number(m1.check.match_score)], ['approved', 'face_match', 0.95]);
+    face.score = 0.4;
+    const m2 = await call('POST', '/driver/identity-check', 'd3', { photo_url: await selfie() });
+    assert.deepEqual([m2.check.status, Number(m2.check.match_score)], ['pending', 0.4]);
+    srv.close();
+    const m3 = await call('POST', '/driver/identity-check', 'd3', { photo_url: await selfie() });
+    assert.deepEqual([m3.check.status, m3.check.method], ['pending', 'photo_review']);
+    assert.equal(face.calls, 2);
+  } finally {
+    Object.assign(config.safety, prev);
+    srv.close();
+    await resetPolicy();
+    await q(`DELETE FROM identity_checks WHERE driver_id = $1`, [d3]);
+    await call('POST', '/driver/online', 'd3', { online: false });
+  }
+});
+
+test('safety reports: categories, private evidence, critical reports put the other person on hold; ops work the report and the reporter is told', async () => {
+  const d1 = await driverId('+61400000011');
+  try {
+    const trip = await rideInProgress();
+    const cats = await call('GET', '/safety/report-categories');
+    assert.ok(cats.categories.some((c: any) => c.key === 'wrong_driver_or_car' && c.severity === 'high'));
+    const ev = await call('POST', '/uploads', 'rider', { data_url: PNG, purpose: 'evidence' });
+    const notMine = await call('POST', '/uploads', 'd2', { data_url: PNG, purpose: 'evidence' });
+    assert.equal((await call('POST', '/safety/reports', 'rider', { trip_id: trip.id, category: 'dangerous_driving', description: 'Speeding', evidence: [] })).status, 400, 'a little more detail');
+    assert.equal((await call('POST', '/safety/reports', 'rider', { trip_id: trip.id, category: 'dangerous_driving', description: 'Speeding on Larapinta Drive', evidence: [notMine.url] })).error, 'invalid_file');
+    assert.equal((await call('POST', '/safety/reports', 'd2', { trip_id: trip.id, category: 'other', description: 'Not my trip at all here' })).status, 404);
+    // Critical while the driver is still on the trip: ops are told to hold them after it ends (no hold mid-trip).
+    const crit = await call('POST', '/safety/reports', 'rider', { trip_id: trip.id, category: 'sexual_misconduct', description: 'The driver touched me without consent', evidence: [ev.url] });
+    assert.deepEqual([crit.status, crit.report.severity, crit.report.ref.startsWith('IR-')], [201, 'critical', true]);
+    assert.ok(crit.numbers.some((n: any) => n.number === '1800 737 732'), '1800RESPECT offered');
+    assert.equal((await one(`SELECT blocked FROM users WHERE id = $1`, [d1])).blocked, false, 'not mid-trip');
+    await call('POST', `/driver/trips/${trip.id}/complete`, 'd1', {});
+    // After the trip: a second critical report puts the driver on hold at once.
+    const crit2 = await call('POST', '/safety/reports', 'rider', { trip_id: trip.id, category: 'physical_assault', description: 'He grabbed my arm when I got out' });
+    assert.equal(crit2.status, 201);
+    const held = await one(`SELECT blocked, (SELECT online FROM drivers WHERE user_id = $1) online FROM users WHERE id = $1`, [d1]);
+    assert.deepEqual([held.blocked, held.online], [true, false]);
+    assert.equal((await one(`SELECT held, status FROM incident_reports WHERE id = $1`, [crit2.report.id])).status, 'investigating');
+    const standing = await call('GET', `/admin/users/${d1}/standing`, 'dispatcher');
+    assert.deepEqual([standing.restriction.reason_code, standing.restriction.action], ['under_review', 'suspend']);
+    // Ops: list (critical first), detail with signed evidence and other reports about the same person, notes, status, outcome.
+    const list = await call('GET', '/admin/incidents', 'dispatcher');
+    assert.equal(list.items[0].severity, 'critical');
+    const det = await call('GET', `/admin/incidents/${crit.report.id}`, 'dispatcher');
+    assert.match(det.report.evidence[0].file_url, /sig=/);
+    assert.equal(det.other_reports_about_subject.length, 1);
+    assert.equal((await app.inject({ method: 'GET', url: ev.url })).statusCode, 401, 'evidence is private');
+    await call('PATCH', `/admin/incidents/${crit.report.id}`, 'dispatcher', { note: 'Called the rider, police report made' });
+    await call('PATCH', `/admin/incidents/${crit.report.id}`, 'dispatcher', { status: 'actioned', outcome: 'We have taken action on the driver\'s account.' });
+    await flushBackground(3000);
+    const told = await one(`SELECT body FROM notifications WHERE title = 'Your safety report' ORDER BY id DESC LIMIT 1`);
+    assert.match(told.body, new RegExp(crit.report.ref));
+    assert.equal((await call('GET', `/admin/incidents/${crit.report.id}`, 'dispatcher')).notes.length, 2);
+    // Reporter sees their reports (no details about the other person).
+    const mine = await call('GET', '/safety/reports', 'rider');
+    const r1 = mine.reports.find((x: any) => x.id === crit.report.id);
+    assert.deepEqual([r1.status, r1.subject_id, r1.description], ['actioned', undefined, undefined]);
+    assert.equal((await call('GET', `/admin/incidents/${crit.report.id}`, 'rider')).status, 403);
+    // Drivers report riders too; a general report (no trip) has no subject.
+    const gen = await call('POST', '/safety/reports', 'd2', { category: 'contact_after_trip', description: 'A rider keeps texting my personal number' });
+    assert.deepEqual([gen.status, gen.report.severity], [201, 'high']);
+    // Limit per day.
+    await q(`INSERT INTO rate_events (bucket, key) SELECT 'incident_report', $1 FROM generate_series(1, 10)`, [await driverId('+61400000012')]);
+    assert.equal((await call('POST', '/safety/reports', 'd2', { category: 'other', description: 'One more report for today' })).status, 429);
+  } finally {
+    await q(`UPDATE users SET blocked = false WHERE id = $1`, [d1]);
+    await q(`INSERT INTO account_actions (user_id, action, reason_code, public_reason) VALUES ($1, 'lift', 'other', 'test cleanup')`, [d1]);
+    await q(`DELETE FROM rate_events WHERE bucket = 'incident_report'`);
+    await clearOpenTrips();
+  }
+});
+
+test('restrict and appeal: suspended with a reason and end date; sign-in refused with the reason and an appeal-only token; appeal once; overturn lifts; suspensions end by themselves', async () => {
+  await login('banme', '0400 000 771');
+  const id = (await one(`SELECT id FROM users WHERE phone = '+61400000771'`)).id;
+  const admin = (await one(`SELECT id FROM users WHERE phone = '+61400000001'`)).id;
+  assert.equal((await call('POST', `/admin/users/${id}/restrict`, 'dispatcher', { action: 'suspend', reason_code: 'abuse' })).status, 403, 'admins only');
+  assert.equal((await call('POST', `/admin/users/${admin}/restrict`, 'admin', { action: 'ban', reason_code: 'other' })).status, 403, 'not yourself');
+  assert.equal((await call('POST', `/admin/users/${id}/restrict`, 'admin', { action: 'ban', reason_code: 'abuse', until: new Date(Date.now() + 864e5).toISOString() })).status, 400, 'end dates are for suspensions');
+  const until = new Date(Date.now() + 7 * 864e5).toISOString();
+  const s = await call('POST', `/admin/users/${id}/restrict`, 'admin', { action: 'suspend', reason_code: 'abuse', note: 'Swore at the driver (trip DG-TEST)', until });
+  assert.equal(s.status, 200);
+  assert.equal((await call('GET', '/me', 'banme')).status, 401, 'signed out');
+  await flushBackground(3000);
+  assert.equal((await one(`SELECT count(*)::int n FROM comms_log WHERE template = 'account_restricted' AND user_id = $1`, [id])).n, 1);
+  // Sign-in: refused with the reason (not the private note) and an appeal token.
+  const v = await code0('0400 000 771');
+  assert.deepEqual([v.status, v.error, v.details.kind], [403, 'account_restricted', 'suspend']);
+  assert.match(v.message, /Abusive/);
+  assert.ok(!JSON.stringify(v).includes('Swore'), 'private note stays private');
+  tokens.appeal = v.details.appeal_token;
+  assert.equal((await call('GET', '/me', 'appeal')).status, 401, 'the appeal token is not a sign-in');
+  const ws = await app.injectWS(`/ws?token=${tokens.appeal}`);
+  ws.send(JSON.stringify({ type: 'ping' }));
+  assert.equal(await new Promise<number>((res) => ws.on('close', (c: number) => res(c))), 4001);
+  const view = await call('GET', '/appeal', 'appeal');
+  assert.deepEqual([view.restriction.kind, Date.parse(view.restriction.until), view.appeal], ['suspend', Date.parse(until), null]);
+  assert.equal((await call('POST', '/appeal', 'appeal', { message: 'Sorry' })).status, 400);
+  const a = await call('POST', '/appeal', 'appeal', { message: 'I was upset about the fare and I apologise to the driver.' });
+  assert.equal(a.status, 201);
+  assert.equal((await call('POST', '/appeal', 'appeal', { message: 'Please look again at my account, thank you.' })).error, 'appeal_pending');
+  assert.equal((await call('GET', '/appeal', 'rider')).status, 401);
+  // Ops decide: overturn lifts the account and texts the person.
+  const queue = await call('GET', '/admin/appeals', 'dispatcher');
+  assert.ok(queue.items.some((x: any) => x.id === a.appeal.id && x.reason_code === 'abuse'));
+  assert.equal((await call('PATCH', `/admin/appeals/${a.appeal.id}`, 'dispatcher', { decision: 'overturned' })).status, 403);
+  assert.equal((await call('PATCH', `/admin/appeals/${a.appeal.id}`, 'admin', { decision: 'overturned', note: 'First time, apology accepted' })).status, 200);
+  assert.equal((await call('PATCH', `/admin/appeals/${a.appeal.id}`, 'admin', { decision: 'upheld' })).error, 'appeal_decided');
+  assert.equal((await one(`SELECT blocked FROM users WHERE id = $1`, [id])).blocked, false);
+  tokens.banme = (await code0('0400 000 771')).token;
+  assert.equal((await call('GET', '/me', 'banme')).status, 200);
+  // A suspension whose end date has passed lifts itself at the next sign-in.
+  await call('POST', `/admin/users/${id}/restrict`, 'admin', { action: 'suspend', reason_code: 'repeated_cancellations', until: new Date(Date.now() + 864e5).toISOString() });
+  assert.equal((await call('POST', `/admin/users/${id}/restrict`, 'admin', { action: 'ban', reason_code: 'fraud' })).error, 'already_restricted');
+  await q(`UPDATE account_actions SET until = now() - interval '1 minute' WHERE user_id = $1 AND action = 'suspend' AND until > now()`, [id]);
+  const back = await code0('0400 000 771');
+  assert.equal(back.status, 200, 'suspension over: signed in');
+  tokens.banme = back.token;
+  // Ban, lift by staff (pending appeals resolved), warning (no block), standing history; the old block switch is recorded too.
+  await call('POST', `/admin/users/${id}/restrict`, 'admin', { action: 'ban', reason_code: 'fraud', public_reason: 'Promo codes were misused.' });
+  const lift = await call('POST', `/admin/users/${id}/lift`, 'admin', { note: 'Checked with the bank: not them' });
+  assert.equal(lift.status, 200);
+  assert.equal((await call('POST', `/admin/users/${id}/lift`, 'admin', {})).error, 'not_restricted');
+  assert.equal((await call('POST', `/admin/users/${id}/restrict`, 'admin', { action: 'warning', reason_code: 'abuse' })).status, 200);
+  assert.equal((await one(`SELECT blocked FROM users WHERE id = $1`, [id])).blocked, false, 'a warning doesn\'t block');
+  await call('PATCH', `/admin/users/${id}`, 'admin', { blocked: true });
+  const st = await call('GET', `/admin/users/${id}/standing`, 'admin');
+  assert.deepEqual(st.actions.map((x: any) => x.action), ['ban', 'warning', 'lift', 'ban', 'lift', 'suspend', 'lift', 'suspend']);
+  await call('PATCH', `/admin/users/${id}`, 'admin', { blocked: false });
+  assert.equal(st.actions[0].by_name !== undefined, true);
+  assert.ok((await call('GET', '/me/export', 'banme')).account_actions.length >= 8, 'in the data export');
+});
+
+test('emergency card: what to tell 000 (landmark or street address, GPS, car and trip) and support numbers', async () => {
+  const geo = http.createServer((req, res) => res.end(JSON.stringify({ features: [{ properties: { label: '10 Gap Rd, The Gap NT 0870' } }] })));
+  await new Promise<void>((r) => geo.listen(0, '127.0.0.1', r));
+  const prev = { ...config.safety };
+  try {
+    const plain = await call('GET', '/safety/emergency-card?lat=-23.6984&lng=133.8822', 'rider');
+    assert.equal(plain.landmark.name, 'Todd Mall');
+    assert.match(plain.say, /I'm at Todd Mall, Alice Springs\. GPS: latitude minus 23\.69840, longitude 133\.88220\./);
+    assert.ok(plain.numbers.some((n: any) => n.number === '000'));
+    assert.equal((await call('GET', '/safety/emergency-card?lat=-23.7150&lng=133.8770', 'rider')).landmark.direction, 'south');
+    const trip = await rideInProgress();
+    await call('POST', '/driver/location', 'd1', { lat: -23.7070, lng: 133.8775 });
+    const card = await call('GET', `/safety/emergency-card?trip_id=${trip.id}`, 'rider');
+    assert.equal(card.trip.ref, trip.ref);
+    assert.match(card.say, /I'm in a DingoGo car: .*rego/);
+    assert.match(card.dms, /23° 42' .*S, 133° 52' .*E/);
+    const dcard = await call('GET', `/safety/emergency-card?lat=-23.707&lng=133.8775`, 'd1');
+    assert.match(dcard.say, /I'm a DingoGo driver in a/);
+    Object.assign(config.safety, { reverseGeocodeUrl: `http://127.0.0.1:${(geo.address() as AddressInfo).port}/reverse` });
+    const addr = await call('GET', `/safety/emergency-card?lat=-23.707&lng=133.8775`, 'rider');
+    assert.match(addr.say, /^My location is 10 Gap Rd, The Gap NT 0870\./);
+    assert.equal((await call('GET', `/safety/emergency-card?lat=-23.707&lng=133.8775&trip_id=${trip.id}`, 'd2')).trip, null, 'not someone else\'s trip');
+    assert.equal((await call('GET', '/safety/emergency-card')).status, 401);
+  } finally {
+    Object.assign(config.safety, prev);
+    geo.close();
+    await clearOpenTrips();
+  }
+});
+
+test('before migration 019: trips, SOS, going online and sign-in all work; safety features are off or say migration_pending', async () => {
+  const { resetSafetyReady } = await import('../src/lib/safety.js');
+  const tables = ['safety_checks', 'driver_online_sessions', 'identity_checks', 'appeals', 'account_actions', 'incident_reports'];
+  for (const t of tables) await q(`ALTER TABLE ${t} RENAME TO ${t}_off`);
+  await q(`ALTER TABLE users RENAME COLUMN trusted_contacts TO trusted_contacts_off`);
+  await q(`ALTER TABLE users RENAME COLUMN auto_share TO auto_share_off`);
+  resetSafetyReady();
+  try {
+    assert.equal((await call('GET', '/me/safety', 'rider')).ready, false);
+    assert.equal((await call('PUT', '/me/safety', 'rider', { auto_share: 'always' })).error, 'migration_pending');
+    assert.deepEqual((await call('GET', '/me', 'rider')).user.trusted_contacts, []);
+    const trip = await rideInProgress();               // going online + accept (auto-share) + start
+    const sos = await call('POST', `/trips/${trip.id}/sos`, 'rider', {});
+    assert.deepEqual([sos.status, sos.contacts_texted], [200, 1], 'emergency contact still texted');
+    assert.equal((await call('POST', '/driver/sos', 'd1', {})).status, 200);
+    await call('POST', '/driver/location', 'd1', { lat: -23.60, lng: 133.70 });   // route deviation: the plain notice
+    await flushBackground(3000);
+    assert.ok(await one(`SELECT 1 FROM notifications WHERE title = 'Is everything OK?' AND created_at > now() - interval '1 minute'`));
+    const { runSafetyChecks } = await import('../src/services/safety.js');
+    assert.equal(await runSafetyChecks({ force: true }), null);
+    await call('POST', `/driver/trips/${trip.id}/complete`, 'd1', {});
+    assert.equal((await call('GET', '/driver/safety', 'd1')).ready, false);
+    assert.equal((await call('POST', '/safety/reports', 'rider', { category: 'other', description: 'Something happened here' })).error, 'migration_pending');
+    assert.deepEqual((await call('GET', '/safety/reports', 'rider')).reports, []);
+    assert.equal((await call('GET', '/safety/emergency-card?lat=-23.6984&lng=133.8822', 'rider')).landmark.name, 'Todd Mall');
+    assert.equal((await call('GET', '/admin/incidents', 'admin')).ready, false);
+    assert.equal((await call('GET', '/me/export', 'rider')).status, 200);
+    // The block switch still works; a blocked account gets the plain message and no appeal token.
+    const id = (await one(`SELECT id FROM users WHERE phone = '+61400000771'`)).id;
+    await call('PATCH', `/admin/users/${id}`, 'admin', { blocked: true });
+    const v = await code0('0400 000 771');
+    assert.deepEqual([v.status, v.error, v.details.appeal_token], [403, 'account_restricted', null]);
+    await call('PATCH', `/admin/users/${id}`, 'admin', { blocked: false });
+  } finally {
+    for (const t of tables) await q(`ALTER TABLE ${t}_off RENAME TO ${t}`);
+    await q(`ALTER TABLE users RENAME COLUMN trusted_contacts_off TO trusted_contacts`);
+    await q(`ALTER TABLE users RENAME COLUMN auto_share_off TO auto_share`);
+    resetSafetyReady();
+    await q(`UPDATE sos_alerts SET status = 'resolved' WHERE status <> 'resolved'`);
+    await clearOpenTrips();
+  }
+});

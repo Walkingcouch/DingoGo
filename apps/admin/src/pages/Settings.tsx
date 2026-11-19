@@ -1,3 +1,4 @@
+import { Link } from 'react-router-dom';
 import { useEffect, useState } from 'react';
 import { get, patch, post, put, dateTime, useLoad } from '@dingogo/shared';
 import { Page } from '../ctx';
@@ -114,6 +115,7 @@ function Users() {
           onChange={async (e) => { await run(() => patch(`/admin/users/${u.id}`, { partner_id: e.target.value || null }), 'Partner linked'); void reload(); }}>
           <option value="">None</option>{partners.data?.items.map((p: any) => <option key={p.id} value={p.id}>{p.name}</option>)}
         </select>) : null },
+      { key: 'standing', label: 'Standing', render: (u) => <Link className="dg-btn dg-btn--sm dg-btn--ghost" to={`/safety?standing=${u.id}`}>Standing<span className="sr-only"> of {u.name || 'this user'}</span></Link> },
       { key: 'x', label: '', render: (u) => <button className="dg-btn dg-btn--sm dg-btn--ghost" onClick={async () => {
         const pts = await ask({ title: 'Adjust Dingo Points', label: `Points to add for ${u.name || 'this user'} (use - to take away)`, inputMode: 'numeric', ok: 'Adjust' }); if (pts && Number(pts)) { await run(() => patch(`/admin/users/${u.id}`, { add_points: Number(pts) }), 'Points adjusted'); void reload(); }
       }}>Adjust points</button> },

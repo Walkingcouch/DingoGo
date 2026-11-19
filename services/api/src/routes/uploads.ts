@@ -16,6 +16,8 @@ const MAY_UPLOAD: Record<string, Role[] | null> = {
   ad: ['admin'],
   document: ['driver', 'admin'],
   pod: ['driver', 'admin'],
+  selfie: ['driver'],    // photo check before going online
+  evidence: null,        // photos or PDFs attached to a safety report (owner and DingoGo staff only)
   avatar: null, // anyone signed in
 };
 const isOps = (role: string) => role === 'admin' || role === 'dispatcher';
@@ -33,7 +35,7 @@ async function mayView(user: { id: string; role: string }, name: string, f: { ow
 export default async function uploadRoutes(app: FastifyInstance) {
   app.post('/uploads', { bodyLimit: 6 * 1024 * 1024 }, async (req) => {
     const me = await requireUser(req);
-    const b = parse(z.object({ data_url: z.string().max(5_800_000), purpose: z.enum(['pod', 'document', 'avatar', 'ad']) }), req.body);
+    const b = parse(z.object({ data_url: z.string().max(5_800_000), purpose: z.enum(['pod', 'document', 'avatar', 'ad', 'selfie', 'evidence']) }), req.body);
     const roles = MAY_UPLOAD[b.purpose];
     if (roles && !roles.includes(me.role)) throw forbidden('You can’t upload that kind of file');
     const m = /^data:(image\/(png|jpeg|webp)|application\/pdf);base64,(.+)$/.exec(b.data_url);

@@ -15,12 +15,13 @@ export default function Legal() {
         <p>DingoGo follows the Australian Privacy Principles in the Privacy Act 1988.</p>
         <h2>What we collect</h2>
         <ul>
-          <li>Your name, mobile number and, if you give it, email address and emergency contact.</li>
+          <li>Your name, mobile number and, if you give it, email address, emergency contact and trusted contacts (name and mobile). We text your trusted contacts only when you share a trip, press SOS or don't answer a safety check.</li>
+          <li>Safety reports you send (and any photos with them), your answers to "Are you OK?" checks, and any decision about your account.</li>
           <li>Trip details: pickup and drop-off places, times, the route the car took and the fare.</li>
           <li>Location while you use the app to book or track a trip. Drivers' location is collected while they're online.</li>
           <li>Payment details are collected and held by our payment provider (Stripe). We only see the card type and last four digits.</li>
           <li>Accessibility needs you choose to tell us, so we can match you with the right car.</li>
-          <li>For drivers: licence, accreditation, police check and medical records, ABN and bank details.</li>
+          <li>For drivers: licence, accreditation, police check and medical records, ABN and bank details, time online (for fatigue limits) and, if we switch on photo checks, the photos you take to show it's you driving.</li>
         </ul>
         <h2>How we use it</h2>
         <p>To arrange and price trips, show your trip to your driver and anyone you share it with, process payments, give you tax invoices, run rewards, keep people safe, meet legal obligations (including NT passenger transport and tax records) and improve the service.</p>

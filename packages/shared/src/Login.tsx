@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { ApiError, requestOtp, verifyOtp } from './api';
 import { Ranges } from './Ranges';
 import { Acknowledgement } from './Acknowledgement';
+import { Restricted } from './Safety';
 import mascot from '../assets/mascot.png';
 
 /** Phone + SMS code sign-in, shared by every app. */
@@ -18,6 +19,8 @@ export function Login({ title, subtitle, onDone, askName = false, askReferral = 
   const [devCode, setDevCode] = useState<string | undefined>();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Suspended or banned: the reason, and a way to ask us to look again (Round 14).
+  const [restricted, setRestricted] = useState<{ message: string; details: any } | null>(null);
 
   async function send(e: React.FormEvent) {
     e.preventDefault(); setBusy(true); setError(null);
@@ -28,7 +31,10 @@ export function Login({ title, subtitle, onDone, askName = false, askReferral = 
   async function verify(e: React.FormEvent) {
     e.preventDefault(); setBusy(true); setError(null);
     try { onDone(await verifyOtp(phone, code, { name: name || undefined, referral_code: referral || undefined })); }
-    catch (err) { setError(err instanceof ApiError ? err.message : 'Could not sign in'); }
+    catch (err) {
+      if (err instanceof ApiError && err.code === 'account_restricted') setRestricted({ message: err.message, details: err.details });
+      else setError(err instanceof ApiError ? err.message : 'Could not sign in');
+    }
     finally { setBusy(false); }
   }
 
@@ -38,7 +44,9 @@ export function Login({ title, subtitle, onDone, askName = false, askReferral = 
         <img src={mascot} alt="" width={96} height={140} style={{ objectFit: 'contain', display: 'block', marginBottom: 12 }} />
         <h1 style={{ fontSize: 'var(--fs-3xl)' }}>{title}</h1>
         {subtitle && <p className="dg-muted" style={{ marginTop: 0 }}>{subtitle}</p>}
-        {step === 'phone' ? (
+        {restricted ? (
+          <Restricted message={restricted.message} details={restricted.details} onBack={() => { setRestricted(null); setStep('phone'); setCode(''); }} />
+        ) : step === 'phone' ? (
           <form onSubmit={send} style={{ marginTop: 24 }}>
             <label className="dg-field"><span>Mobile number</span>
               <input className="dg-input" type="tel" inputMode="tel" autoComplete="tel" placeholder="04xx xxx xxx" value={phone} onChange={(e) => setPhone(e.target.value)} required

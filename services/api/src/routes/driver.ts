@@ -19,6 +19,7 @@ import { expiringDocs } from '../services/docExpiry.js';
 import type { FastifyRequest } from 'fastify';
 import { ApiError } from '../lib/errors.js';
 import { LEAVE_KINDS, communityPending, communityReady, type LeaveKind } from '../lib/community.js';
+import { enforceFatigue, onlineBlock, sessionOnline, textContactsOnAlert } from '../services/safety.js';
 
 /** Put a driver on leave (Sorry Business, cultural business, family): offline at once, any request on screen goes to the next
  *  driver, paper reminders pause. Nothing about it counts against them. Needs migration 017. */
@@ -26,6 +27,7 @@ export async function startLeave(driverId: string, kind: LeaveKind, until?: stri
   if (!(await communityReady())) throw new ApiError(503, 'migration_pending', `Leave ${communityPending}. Go offline for now; nothing counts against you while offline.`);
   const leave = { kind, from: new Date().toISOString(), until: until ?? null };
   await q(`UPDATE drivers SET leave = $2, online = false WHERE user_id = $1`, [driverId, JSON.stringify(leave)]);
+  await sessionOnline(driverId, false, 'leave');
   await trips.withdrawOffers(driverId);
   toOps('driver.status', { driver_id: driverId, online: false, on_leave: true });
   return leave;
@@ -317,6 +319,9 @@ export default async function driverRoutes(app: FastifyInstance) {
     if (b.online) {
       const issues = await complianceIssues(me.id);
       if (issues.length) throw bad('not_compliant', issues[0], issues);
+      // Safety (Round 14): rest after the fatigue limits, and the photo check when DingoGo has switched it on.
+      const block = await onlineBlock(me.id);
+      if (block) throw block;
       await endLeave(me.id);   // going online again ends any leave
     }
     const veh = await one('SELECT v.fuel_type FROM drivers d JOIN vehicles v ON v.id = d.vehicle_id WHERE d.user_id = $1', [me.id]);
@@ -332,6 +337,7 @@ export default async function driverRoutes(app: FastifyInstance) {
     }
     // Going offline with a request on screen: it goes to the next driver now, not after the timeout.
     if (!b.online) await trips.withdrawOffers(me.id);
+    await sessionOnline(me.id, d.online);
     toOps('driver.status', { driver_id: me.id, online: b.online, lat: b.lat, lng: b.lng });
     return { online: d.online };
   });
@@ -454,7 +460,10 @@ export default async function driverRoutes(app: FastifyInstance) {
     delete b.client_at;
     // Delivery photo must be one this driver took for a delivery.
     if (b.pod_photo_url) b.pod_photo_url = await ownUpload(b.pod_photo_url, me.id, 'pod');
-    return { trip: trips.viewFor(await trips.completeTrip(me.id, (req.params as any).id, b, replay), me) };
+    const trip = trips.viewFor(await trips.completeTrip(me.id, (req.params as any).id, b, replay), me);
+    // Over a fatigue limit during the trip: offline now that it has ended (before the next offer).
+    await enforceFatigue(me.id).catch(() => 0);
+    return { trip };
   });
   /** Couldn't deliver: the parcel goes back to the sender (the trip's next stop becomes the pickup). Photo optional. */
   app.post('/driver/trips/:id/delivery-failed', async (req) => {
@@ -591,10 +600,15 @@ export default async function driverRoutes(app: FastifyInstance) {
   app.post('/driver/sos', async (req) => {
     const me = await requireUser(req, 'driver');
     const b = parse(z.object({ lat: z.number().optional(), lng: z.number().optional(), message: z.string().max(300).optional() }), req.body);
-    const t = await one(`SELECT id, ref FROM trips WHERE driver_id = $1 AND status IN ('accepted','arrived','in_progress') LIMIT 1`, [me.id]);
+    const t = await one(`SELECT id, ref, share_token FROM trips WHERE driver_id = $1 AND status IN ('accepted','arrived','in_progress') LIMIT 1`, [me.id]);
+    const last = b.lat == null ? await one(`SELECT lat, lng FROM drivers WHERE user_id = $1`, [me.id]) : null;
+    const pos = { lat: b.lat ?? last?.lat ?? null, lng: b.lng ?? last?.lng ?? null };
     const alert = await one(`INSERT INTO sos_alerts (trip_id, user_id, role, lat, lng, message) VALUES ($1,$2,'driver',$3,$4,$5) RETURNING *`,
-      [t?.id ?? null, me.id, b.lat ?? null, b.lng ?? null, b.message ?? null]);
+      [t?.id ?? null, me.id, pos.lat, pos.lng, b.message ?? null]);
+    // On the trip's timeline too (it was only on the alert), and the driver's own contacts get the car's position.
+    if (t) await trips.event(pool, t.id, 'sos', me.id, { role: 'driver', lat: pos.lat, lng: pos.lng });
+    const texted = await textContactsOnAlert(me.id, 'sos', t, pos);
     toOps('sos.new', { ...alert, trip_ref: t?.ref, user_name: me.name });
-    return { alert, emergency_number: '000' };
+    return { alert, emergency_number: '000', contacts_texted: texted };
   });
 }

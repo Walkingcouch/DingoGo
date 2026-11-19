@@ -205,6 +205,13 @@ function TripDrawer({ id, onClose }: { id: string; onClose: () => void }) {
             <tr><td><strong>Driver total</strong></td><td className="num"><strong>{money(data.driver_ledger.filter((l: any) => l.kind !== 'cash_collected').reduce((s: number, l: any) => s + l.amount_cents, 0))}</strong></td></tr>
           </tbody></table>
         </>)}
+        {t.kind === 'ride' && ['accepted', 'arrived', 'in_progress'].includes(t.status) && (
+          <div className="panel" style={{ marginTop: 18 }}>
+            <h3>Check on the rider</h3>
+            <p className="dg-muted">Sends "Are you OK?" to the rider's phone. No answer in a few minutes raises an emergency alert.</p>
+            <button className="dg-btn dg-btn--sm dg-btn--dark" onClick={async () => { const r = await run(() => post(`/admin/trips/${id}/check-in`), 'Asked the rider'); if (r) void reload(); }}>Ask "Are you OK?"</button>
+          </div>
+        )}
         {t.status === 'no_drivers' && (
           <div className="panel" style={{ marginTop: 18 }}>
             <h3>No driver found</h3>

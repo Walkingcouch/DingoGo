@@ -119,3 +119,22 @@ Supabase's free plan has **no automatic backups**, and deleting a project delete
 - Never delete a Supabase project that `DATABASE_URL` in Vercel still points at; check Vercel's Production variables first.
 - Pausing a free Supabase project after a week idle stops the database: `/api/health/deep` returns 503 and the apps show the "problem on our side"
   notice. Un-pause from the Supabase dashboard.
+
+## 7. Rider and driver safety tools (Round 14)
+
+Migration `019_safety.sql` turns them on (AUTO_MIGRATE applies it). Until then SOS, sign-in and going online work as before and the new screens say
+"needs migration 019". Rules live in admin → Safety → Policy (`safety_policy`); nothing needs an env var.
+
+- **Every shift:** Safety → Emergency alerts (unanswered "Are you OK?" check-ins arrive here as alerts with the usual runbook), Reports (critical
+  first; a critical report puts the other person on hold unless they were on a trip: then hold them from Standing when it ends), Photo checks
+  (when switched on), Appeals (admins decide).
+- **Fatigue limits** are on by default (12 h online then a 6 h rest; a 20 min break after 5 h). Drivers are never set offline mid-trip. Check the
+  numbers against current NT and SA point-to-point guidance before launch and change them in Policy.
+- **Photo check** is off by default. `photo_review` asks every driver for a selfie each day (DingoGo looks at it; they can drive meanwhile).
+  `face_match` needs a provider: `FACE_MATCH_URL` (POST `{ selfie, reference }` base64 → `{ score }` 0–1), `FACE_MATCH_KEY`; without one it falls
+  back to review. Consider the provider's privacy terms (biometric information is sensitive information under the Privacy Act) and update the
+  privacy policy before switching it on.
+- **Emergency card street address:** set `REVERSE_GEOCODE_URL` to a Pelias/openrouteservice-style reverse geocoder (the `ORS_API_KEY` is sent);
+  without it the card gives the nearest landmark and GPS.
+- **Account standing:** Settings → Users → Standing (or from a report) to suspend (optionally until a date), ban, warn or lift. People who are
+  restricted see the reason at sign-in and can appeal; the private note is never shown to them.

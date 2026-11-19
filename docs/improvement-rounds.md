@@ -849,3 +849,93 @@ Ideas for next rounds:
 - Driver application status page: checklist of NT paperwork with links and the ability to upload documents before getting the app.
 - Referral leaderboard/rewards for community champions, and partner-café QR posters that open `/invite/CODE` or `/fares` with the café preset.
 - Search Console / Bing Webmaster verification via env meta tags, and a weekly SEO check in CI (sitemap reachable, no noindex on public pages).
+
+### Round 14 — safety and trust
+Scan: read the SOS routes (rider and driver), the route-deviation check, `watchDrivers`, the go-online checks, the block switch and sign-in, uploads,
+the rider trip/SOS screens and Safety page, the driver Drive/ActiveTrip/Profile screens, the admin Safety page and the website safety/privacy pages.
+Found: only one emergency contact, texted only on rider SOS; no way to share a trip with family automatically (night trips) or by text; the
+route-deviation "Is everything OK?" push had no answer path and nobody followed up if the rider didn't respond; nothing noticed a car stopped for a
+long time mid-trip; no record of time online, so no fatigue limits at all; no check that the person driving is the account holder; safety problems
+could only be raised as a free-text support ticket with no category, severity, evidence or follow-up; blocking was a bare switch with no reason,
+no end date and no appeal, and a blocked person's sign-in *succeeded* and handed back a token that then failed on every request (the app looked
+broken); driver SOS wasn't on the trip timeline and texted nobody; the SOS screen didn't help the person tell 000 where they were.
+
+Suggested:
+1. [add] Trusted contacts (up to 5) with automatic trip sharing — off / night trips (admin night window, Darwin time) / every trip — when the driver
+   accepts; "Text my contacts" during a ride (3 a trip); SOS texts every trusted contact plus the emergency contact.
+2. [add] Ride check-ins ("Are you OK?") with "I'm OK" / "Get help": raised by route deviations (replacing the plain push) and by ops; "Get help" or no
+   answer within `answer_min` raises an SOS alert into the existing incident view/runbook and texts the rider's contacts; late answers noted.
+3. [add] Long-stop detection: a ride in progress stopped (within 150 m) for `long_stop_min` with a fresh signal, away from pickup and drop-off → check-in
+   and ops alert (not tours or multi-drop runs; silent phones stay the driver-silent alert's job).
+4. [add] Driver fatigue limits, admin-configurable: online sessions recorded; 12 h online then a 6 h rest, a 20-minute break after 5 h (defaults,
+   to be checked against NT/SA guidance); warned 30 min before; offline when over a limit but never mid-trip (straight after `complete`); going
+   online refused with the time they can return; admin hours list.
+5. [add] Driver photo check before going online (off by default): `photo_review` (ops queue next to the last approved photo and licence) or
+   `face_match` behind `FACE_MATCH_URL` (falls back to review); fresh selfie only, not reused; not accepted → offline, can't go online.
+6. [add] Safety reports with categories and severity, private photo evidence (own uploads only), 10 a day; critical reports (sexual misconduct,
+   assault) put the other person on hold at once unless they're mid-trip (ops told); ops list/detail/notes/status/outcome, reporter told.
+7. [add] Account standing and appeals: suspend (optionally until a date; lifts itself) / ban / warning / lift with reason codes, a reason shown to the
+   person and a private note; the old block switch is recorded; restricted sign-in returns 403 `account_restricted` with the reason and a 1-day
+   appeal-only token; one pending appeal; admins uphold or overturn (overturn lifts); texts on each step.
+8. [add] Emergency card for 000: street address (reverse geocoder behind `REVERSE_GEOCODE_URL`) or nearest landmark with distance and direction,
+   GPS in decimal and DMS, the car and rego spelled out, the trip; "Read it out"; NT Police, 1800RESPECT and Lifeline numbers; in rider and
+   driver SOS screens.
+9. [fix] Driver SOS on the trip timeline and texting the driver's contacts a map link to the car (never the rider's trip link); women's safety review:
+   1800RESPECT offered on critical/harassment reports and in the app, holds on critical reports, women-preferred and reporting explained in the rider
+   Safety page and on the website; privacy policy lists trusted contacts, reports, time online and photo checks.
+
+Done (all 9). Migration: `services/api/migrations/019_safety.sql` (columns `users.trusted_contacts`, `users.auto_share`; tables `safety_checks`,
+`driver_online_sessions`, `identity_checks`, `incident_reports`, `account_actions`, `appeals`; additive, IF NOT EXISTS). Before it is applied
+(`lib/safety.ts` `safetyReady()`, re-checked once a minute): trips, SOS (emergency contact texted), the route-deviation notice, going online, the
+block switch and the emergency card work as before; a blocked account gets 403 `account_restricted` without an appeal token; the new endpoints
+say `migration_pending` or return empty lists; the safety tick does nothing. Tests: 114 → 123 (pure fatigue maths for breaks, daily limit and
+long rest, policy validation, night window, contact de-duplication; trusted contacts validation, night/always auto-share on accept, on-demand
+limit, SOS texts every contact, driver SOS timeline + map-link-only text via the fake Twilio; long stop asked once, OK closes it, moving car not
+asked, no answer escalates to an SOS + contact texts + incident view, late OK noted, route deviation and "Get help", ops check-in, switched off;
+fatigue warning once, offline after the trip with `fatigue_rest` until rested, tick takes an idle driver offline at the daily limit, admin list,
+limits off, admin-only validated policy; photo check off by default, needed/own/fresh/not reused, private, review reject → offline and blocked,
+approve, daily, face match approve/poor match/provider down; reports validation, own evidence only, private signed evidence, critical hold deferred
+mid-trip then immediate, ops status/outcome/notes, reporter told, reporter's view has no subject details, driver general report, daily limit;
+restrict/appeal: admin-only, not yourself, end dates only for suspensions, reason shown but not the private note, appeal token not a sign-in
+(HTTP and socket), appeal once, overturn lifts, suspension ends by itself at sign-in, ban/lift/warning, block switch recorded, standing history,
+export; emergency card landmark/direction/GPS/DMS/car/driver/geocoder/other people's trips; everything with the 019 tables and columns renamed away).
+`messages.test.ts` covers the 11 new templates (GSM-7, ≤ 2 texts, no emoji).
+- API: new `src/lib/safety.ts` (policy + validation, `fatigueStatus`, night window, contacts, categories, reasons, support numbers, `safetyReady`),
+  `src/services/safety.ts` (sharing, check-ins, long stops, sessions + fatigue, photo checks + face match, restrict/lift/auto-lift, emergency card,
+  `runSafetyChecks` in the dispatcher tick every `SAFETY_TICK_S`), `src/routes/safety.ts`; `auth.ts` (scoped appeal token, `verifyToken` refuses
+  scoped tokens), `routes/auth.ts` (restricted sign-in, export, deletion clears contacts), `routes/driver.ts` (online block, sessions, SOS fix,
+  fatigue after complete), `routes/rider.ts` (SOS texts all contacts), `routes/admin.ts` (block switch recorded, `safety_policy` validated),
+  `services/trips.ts` (check-in on deviation, auto-share on accept, tick), uploads `selfie`/`evidence` (private), `lib/messages.ts`, `config.ts`.
+- Shared: new `Safety.tsx` (`EmergencyCard`, `TrustedContacts`, `SafetyReportForm`, `MyReports`, `Restricted`); `Login` shows the restricted screen
+  with the appeal form. Rider: trip "Are you OK?" banner (polls + realtime, buzz, read out in simple mode), "Text my contacts", emergency card in SOS,
+  "Report a safety problem" on trips, Account → Safety (contacts, auto-share, reports, women riders). Driver: fatigue line and rest notice on Drive,
+  photo-check sheet (front camera) on go-online, emergency card in SOS, Profile → Safety (contacts, report, my reports), "Report" on trips. Admin:
+  Safety tabs Reports (drawer), Check-ins and hours, Photo checks, Appeals, Policy; account Standing drawer (from Settings → Users and reports); trip
+  drawer "Ask Are you OK?"; event labels. Website: safety page items, privacy policy.
+- Behaviour changes to note: a blocked account's sign-in is now 403 `account_restricted` (was 200 with a useless token); scoped JWTs are refused as
+  sign-ins; route deviation sends "Are you OK?" with an answer (was "Is everything OK?"); fatigue limits are ON by default (drivers online 5 h
+  without a 20-minute break, or 12 h, are set offline after their trip); SOS texts trusted contacts too and the response has `contacts_texted`; SOS
+  texts use the first name; uploads accept purposes `selfie` and `evidence`.
+- Deploy: apply migration 019 (AUTO_MIGRATE does it). No env vars required; optional `FACE_MATCH_URL`/`FACE_MATCH_KEY`/`FACE_MATCH_TIMEOUT_MS`,
+  `REVERSE_GEOCODE_URL`, `SAFETY_TICK_S`. Owner to confirm the fatigue defaults against NT/SA guidance (admin → Safety → Policy) and decide on photo
+  checks (off) before switching them on. No data fix.
+
+Deferred:
+- A real face-match provider and liveness check: needs a vendor choice, a privacy impact assessment (biometric information is sensitive information
+  under the Privacy Act) and consent wording; the API contract and fallback are ready.
+- Automatic hold of a reported person who was mid-trip once the trip ends (ops get `incident.hold_deferred` and do it from Standing): wants a small
+  "pending hold" state so it can't be forgotten.
+- Rider-side "women rider" preference for women drivers (match women drivers with women riders): needs a self-declared, checked rider attribute
+  and owner/legal sign-off (Sex Discrimination Act exemptions); not built.
+- Check-ins on courier trips and tours (stops are normal there) and a night-time "arrived safely?" check after drop-off.
+- Native background GPS (still from Round 3): long-stop detection needs pings while the driver is in Google/Apple Maps; with a paused app it falls
+  back to the driver-silent alert.
+
+Ideas for next rounds:
+- "Pending hold" for reported people on a live trip, and a safety-lead staff role (Round 7 idea) who can hold, ban and decide appeals.
+- Audio recording opt-in during trips (stored encrypted, released only to the safety team on a report), with clear consent wording.
+- Safety dashboard: reports per 1,000 trips by category, check-in answer rates, fatigue offlines per week, appeal outcomes; monthly CSV for the
+  NT regulator.
+- Trusted contacts get a text when the trip ends ("arrived safely") and can reply HELP to raise an alert (Twilio inbound already exists).
+- Driver-facing rider verification for night pickups (rider photo or ID check on first night trip) and a "this rider's PIN didn't match" report.
+- Run the safety tick on a schedule (Vercel cron hitting a protected endpoint) so check-in escalation doesn't depend on app traffic.

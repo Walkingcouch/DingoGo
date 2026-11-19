@@ -1,3 +1,4 @@
+import { textContactsOnAlert } from '../services/safety.js';
 import { logError } from '../lib/log.js';
 import crypto from 'node:crypto';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
@@ -200,7 +201,7 @@ export default async function riderRoutes(app: FastifyInstance) {
     return r;
   });
 
-  /** Emergency: notifies DingoGo ops + emergency contact. The app also offers a one-tap 000 call. */
+  /** Emergency: notifies DingoGo ops + trusted/emergency contacts. The app also offers a one-tap 000 call. */
   app.post('/trips/:id/sos', async (req) => {
     const me = await requireUser(req);
     const b = parse(z.object({ lat: z.number().optional(), lng: z.number().optional(), message: z.string().max(300).optional() }), req.body);
@@ -211,11 +212,9 @@ export default async function riderRoutes(app: FastifyInstance) {
       [t.id, me.id, me.id === t.driver_id ? 'driver' : 'rider', b.lat ?? null, b.lng ?? null, b.message ?? null]);
     await trips.event(await import('../db.js').then((m) => m.pool), t.id, 'sos', me.id, b);
     toOps('sos.new', { ...alert, trip_ref: t.ref, user_name: me.name });
-    const u = await one('SELECT emergency_contact FROM users WHERE id = $1', [me.id]);
-    if (u?.emergency_contact?.phone) {
-      void sendSmsT(u.emergency_contact.phone, 'sos_contact', { name: me.name, ref: t.ref, url: `${config.publicWebUrl}/track/${t.share_token}` }, { userId: me.id, tripId: t.id });
-    }
-    return { alert, share_url: `${config.publicWebUrl}/track/${t.share_token}`, emergency_number: '000' };
+    // Every trusted contact and the emergency contact get the live trip link (a driver's contacts get the car's position only).
+    const texted = await textContactsOnAlert(me.id, 'sos', t, b);
+    return { alert, share_url: `${config.publicWebUrl}/track/${t.share_token}`, emergency_number: '000', contacts_texted: texted };
   });
 
   // ───────────── Loyalty & rewards ─────────────

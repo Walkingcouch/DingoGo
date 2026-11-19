@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { usePrefs, type Prefs, type Theme } from '../lib/prefs';
 import { NAV_APPS } from '../lib/nav';
 import { ApiError, Icon, date, patch, post } from '@dingogo/shared';
-import { Acknowledgement, NotifySettings } from '@dingogo/shared';
+import { Acknowledgement, MyReports, NotifySettings, SafetyReportForm, TrustedContacts } from '@dingogo/shared';
 import { Link } from 'react-router-dom';
 import { useDriver } from '../state';
 import { CarStatus, FuelChip, carName } from '../vehicle';
@@ -19,6 +19,7 @@ export function Profile({ onSignOut }: { onSignOut: () => void }) {
   const [carErr, setCarErr] = useState<string | null>(null);
   const [langs, setLangs] = useState<string>((me?.driver?.languages ?? []).join(', '));
   const [err, setErr] = useState<string | null>(null);
+  const [reporting, setReporting] = useState(false);
   if (!me) return null;
   const d = me.driver; const v = d?.vehicle;
   const others = (cars?.vehicles ?? []).filter((c) => c.id !== v?.id);
@@ -96,6 +97,17 @@ export function Profile({ onSignOut }: { onSignOut: () => void }) {
       </section>
 
       <ExpiryList />
+
+      <section className="panel" aria-labelledby="safety-h">
+        <h2 id="safety-h" style={{ marginTop: 0 }}>Safety</h2>
+        <h3>Trusted contacts</h3>
+        <TrustedContacts role="driver" />
+        <h3>Report a safety problem</h3>
+        {reporting ? <SafetyReportForm onDone={() => undefined} />
+          : <button className="dg-btn dg-btn--ghost" onClick={() => setReporting(true)}>Report a rider or something that happened</button>}
+        <p className="dg-muted" style={{ fontSize: 'var(--fs-sm)' }}>To report a trip, use "Report" on the trip in Trips. In danger now? Call 000.</p>
+        <MyReports />
+      </section>
 
       <section className="panel" aria-label="Notifications">
         <h2 style={{ marginTop: 0 }}>Notifications</h2>

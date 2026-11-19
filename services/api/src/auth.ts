@@ -12,7 +12,20 @@ export const signToken = (u: { id: string; role: Role }) =>
 
 export function verifyToken(token: string): { sub: string; role: Role } | null {
   // Pin the algorithm: tokens are only ever HS256 (no "none", no key confusion).
-  try { return jwt.verify(token, config.jwtSecret, { algorithms: ['HS256'] }) as any; } catch { return null; }
+  try {
+    const p = jwt.verify(token, config.jwtSecret, { algorithms: ['HS256'] }) as any;
+    // Scoped tokens (an appeal from a restricted account) never work as a sign-in.
+    return p && !p.scope ? p : null;
+  } catch { return null; }
+}
+
+/** A restricted (suspended or banned) person can only see why and ask us to look again: a 1-day token for /appeal only. */
+export const signAppealToken = (userId: string) => jwt.sign({ sub: userId, scope: 'appeal' }, config.jwtSecret, { expiresIn: '1d' });
+export function verifyAppealToken(token: string): string | null {
+  try {
+    const p = jwt.verify(token, config.jwtSecret, { algorithms: ['HS256'] }) as any;
+    return p?.scope === 'appeal' && typeof p.sub === 'string' ? p.sub : null;
+  } catch { return null; }
 }
 
 /** The current account behind a token, or undefined if it was deleted or blocked. Role comes from the database, not the token. */

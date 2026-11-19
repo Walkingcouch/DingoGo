@@ -3,7 +3,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom';
 import {
   Icon,
   ApiError, ChatThread, REALTIME, COURIER_STATUS_LABEL, useTripChat, STATUS_LABEL, ago, connectRealtime, date, dateTime, get, km, money, onNetworkChange, post, statusTone, time, useInterval, Ranges,
-  isTemporary, DELIVERY_FAIL_REASONS, PARCEL_OUTCOME_LABEL, speak, t as tr,
+  isTemporary, DELIVERY_FAIL_REASONS, PARCEL_OUTCOME_LABEL, speak, t as tr, EmergencyCard,
 } from '@dingogo/shared';
 import { DgMap, type MapMarker } from '@dingogo/shared/map';
 import { ACTIVE, shareUrl, useMe } from '../ctx';
@@ -281,10 +281,12 @@ function LiveTrip({ trip, carPos, reload, onClose, net }: { trip: any; carPos: a
             {contact?.call && <a className="dg-btn dg-btn--ghost" href={`tel:${contact.call.number}`}><Icon name="phone" size={20} />Call</a>}
           </div>
         )}
+        {hasDriver && trip.kind === 'ride' && <CheckIn trip={trip} simple={simple} onHelp={() => setSosOpen(true)} />}
         <div className="live__actions">
           <button className="dg-btn dg-btn--ghost" onClick={() => shareOrCopy({ title: 'My DingoGo trip', text: `Follow my DingoGo trip ${trip.ref}:`, url: shareUrl(trip.share_token) }, copy)}>
             {copied ? 'Link copied' : 'Share my trip'}
           </button>
+          {hasDriver && trip.kind === 'ride' && <ShareContacts tripId={trip.id} />}
           {trip.status !== 'in_progress' && <button className="dg-btn dg-btn--ghost" onClick={() => setCancelOpen(true)}>Cancel</button>}
         </div>
         <dl className="kv">
@@ -301,6 +303,64 @@ function LiveTrip({ trip, carPos, reload, onClose, net }: { trip: any; carPos: a
         <button className="dg-btn dg-btn--ghost dg-btn--block" style={{ marginTop: 10 }} onClick={() => setChatOpen(false)}>Close</button>
       </Dialog>
     </div>
+  );
+}
+
+/** "Are you OK?": asked when the car stops for a long time, goes off the route, or by our team. Unanswered, our team checks on you. */
+function CheckIn({ trip, simple, onHelp }: { trip: any; simple: boolean; onHelp: () => void }) {
+  const [check, setCheck] = useState<any>(null);
+  const [busy, setBusy] = useState(false);
+  const [thanks, setThanks] = useState(false);
+  const load = useCallback(() => {
+    get(`/safety/checks?trip_id=${trip.id}`).then((r) => setCheck(r.checks?.[0] ?? null)).catch(() => { /* keep what we have */ });
+  }, [trip.id]);
+  useEffect(() => { load(); }, [load]);
+  useInterval(load, 15000);
+  useEffect(() => {
+    const rt = connectRealtime((m) => { if (m.type === 'safety.check' && m.data?.trip_id === trip.id) setCheck(m.data); });
+    return () => rt.close();
+  }, [trip.id]);
+  useEffect(() => {
+    if (!check) return;
+    try { navigator.vibrate?.([400, 200, 400]); } catch { /* not supported */ }
+    if (simple) speak('Are you OK? Tap I am OK, or Get help.');
+  }, [check?.id]); // eslint-disable-line
+  if (thanks && !check) return <p className="callout callout--green" role="status">Thanks for letting us know.</p>;
+  if (!check) return null;
+  async function answer(a: 'ok' | 'help') {
+    setBusy(true);
+    try { await post(`/safety/checks/${check.id}`, { answer: a }); setCheck(null); if (a === 'ok') setThanks(true); else onHelp(); }
+    catch { if (a === 'help') onHelp(); } finally { setBusy(false); }
+  }
+  const why = check.reason === 'long_stop' ? 'Your car has been stopped for a while.' : check.reason === 'route_deviation' ? 'Your trip has gone off the usual route.' : 'Our team is checking in.';
+  return (
+    <div className="callout callout--earth" role="alert" style={{ marginTop: '.8rem' }}>
+      <strong style={{ fontSize: 'var(--fs-lg)' }}>Are you OK?</strong>
+      <p style={{ margin: '.3rem 0 .6rem' }}>{why} If we don't hear back{check.answer_by ? ` by ${time(check.answer_by)}` : ''}, our team will check on you and text your trusted contacts.</p>
+      <div className="live__actions" style={{ marginTop: 0 }}>
+        <button className="dg-btn dg-btn--green" disabled={busy} onClick={() => answer('ok')}><Icon name="check" size={20} />I'm OK</button>
+        <button className="dg-btn dg-btn--danger" disabled={busy} onClick={() => answer('help')}><Icon name="sos" size={20} />Get help</button>
+      </div>
+    </div>
+  );
+}
+
+/** Text the live trip link to the rider's trusted contacts. */
+function ShareContacts({ tripId }: { tripId: string }) {
+  const [msg, setMsg] = useState<ReactNode>(null);
+  const [busy, setBusy] = useState(false);
+  async function go() {
+    setBusy(true); setMsg(null);
+    try { const r = await post(`/trips/${tripId}/share-contacts`); setMsg(`Texted ${r.sent === 1 ? 'your contact' : `${r.sent} contacts`}`); }
+    catch (e) {
+      setMsg(e instanceof ApiError && e.code === 'no_contacts' ? <>Add trusted contacts in <Link to="/account/safety">Account, Safety</Link></> : e instanceof ApiError ? e.message : 'Could not send');
+    } finally { setBusy(false); }
+  }
+  return (
+    <>
+      <button className="dg-btn dg-btn--ghost" disabled={busy} onClick={go}>Text my contacts</button>
+      {msg && <span className="dg-muted" role="status" style={{ fontSize: 'var(--fs-sm)', alignSelf: 'center' }}>{msg}</span>}
+    </>
   );
 }
 
@@ -339,6 +399,7 @@ function SosDialog({ open, onClose, trip }: { open: boolean; onClose: () => void
         <>
           <p>If you're in danger, call Triple Zero now. You can also alert the DingoGo safety team, who will see your live location and contact you.</p>
           <a className="dg-btn dg-btn--danger dg-btn--block sos-call" href="tel:000">Call 000</a>
+          {open && <EmergencyCard tripId={trip.id} />}
           <button className="dg-btn dg-btn--dark dg-btn--block" style={{ marginTop: 10 }} onClick={send}>Alert DingoGo safety team</button>
           <button className="dg-btn dg-btn--ghost dg-btn--block" style={{ marginTop: 10 }} onClick={onClose}>I'm OK, go back</button>
         </>
@@ -346,8 +407,9 @@ function SosDialog({ open, onClose, trip }: { open: boolean; onClose: () => void
       {state === 'sending' && <Spinner label="Sending alert" />}
       {state === 'sent' && (
         <>
-          <p><strong>Our safety team has your trip, driver and location.</strong> If you set an emergency contact, we've texted them your live trip link too.</p>
+          <p><strong>Our safety team has your trip, driver and location.</strong> {res?.contacts_texted ? `We've texted your live trip link to ${res.contacts_texted === 1 ? 'your contact' : `your ${res.contacts_texted} contacts`} too.` : ''}</p>
           <a className="dg-btn dg-btn--danger dg-btn--block sos-call" href={`tel:${res?.emergency_number ?? '000'}`}>Call {res?.emergency_number ?? '000'}</a>
+          <EmergencyCard tripId={trip.id} />
           <p className="dg-muted" style={{ fontSize: 'var(--fs-sm)' }}>Stay on the line with 000 if you can. Keep this screen open.</p>
           <button className="dg-btn dg-btn--ghost dg-btn--block" onClick={onClose}>Close</button>
         </>
@@ -436,6 +498,7 @@ function TripDetail({ trip, reload, net }: { trip: any; reload: () => Promise<vo
       {done && trip.parcel?.outcome !== 'returned' && <AfterTrip trip={trip} reload={reload} />}
       {(done || trip.cancel_fee_cents > 0) && <Receipt tripId={trip.id} vehicle={trip.vehicle} />}
       <Link className="dg-btn dg-btn--ghost dg-btn--block" style={{ marginTop: 16 }} to={`/account/help?trip=${trip.id}`}>Get help with this trip</Link>
+      {trip.driver && <Link className="dg-btn dg-btn--ghost dg-btn--block" style={{ marginTop: 8 }} to={`/account/safety/report?trip=${trip.id}`}><Icon name="shield" size={18} /> Report a safety problem</Link>}
       {trip.kind === 'ride' && (trip.assistance_animal || trip.status === 'cancelled_driver') && (
         <Link className="linkbtn" style={{ display: 'inline-flex', alignItems: 'center' }} to={`/account/help?trip=${trip.id}&category=assistance_animal_refused`}>
           A driver refused my assistance animal

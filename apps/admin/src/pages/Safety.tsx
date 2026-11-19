@@ -5,13 +5,16 @@ import { DgMap, type MapMarker } from '@dingogo/shared/map';
 import { Page, useOps } from '../ctx';
 import { Chip, Drawer, ErrorMsg, Section, Table, Tabs, useAsk, useRun, useToast } from '../ui';
 import { DOC_TYPE, FLAG_KIND, FLAG_STATUS, ROLE, SOS_STATUS, label } from '../labels';
+import { Appeals, CheckIns, PhotoChecks, Policy, Reports, StandingDrawer } from './Trust';
 
 const TL_KIND: Record<string, string> = { raised: 'Alert', acknowledged: 'Acknowledged', step: 'Runbook', note: 'Note', resolved: 'Resolved', trip: 'Trip' };
 
 export default function Safety() {
   const [params, setParams] = useSearchParams();
-  const tab = (params.get('tab') as 'sos' | 'flags' | 'expiring' | 'docs') || 'sos';
+  const tab = (params.get('tab') as 'sos' | 'reports' | 'checkins' | 'photos' | 'appeals' | 'policy' | 'flags' | 'expiring' | 'docs') || 'sos';
   const incident = params.get('sos');
+  const standing = params.get('standing');
+  const overview = useLoad<any>(() => get('/admin/safety/overview'));
   const setParam = (k: string, v: string | null) => setParams((p) => { const n = new URLSearchParams(p); if (v) n.set(k, v); else n.delete(k); return n; });
   const sos = useLoad(() => get('/admin/sos'));
   const comp = useLoad(() => get('/admin/compliance'));
@@ -54,7 +57,10 @@ export default function Safety() {
 
   return (
     <Page title="Safety & compliance">
-      <Tabs label="Safety sections" tabs={[['sos', `Emergency alerts (${openSos.length} open)`], ['flags', `Compliance flags (${comp.data?.flags.filter((f: any) => f.status === 'open').length ?? 0})`], ['expiring', 'Expiring credentials'], ['docs', `Documents to review (${pending.length})`]]}
+      <Tabs label="Safety sections" tabs={[['sos', `Emergency alerts (${openSos.length} open)`],
+        ['reports', `Reports${overview.data?.incidents ? ` (${overview.data.incidents})` : ''}`], ['checkins', 'Check-ins and hours'],
+        ['photos', `Photo checks${overview.data?.photo_checks ? ` (${overview.data.photo_checks})` : ''}`], ['appeals', `Appeals${overview.data?.appeals ? ` (${overview.data.appeals})` : ''}`],
+        ['policy', 'Policy'], ['flags', `Compliance flags (${comp.data?.flags.filter((f: any) => f.status === 'open').length ?? 0})`], ['expiring', 'Expiring credentials'], ['docs', `Documents to review (${pending.length})`]]}
         value={tab} onChange={(t) => setParam('tab', t === 'sos' ? null : t)}>
       {tab === 'sos' && (<>
         {openSos.map((s: any) => (
@@ -79,6 +85,11 @@ export default function Safety() {
           { key: 'trip_ref', label: 'Trip' }, { key: 'notes', label: 'Outcome', truncate: 320 }, { key: 'resolved_at', label: 'Resolved', render: (s) => dateTime(s.resolved_at) },
         ]} />
       </>)}
+      {tab === 'reports' && <Reports onStanding={(id) => setParam('standing', id)} />}
+      {tab === 'checkins' && <CheckIns />}
+      {tab === 'photos' && <PhotoChecks />}
+      {tab === 'appeals' && <Appeals onStanding={(id) => setParam('standing', id)} />}
+      {tab === 'policy' && <Policy />}
       {tab === 'flags' && (<>
         <p className="dg-muted" style={{ marginTop: 0, maxWidth: 780 }}>Refusing an assistance animal is unlawful under the Disability Discrimination Act. Review each flag with the driver; repeated refusals should lead to suspension.</p>
         <ErrorMsg error={comp.error} />
@@ -125,6 +136,7 @@ export default function Safety() {
         ]} />
       </>)}
       </Tabs>
+      {standing && <StandingDrawer userId={standing} onClose={() => { setParam('standing', null); void overview.reload(); }} />}
       {incident && <Incident id={incident} onClose={() => { setParam('sos', null); reloadAll(); }} onResolve={(id) => sosUpdate(id, 'resolved')} />}
     </Page>
   );

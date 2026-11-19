@@ -2,17 +2,17 @@
  * Upload privacy. Driver documents (licences, rego papers…) and proof-of-delivery photos are private: they are only
  * served with a short-lived signed link (HMAC of name + expiry) or to the owner / DingoGo staff with a bearer token.
  * The database keeps the plain reference `/uploads/<name>`; API responses sign it on the way out (signUploadUrls).
- * Ad images and avatars stay public.
+ * Driver photo checks (selfie) and safety-report evidence (Round 14) are private too. Ad images and avatars stay public.
  */
 import crypto from 'node:crypto';
 import { config } from '../config.js';
 import { one } from '../db.js';
 import { bad } from './errors.js';
 
-export const PRIVATE_PURPOSES = ['pod', 'document'] as const;
+export const PRIVATE_PURPOSES = ['pod', 'document', 'selfie', 'evidence'] as const;
 export const isPrivatePurpose = (p: string) => (PRIVATE_PURPOSES as readonly string[]).includes(p);
 /** Upload names start with their purpose (`pod-…`, `document-…`), so responses can be signed without a lookup. */
-const PRIVATE_REF = /^\/uploads\/((?:pod|document)-[A-Za-z0-9._-]+)$/;
+const PRIVATE_REF = /^\/uploads\/((?:pod|document|selfie|evidence)-[A-Za-z0-9._-]+)$/;
 const NAME = /^[A-Za-z0-9._-]{1,120}$/;
 
 const key = () => crypto.createHmac('sha256', config.jwtSecret).update('dingogo-upload-link-v1').digest();

@@ -146,7 +146,7 @@ export function connectRealtime(onMessage: (m: Msg) => void, opts: { share?: str
 
 /** Read a File into a data URL and upload it. `url` is the reference to save; `view_url` can be shown (signed and short-lived
  *  for private files: driver documents and delivery photos). */
-export async function uploadFile(file: File | Blob, purpose: 'pod' | 'document' | 'avatar' | 'ad') {
+export async function uploadFile(file: File | Blob, purpose: 'pod' | 'document' | 'avatar' | 'ad' | 'selfie' | 'evidence') {
   const data_url: string = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result)); r.onerror = rej; r.readAsDataURL(file); });
   return post<{ url: string; view_url?: string }>('/uploads', { data_url, purpose });
 }

@@ -34,6 +34,14 @@ const sample: Record<string, any> = {
   ride_booked_for_you: { org: 'Tangentyere Health Transport Service', ref: 'DG-ABC123', when: 'Thu 2:00 pm', pickup: 'Alice Springs Hospital' },
   driver_application_received: { ref: 'DA-ABC123', url: 'https://dingogo.com.au/drive/status/abcdefghijklmnopqrst' },
   driver_application_update: { ref: 'DA-ABC123', stage: "We've called", url: 'https://dingogo.com.au/drive/status/abcdefghijklmnopqrst' },
+  safety_check: { ref: 'DG-ABC123', reason: 'long_stop', minutes: 3 },
+  trip_shared: { name: 'Mary Smith', driver: 'Sam', car: 'White Toyota Camry Hybrid', rego: 'CD12AB', url: 'https://dingogo.com.au/track/abcdefghijklmnop' },
+  check_in_escalated_contact: { name: 'Mary Smith', ref: 'DG-ABC123', url: 'https://dingogo.com.au/track/abcdefghijklmnopqrst' },
+  fatigue_warning: { minutes: 30, kind: 'daily_limit' }, fatigue_offline: { kind: 'break', until: '3:40 pm', hours: '5 h' },
+  identity_check_reviewed: { approved: false, note: 'Face hidden by a hat' },
+  incident_received: { ref: 'IR-ABC123', critical: true }, incident_update: { ref: 'IR-ABC123', outcome: 'We have taken action.' },
+  account_restricted: { kind: 'suspend', reason: 'Abusive or threatening behaviour towards a driver, rider or our team.', until: '30 Nov 2026' },
+  account_restored: {}, appeal_decided: { overturned: false, note: null },
   promo: { title: 'Cheap Tuesdays', body: '20% off rides to the Todd Mall markets this Sunday.' },
 };
 const EMOJI = /\p{Extended_Pictographic}/u;

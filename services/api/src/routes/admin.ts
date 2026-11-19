@@ -24,6 +24,8 @@ import { floorReport, runEarningsFloor } from '../services/earningsFloor.js';
 import { gstReport, levyReport, tripFilters } from '../services/reports.js';
 import { audit as writeAudit } from '../lib/audit.js';
 import { saveCommunityPricing } from './community.js';
+import { checkSafetyPolicy, safetyReady } from '../lib/safety.js';
+import { sessionOnline } from '../services/safety.js';
 
 /** Driver pay rules (all optional on update; merged over what is stored). Bounds keep a typo from paying out wildly. */
 const driverPayBody = z.object({
@@ -388,6 +390,16 @@ export default async function adminRoutes(app: FastifyInstance) {
     }), req.body);
     const id = (req.params as any).id;
     const { add_points, add_wallet_cents, ...rest } = b;
+    // The block switch is a ban without a stated reason: record it in the account's standing (so the person can appeal), and
+    // record a lift when it's switched off. Admin → Safety → account standing gives reasons and end dates.
+    if (b.blocked !== undefined && await safetyReady()) {
+      const cur = await one('SELECT blocked FROM users WHERE id = $1', [id]);
+      if (cur && cur.blocked !== b.blocked) {
+        await q(`INSERT INTO account_actions (user_id, action, reason_code, public_reason, by_id) VALUES ($1, $2, 'other', $3, $4)`,
+          [id, b.blocked ? 'ban' : 'lift', b.blocked ? 'A breach of the DingoGo terms.' : 'Your account is active again.', me.id]);
+        if (b.blocked) await sessionOnline(id, false, 'blocked');
+      }
+    }
     const keys = Object.keys(rest);
     if (keys.length) await q(`UPDATE users SET ${keys.map((k, i) => `${k} = $${i + 2}`).join(', ')} WHERE id = $1`, [id, ...keys.map((k) => (rest as any)[k])]);
     if (add_points) {
@@ -989,6 +1001,12 @@ export default async function adminRoutes(app: FastifyInstance) {
     // Driver pay goes through its own validation.
     if ((req.params as any).key === 'driver_pay') return { item: { key: 'driver_pay', value: await saveDriverPay(me.id, b.value) } };
     if ((req.params as any).key === 'community_pricing') return { item: { key: 'community_pricing', value: await saveCommunityPricing(me.id, b.value) } };
+    if ((req.params as any).key === 'safety_policy') {
+      const value = checkSafetyPolicy(b.value);
+      await q(`INSERT INTO settings (key, value) VALUES ('safety_policy', $1) ON CONFLICT (key) DO UPDATE SET value = $1`, [JSON.stringify(value)]);
+      await audit(me.id, 'safety_policy_updated', 'settings', 'safety_policy', value);
+      return { item: { key: 'safety_policy', value } };
+    }
     const row = await one(`INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2 RETURNING *`, [(req.params as any).key, JSON.stringify(b.value)]);
     // Legacy setting: the NT max age now lives on the NT jurisdiction — keep them in step.
     if (row.key === 'vehicle_max_age_years' && Number(b.value) >= 1 && Number(b.value) <= 50) {

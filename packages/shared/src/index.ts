@@ -17,3 +17,4 @@ export * from './i18n';
 export { Acknowledgement, Words, DraftNotice } from './Acknowledgement';
 export { speak, canSpeak } from './speak';
 export * from './handoff';
+export { EmergencyCard, TrustedContacts, SafetyReportForm, MyReports, Restricted } from './Safety';

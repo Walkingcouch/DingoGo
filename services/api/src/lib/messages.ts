@@ -113,6 +113,43 @@ export const templates = {
   route_check: t<{ ref: string }>({ category: 'safety',
     render: (v) => ({ title: 'Is everything OK?', body: `Your trip ${v.ref} has gone off the usual route. Tap to share your trip or get help.` }) }),
 
+  // ── Round 14: safety and trust ──
+  safety_check: t<{ ref: string; reason: 'long_stop' | 'route_deviation' | 'ops'; minutes: number }>({ category: 'safety',
+    render: (v) => ({
+      title: 'Are you OK?',
+      body: `${v.reason === 'long_stop' ? `Your car has been stopped for a while on ${v.ref}.` : v.reason === 'route_deviation' ? `Your trip ${v.ref} has gone off the usual route.` : `DingoGo is checking in on ${v.ref}.`} Tap "I'm OK" or "Get help". If we don't hear back in ${v.minutes} min, our team will check on you.`,
+    }) }),
+  trip_shared: t<{ name: string; driver: string; car: string; rego: string; url: string }>({ category: 'safety', smsKind: 'transactional',
+    render: (v) => ({ sms: `DingoGo: ${v.name} shared their ride with you. Driver ${v.driver}, ${v.car}, rego ${v.rego}. Follow it live: ${v.url}` }) }),
+  check_in_escalated_contact: t<{ name: string; ref: string; url: string }>({ category: 'safety', smsKind: 'essential',
+    render: (v) => ({ sms: `DingoGo SAFETY: ${v.name} asked for help or didn't answer a safety check on trip ${v.ref}. Our team is checking now. Live location: ${v.url} If they are in danger call 000.` }) }),
+  fatigue_warning: t<{ minutes: number; kind: 'daily_limit' | 'break' }>({ category: 'safety',
+    render: (v) => ({ title: v.kind === 'break' ? 'Break coming up' : 'Daily limit coming up', body: `About ${v.minutes} min until ${v.kind === 'break' ? 'your break' : 'your daily limit'}. After that you'll be set offline once your trip ends.` }) }),
+  fatigue_offline: t<{ kind: 'daily_limit' | 'break'; until: string; hours: string }>({ category: 'safety',
+    render: (v) => ({ title: v.kind === 'break' ? 'Time for a break' : 'Time to rest', body: `You've been online ${v.hours}. We've set you offline. You can go online again from ${v.until}.` }) }),
+  identity_check_reviewed: t<{ approved: boolean; note: string | null }>({ category: 'safety',
+    render: (v) => v.approved
+      ? { title: 'Photo check approved', body: 'Thanks. Your photo check is approved.' }
+      : { title: 'Photo check not accepted', body: `We couldn't match your photo to your account${v.note ? `: ${v.note}` : ''}. Take a new photo before going online, or call DingoGo.` } }),
+  incident_received: t<{ ref: string; critical: boolean }>({ category: 'safety',
+    render: (v) => ({ title: 'We got your safety report', body: `Report ${v.ref}: our safety team will look at it${v.critical ? ' today and may call you' : ' and get back to you'}. In danger now? Call 000.` }) }),
+  incident_update: t<{ ref: string; outcome: string | null }>({ category: 'safety',
+    render: (v) => ({ title: 'Your safety report', body: `We've finished looking into report ${v.ref}.${v.outcome ? ` ${v.outcome}` : ''} Thanks for telling us.` }) }),
+  account_restricted: t<{ kind: 'suspend' | 'ban'; reason: string; until: string | null }>({ category: 'account', smsKind: 'transactional',
+    render: (v) => ({
+      title: v.kind === 'ban' ? 'Your account is closed' : 'Your account is on hold',
+      body: `${v.reason}${v.until ? ` Until ${v.until}.` : ''} You can ask us to look again from the sign-in screen.`,
+      sms: `DingoGo: your account is ${v.kind === 'ban' ? 'closed' : 'on hold'}${v.until ? ` until ${v.until}` : ''}. ${v.reason} To ask us to look again, sign in to the DingoGo app.`,
+    }) }),
+  account_restored: t<Record<string, never>>({ category: 'account', smsKind: 'transactional',
+    render: () => ({ title: 'Your account is active again', body: 'You can use DingoGo again.', sms: 'DingoGo: your account is active again. You can sign in and use the app.' }) }),
+  appeal_decided: t<{ overturned: boolean; note: string | null }>({ category: 'account', smsKind: 'transactional',
+    render: (v) => ({
+      title: v.overturned ? 'Appeal accepted' : 'Appeal decided',
+      body: v.overturned ? 'We looked again and your account is active.' : `We looked again and the decision stays.${v.note ? ` ${v.note}` : ''}`,
+      sms: v.overturned ? 'DingoGo: we looked again at your appeal and your account is active.' : 'DingoGo: we looked again at your appeal and the decision stays. Sign in to the app for details.',
+    }) }),
+
   // ── Rider account ──
   payment_failed: t<{ ref: string; cents: number; reason?: string | null }>({ category: 'account',
     render: (v) => ({ title: 'Payment didn\'t go through', body: `We couldn't take ${money(v.cents)} for ${v.ref}. ${v.reason ?? ''} Open the trip to pay.`.replace(/\s+/g, ' ').trim() }) }),

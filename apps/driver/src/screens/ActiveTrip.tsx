@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { ApiError, ChatThread, DELIVERY_FAIL_REASONS, Icon, REALTIME, assetUrl, connectRealtime, get, km, money, post, uploadFile, useTripChat } from '@dingogo/shared';
+import { ApiError, ChatThread, DELIVERY_FAIL_REASONS, EmergencyCard, Icon, REALTIME, assetUrl, connectRealtime, get, km, money, post, uploadFile, useTripChat } from '@dingogo/shared';
 import { DgMap, type MapMarker } from '@dingogo/shared/map';
 import { needFlags, useDriver } from '../state';
 import { SignaturePad } from './SignaturePad';
@@ -176,7 +176,7 @@ export function ActiveTrip() {
           if (reason === 'sorry_business') void reloadMe();
         }
       }} busy={busy} isCourier={isCourier} />}
-      {sosOpen && <SosSheet onClose={() => setSosOpen(false)} />}
+      {sosOpen && <SosSheet tripId={t.id} onClose={() => setSosOpen(false)} />}
       {failOpen && <FailSheet parcel={parcel} busy={busy} onClose={() => setFailOpen(false)} onSubmit={async (b) => {
         const r = await act('delivery-failed', { ...b, lat: pos?.lat, lng: pos?.lng });
         if (r) { setFailOpen(false); showToast('Not delivered. Take it back to the sender.'); }
@@ -329,12 +329,13 @@ function CancelSheet({ onClose, onCancel, busy, isCourier }: { onClose: () => vo
   );
 }
 
-function SosSheet({ onClose }: { onClose: () => void }) {
+function SosSheet({ onClose, tripId }: { onClose: () => void; tripId?: string }) {
   const { pos } = useDriver();
   const [sent, setSent] = useState(false);
+  const [texted, setTexted] = useState(0);
   const [err, setErr] = useState<string | null>(null);
   async function alertOps() {
-    try { await post('/driver/sos', { lat: pos?.lat, lng: pos?.lng }); setSent(true); }
+    try { const r = await post('/driver/sos', { lat: pos?.lat, lng: pos?.lng }); setTexted(r.contacts_texted ?? 0); setSent(true); }
     catch { setErr('Alert not sent. Call 000 directly.'); }
   }
   return (
@@ -342,8 +343,9 @@ function SosSheet({ onClose }: { onClose: () => void }) {
         <h2 id="sos-h">Emergency help</h2>
         <a className="dg-btn dg-btn--danger dg-btn--block btn-xl" href="tel:000" onClick={() => void alertOps()}><Icon name="phone" size={22} />Call 000</a>
         <button className="dg-btn dg-btn--dark dg-btn--block btn-xl" style={{ marginTop: 10 }} onClick={alertOps} disabled={sent}><Icon name={sent ? 'check' : 'pin'} size={22} />{sent ? 'DingoGo has been alerted' : 'Alert DingoGo with my location'}</button>
-        {sent && <p className="dg-note" role="status">The operations team can see your location and will call you.</p>}
+        {sent && <p className="dg-note" role="status">The operations team can see your location and will call you.{texted ? ` We've texted your ${texted === 1 ? 'trusted contact' : `${texted} trusted contacts`} where you are.` : ''}</p>}
         {err && <p className="dg-error" role="alert">{err}</p>}
+        <EmergencyCard tripId={tripId} pos={pos ? { lat: pos.lat, lng: pos.lng } : null} />
         <button className="dg-btn dg-btn--ghost dg-btn--block" style={{ marginTop: 10 }} onClick={onClose}>Close</button>
     </Sheet>
   );

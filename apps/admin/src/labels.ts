@@ -67,6 +67,8 @@ export const EVENT_TYPE: Map = { relay_call: 'Call through DingoGo number', requ
   payment_failed: 'Payment failed', payment_retried: 'Payment taken (retry)', payment_retry_failed: 'Retry payment failed', hold_lapsed: 'Card hold lapsed',
   dispute_opened: 'Dispute opened', dispute_updated: 'Dispute updated', dispute_closed: 'Dispute closed',
   driver_released: 'Back to the search (driver pulled out)', driver_silent: 'No signal from driver', offer_withdrawn: 'Offer withdrawn (driver went offline)',
+  sos: 'Emergency alert', check_in: 'Asked "Are you OK?"', check_in_ok: 'Rider is OK', check_in_help: 'Rider asked for help', check_in_escalated: 'No answer: emergency alert raised',
+  check_in_late_answer: 'Rider answered after the alert', shared_with_contacts: 'Shared with trusted contacts', incident_reported: 'Safety report sent',
   cancelled_rider: 'Cancelled by rider', cancelled_driver: 'Cancelled by driver', cancelled_admin: 'Cancelled by DingoGo', declined: 'Driver declined' };
 export const PARTNER_KIND: Map = { cafe: 'Café', shop: 'Shop', community: 'Community organisation', other: 'Other' };
 export const SERVICE_NAME: Map = { ride: 'Ride', pet: 'Pet-friendly ride', courier_s: 'Courier, small', courier_m: 'Courier, medium', courier_l: 'Courier, large', tour: 'Tour', hourly: 'Hourly hire' };

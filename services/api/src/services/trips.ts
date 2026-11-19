@@ -1,3 +1,4 @@
+import * as safety from './safety.js';
 import { logError } from '../lib/log.js';
 import type pg from 'pg';
 import { config } from '../config.js';
@@ -729,6 +730,7 @@ export async function dispatchTick() {
     await watchDrivers().catch((e) => logError('watch drivers', e));
     await autoEarningsFloor().catch((e) => logError('earnings floor', e));
     await sendDocExpiryReminders().catch((e) => logError('document reminders', e));
+    await safety.runSafetyChecks().catch((e) => logError('safety checks', e));
 
     const open = await q(`SELECT id FROM trips WHERE status = 'requested' ORDER BY requested_at LIMIT 50`);
     for (const t of open) await dispatchTrip(t.id).catch((e) => logError('dispatch', e));
@@ -901,6 +903,7 @@ export async function acceptOffer(driverId: string, tripId: string) {
   for (const f of out.followers) broadcast({ ...f, status: 'accepted', rider_id: trip.rider_id, driver_id: driverId });
   void send(trip.rider_id, 'driver_on_way', { again: trip.driver_releases > 0, driver: trip.driver.name, colour: trip.vehicle.colour, make: trip.vehicle.make,
     model: trip.vehicle.model, rego: trip.vehicle.rego, eta_min: Math.ceil(out.eta / 60) }, { trip });
+  safety.autoShare(trip);   // trusted contacts get the live link (every trip, or night trips) if the rider chose that
   return trip;
 }
 
@@ -1512,7 +1515,9 @@ export async function onDriverLocation(driverId: string, p: LatLng & { heading?:
       await q(`INSERT INTO compliance_flags (kind, driver_id, trip_id, detail) VALUES ('route_deviation', $1, $2, $3)`,
         [driverId, t.id, `Vehicle ${Math.round(off)} m off the expected route`]);
       toOps('safety.deviation', { trip_id: t.id, ref: t.ref, off_m: Math.round(off) });
-      void send(t.rider_id, 'route_check', { ref: t.ref }, { data: { trip_id: t.id, action: 'safety_check' } });
+      // "Are you OK?" with an answer the team sees (and escalation if unanswered); the plain notice before migration 019.
+      const check = await safety.createCheck(t, 'route_deviation', { off_m: Math.round(off) }).catch(() => null);
+      if (!check) void send(t.rider_id, 'route_check', { ref: t.ref }, { data: { trip_id: t.id, action: 'safety_check' } });
     }
   }
   return t;

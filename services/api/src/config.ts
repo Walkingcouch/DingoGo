@@ -119,6 +119,18 @@ export const config = {
     /** A scheduled booking released this late (nobody was using the apps to run the dispatcher) is not sent to drivers. */
     scheduledMissedMin: Number(env.SCHEDULED_MISSED_MIN ?? 30),
   },
+  /** Round 14: safety and trust. Rules (fatigue, check-ins, photo checks) are admin settings (`safety_policy`); these are integrations. */
+  safety: {
+    /** Face-match provider for driver photo checks (POST JSON { selfie, reference } as base64, answers { score } 0–1). Empty = DingoGo reviews every photo. */
+    faceMatchUrl: env.FACE_MATCH_URL ?? '',
+    faceMatchKey: env.FACE_MATCH_KEY ?? '',
+    faceMatchTimeoutMs: Number(env.FACE_MATCH_TIMEOUT_MS ?? 5000),
+    /** Street address for the emergency card: a Pelias / openrouteservice-style reverse geocoder (`?point.lat=&point.lon=&size=1`,
+     *  ORS_API_KEY sent as Authorization). Empty = nearest landmark and GPS only. */
+    reverseGeocodeUrl: env.REVERSE_GEOCODE_URL ?? '',
+    /** How often the dispatcher runs the safety checks (long stops, unanswered check-ins, fatigue), in seconds. */
+    tickS: Number(env.SAFETY_TICK_S ?? 20),
+  },
   loyalty: {
     pointsPerDollar: 10,         // 10 pts per $1 spent
     referralBonusPoints: 500,    // both sides, after referee's first completed trip

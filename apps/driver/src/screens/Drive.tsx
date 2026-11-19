@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { ApiError, Icon, del, money, post } from '@dingogo/shared';
+import { useEffect, useState } from 'react';
+import { ApiError, Icon, del, get, money, post, time, uploadFile, useInterval } from '@dingogo/shared';
 import { DgMap, type MapMarker } from '@dingogo/shared/map';
 import { PLACES, rangeKm, useDriver } from '../state';
 import { FuelChip, isEv } from '../vehicle';
@@ -13,6 +13,13 @@ export function Drive() {
   const [busy, setBusy] = useState(false);
   const [errors, setErrors] = useState<string[] | null>(null);
   const [leaveOpen, setLeaveOpen] = useState(false);
+  // Round 14: fatigue limits and the photo check before going online.
+  const [safety, setSafety] = useState<any>(null);
+  const [photoOpen, setPhotoOpen] = useState<null | 'needed' | 'rejected'>(null);
+  const loadSafety = () => { get('/driver/safety').then(setSafety).catch(() => { /* keep */ }); };
+  useEffect(loadSafety, [online]);
+  useInterval(loadSafety, 5 * 60_000);
+  const fatigue = safety?.fatigue;
   const leave = me?.driver?.leave as { kind: string; until: string | null } | null | undefined;
   async function back() { setBusy(true); try { await del('/driver/leave'); await reloadMe(); } finally { setBusy(false); } }
   const v = me?.driver?.vehicle;
@@ -26,6 +33,10 @@ export function Drive() {
       await post('/driver/online', { online: true, battery_pct: ev ? battery : undefined, lat: pos?.lat, lng: pos?.lng });
       setOnline(true); setAskBattery(false); void reloadMe();
     } catch (e) {
+      if (e instanceof ApiError && (e.code === 'identity_check_needed' || e.code === 'identity_check_rejected')) {
+        setAskBattery(false); setPhotoOpen(e.code === 'identity_check_rejected' ? 'rejected' : 'needed'); return;
+      }
+      if (e instanceof ApiError && e.code === 'fatigue_rest') loadSafety();
       if (e instanceof ApiError) setErrors(Array.isArray(e.details) ? (e.details as string[]) : [e.message]);
       else setErrors(['Could not go online']);
       setAskBattery(true); // the sheet shows why
@@ -66,6 +77,13 @@ export function Drive() {
         {online
           ? <button className="online-toggle stop" onClick={goOffline} disabled={busy}><Icon name="power" size={24} />Go offline</button>
           : <button className="online-toggle go" onClick={() => { setErrors(null); if (ev) setAskBattery(true); else void goOnline(); }} disabled={busy}><Icon name="power" size={24} />{busy ? 'Going online…' : 'Go online'}</button>}
+
+        {fatigue?.enabled && (fatigue.rest_until
+          ? <div className="inline-notice" role="status"><Icon name="moon" size={20} /><span>{fatigue.reason === 'break' ? 'Break time' : 'Rest time'}: you can go online again from {time(fatigue.rest_until)}.</span></div>
+          : online && fatigue.minutes_left != null && (
+            <p className="dg-muted" style={{ margin: '8px 0 0' }}>
+              Online {hrs(fatigue.online_min_24h)} today. {fatigue.minutes_left <= 30 ? <strong>Break in {hrs(fatigue.minutes_left)}.</strong> : `Next break in ${hrs(fatigue.minutes_left)}.`}
+            </p>))}
 
         {ev && (
           <div className="battery" aria-label={`Battery ${battery} percent, about ${range} kilometres`}>
@@ -114,6 +132,9 @@ export function Drive() {
         </Sheet>
       )}
 
+      {photoOpen && <PhotoCheckSheet rejected={photoOpen === 'rejected'} onClose={() => setPhotoOpen(null)}
+        onDone={async () => { setPhotoOpen(null); loadSafety(); if (ev) setAskBattery(true); else await goOnline(); }} />}
+
       {leaveOpen && <LeaveSheet onClose={() => setLeaveOpen(false)} onDone={async () => { setLeaveOpen(false); setOnline(false); await reloadMe(); }} />}
 
       {pickPlace && (
@@ -132,6 +153,35 @@ export function Drive() {
         </Sheet>
       )}
     </div>
+  );
+}
+
+const hrs = (m: number) => (m >= 60 ? `${Math.floor(m / 60)} h${m % 60 ? ` ${m % 60} min` : ''}` : `${m} min`);
+
+/** Daily photo check (when DingoGo has switched it on): a selfie taken now, matched or looked at by DingoGo. */
+function PhotoCheckSheet({ rejected, onClose, onDone }: { rejected: boolean; onClose: () => void; onDone: () => Promise<void> }) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  async function take(f: File | undefined) {
+    if (!f) return;
+    setBusy(true); setErr(null);
+    try { const u = await uploadFile(f, 'selfie'); await post('/driver/identity-check', { photo_url: u.url }); await onDone(); }
+    catch (e) { setErr(e instanceof ApiError ? e.message : 'Could not send the photo. Try again.'); } finally { setBusy(false); }
+  }
+  return (
+    <Sheet onClose={onClose} labelledBy="photo-h">
+      <h2 id="photo-h">Quick photo check</h2>
+      <p className="dg-muted" style={{ marginTop: 0 }}>
+        {rejected ? 'Your last photo wasn\'t accepted. ' : ''}Take a photo of your face so riders know it's you driving today. Good light, no hat or sunglasses.
+      </p>
+      <label className="dg-btn btn-xl dg-btn--block" style={{ cursor: 'pointer' }} aria-disabled={busy}>
+        <Icon name="camera" size={22} />{busy ? 'Sending…' : 'Take photo'}
+        <input type="file" accept="image/*" capture="user" style={{ position: 'absolute', width: 1, height: 1, opacity: 0 }} disabled={busy}
+          onChange={(e) => { void take(e.target.files?.[0]); e.target.value = ''; }} />
+      </label>
+      {err && <p className="dg-error" role="alert">{err}</p>}
+      <button className="dg-btn dg-btn--ghost btn-xl dg-btn--block" style={{ marginTop: 10 }} onClick={onClose}>Not now</button>
+    </Sheet>
   );
 }
 

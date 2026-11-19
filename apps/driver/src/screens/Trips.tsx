@@ -1,7 +1,10 @@
-import { Icon, STATUS_LABEL, SERVICE_ICON_NAME, dayName, get, money, statusTone, time, useLoad } from '@dingogo/shared';
+import { useState } from 'react';
+import { Icon, STATUS_LABEL, SERVICE_ICON_NAME, SafetyReportForm, dayName, get, money, statusTone, time, useLoad } from '@dingogo/shared';
+import { Sheet } from '../Sheet';
 
 export function Trips() {
   const { data, error, loading } = useLoad(() => get('/driver/trips'));
+  const [report, setReport] = useState<any>(null);
   return (
     <div className="screen" tabIndex={0} aria-label="Your trips">
       <h1>Trips</h1>
@@ -21,11 +24,20 @@ export function Trips() {
                 : t.final_cents != null && <div className="dg-money">{money(t.final_cents)}</div>}
               {t.tip_cents > 0 && <div className="sub">+{money(t.tip_cents)} tip</div>}
               {t.status !== 'completed' && <span className={`dg-chip dg-chip--${statusTone(t.status)}`}>{STATUS_LABEL[t.status]}</span>}
+              <div><button className="link-btn" onClick={() => setReport(t)} aria-label={`Report a safety problem on trip ${t.ref ?? ''}`}>Report</button></div>
             </div>
           </li>
         ))}
         {data && !data.trips?.length && <li className="dg-muted">No trips yet. Go online to start receiving requests.</li>}
       </ul>
+      {report && (
+        <Sheet onClose={() => setReport(null)} labelledBy="rep-h">
+          <h2 id="rep-h">Report a safety problem</h2>
+          <p className="dg-muted" style={{ marginTop: 0 }}>{report.pickup_address} to {report.dropoff_address}</p>
+          <SafetyReportForm tripId={report.id} />
+          <button className="dg-btn dg-btn--ghost dg-btn--block" style={{ marginTop: 10 }} onClick={() => setReport(null)}>Close</button>
+        </Sheet>
+      )}
     </div>
   );
 }

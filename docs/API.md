@@ -742,3 +742,80 @@ unknown paths. Links: `/fares?from=lat,lng,Name&to=…&service=ride|pet|courier_
 (pre-fills booking, survives sign-in) and `/rider/?ref=CODE` (pre-fills the sign-up code), `/invite/CODE`, `/drive/status/TOKEN`, `/airport`,
 `/hospital`. Build env (website): `VITE_SITE_URL` (canonical host; else `VERCEL_PROJECT_PRODUCTION_URL`, else the live URL), and analytics
 `VITE_ANALYTICS_DOMAIN` (off when unset), `VITE_ANALYTICS_SRC`, `VITE_ANALYTICS_API` (Plausible-compatible, cookie-free, Do Not Track honoured).
+
+## Safety and trust (Round 14)
+
+Needs migration `019_safety.sql` (`users.trusted_contacts`, `users.auto_share`, `safety_checks`, `driver_online_sessions`, `identity_checks`,
+`incident_reports`, `account_actions`, `appeals`). Before it (`lib/safety.ts` `safetyReady()`, re-checked once a minute): SOS (emergency contact
+texted), route-deviation notice, going online, sign-in and the emergency card all work; `GET /me/safety` says `ready: false`; the other endpoints
+below answer 503 `migration_pending` (lists are empty).
+
+**Policy** (setting `safety_policy`, defaults in code): `GET /admin/safety/policy`, `PUT /admin/safety/policy` (admin; also via
+`PUT /admin/settings/safety_policy`, same checks; audited) `{ identity_check: { mode: off|photo_review|face_match, every_hours: 24,
+match_threshold: 0.9 }, fatigue: { enabled: true, max_online_min_24h: 720, rest_min: 360, break_after_min: 300, break_min: 20, warn_before_min: 30 },
+check_ins: { enabled: true, long_stop_min: 5, answer_min: 3, text_contacts_on_escalation: true }, night: { from_hour: 21, to_hour: 6 },
+incidents: { auto_hold_critical: true } }`. The fatigue defaults follow common point-to-point guidance (12 h then a 6 h rest); check them against
+current NT and SA guidance. `GET /admin/safety/overview` → counts (check-ins, photo checks, open/critical reports, appeals).
+
+**Trusted contacts and sharing:** `GET /me/safety` → `{ ready, trusted_contacts, auto_share, night, numbers }`; `PUT /me/safety { trusted_contacts?:
+[{ name, phone }] (≤ 5, not your own number, no duplicates), auto_share?: off|night|always }` (any signed-in user; drivers use contacts for SOS only).
+`/me` returns both fields. When a driver accepts a ride, a rider with `always` (or `night` inside the night window, Darwin time) has each trusted
+contact texted `trip_shared` (driver first name, car, rego, live link); the trip timeline gets `shared_with_contacts { count, auto }` (no numbers).
+`POST /trips/:id/share-contacts` (rider, live trip) does it on demand: `{ sent }`, 400 `no_contacts`, 429 `share_limit` after 3.
+SOS (`POST /trips/:id/sos`) texts every trusted contact plus the emergency contact (`contacts_texted` in the response). Driver SOS (`POST /driver/sos`)
+is now on the trip timeline (`sos`, role driver) and texts the driver's contacts a map link to the car (never the rider's trip link).
+
+**Check-ins ("Are you OK?"):** raised for a ride in progress that has been stopped (all points within 150 m) for `long_stop_min` with a fresh signal,
+at least 300 m from the pickup and drop-off (not tours or multi-drop runs; at most one per 3 × `long_stop_min`), for a route deviation (was a plain
+notice), or by ops (`POST /admin/trips/:id/check-in`, 409 `check_pending`). The rider gets a `safety_check` push/inbox message and a realtime
+`safety.check`; ops get `safety.check_in` / `safety.long_stop`. Rider: `GET /safety/checks?trip_id=` → pending `{ id, reason, answer_by }`;
+`POST /safety/checks/:id { answer: ok|help }` → `ok` closes it; `help` raises an SOS alert at once (`{ status: 'help', sos_id, emergency_number }`).
+Unanswered after `answer_min`: the dispatcher tick raises an SOS alert (`sos_alerts`, role rider, message "No answer to a safety check (…)"), which
+uses the usual incident view and runbook, and texts the rider's contacts `check_in_escalated_contact`. A late "I'm OK" is noted on the incident.
+`GET /admin/safety/checks` (7 days). Trip events: `check_in`, `check_in_ok`, `check_in_help`, `check_in_escalated`, `check_in_late_answer`.
+
+**Fatigue:** online time is recorded in `driver_online_sessions` (opened/closed by `/driver/online`, leave, blocks, photo-check rejection, and
+synced with the online flag on every safety tick). Daily limit: `max_online_min_24h` online since the last rest of `rest_min` → rest `rest_min`.
+Break: `break_after_min` online with no gap of `break_min` → off for `break_min`. Over a limit: offline as soon as the driver has no live trip (tick, or
+straight after `complete`), offers withdrawn, `fatigue_offline` with the time they can return; `fatigue_warning` once per session
+`warn_before_min` before. `POST /driver/online` → 409 `fatigue_rest` with `details.fatigue { reason, rest_until, online_min_24h, continuous_min }`.
+`GET /driver/safety` → `{ fatigue: { enabled, online_min_24h, continuous_min, minutes_left, rest_until, reason }, identity }`. `GET
+/admin/safety/fatigue` → online and resting drivers.
+
+**Driver photo check** (off by default): with `photo_review` or `face_match`, `POST /driver/online` → 409 `identity_check_needed` (no photo in
+`every_hours`) or `identity_check_rejected`. Upload purpose `selfie` (drivers only, private like documents), then `POST /driver/identity-check
+{ photo_url }` → 201 `{ check: { status, method, match_score } }` (image only; taken in the last 10 minutes, 400 `photo_too_old`; 409 `photo_used`).
+`face_match` with `FACE_MATCH_URL` set: the provider gets `{ selfie, reference }` (base64; reference = last approved photo) and answers
+`{ score }`; ≥ `match_threshold` → approved at once, else pending; provider down or no reference yet → pending (`photo_review`). Drivers can drive
+while a photo is pending. Ops: `GET /admin/identity-checks?status=pending|approved|rejected|all` (signed photo, last approved photo, licence),
+`PATCH /admin/identity-checks/:id { status: approved|rejected, note }` (note needed to reject; rejected → offline unless on a trip, driver told; audited).
+
+**Safety reports:** `GET /safety/report-categories` → categories with severity (`critical`: sexual_misconduct, physical_assault; `high`:
+impaired_driving, dangerous_driving, threats_abuse, discrimination, wrong_driver_or_car, contact_after_trip; `normal`: unsafe_vehicle,
+rude_behaviour, other) and support numbers. `POST /safety/reports { trip_id?, category, description (10–2000), evidence?: [upload refs ≤ 4] }`
+(rider or driver of that trip; evidence must be the reporter's own uploads with purpose `evidence`, private; 10 a day) → 201 `{ report: { ref:
+"IR-XXXXXX", severity, … }, numbers }` (1800RESPECT and Lifeline for sexual, assault, threats and after-trip contact). The other person on the
+trip is the subject. A critical report with `auto_hold_critical` suspends the subject (`under_review`) at once, unless they are on a live trip
+(ops get `incident.hold_deferred`). `GET /safety/reports` → mine (ref, label, status, outcome; nothing about the subject). Ops: `GET
+/admin/incidents?status=active|open|investigating|actioned|closed|all&severity=` (critical first), `GET /admin/incidents/:id` (signed evidence,
+notes, other reports about the subject), `PATCH /admin/incidents/:id { status?, outcome?, note? }` (audited; marking `actioned`/`closed` sends
+the reporter `incident_update` with the outcome). In `/me/export`: `safety_reports`, `check_ins`, `account_actions`.
+
+**Account standing, suspensions and appeals:** `POST /admin/users/:id/restrict { action: suspend|ban|warning, reason_code, public_reason?, note?,
+until? (suspend only, future), incident_id? }` (admin; not yourself; 409 `already_restricted`) — suspend/ban block the account, take a driver
+offline, withdraw offers, close sockets and text `account_restricted` with the reason; a warning is an inbox note only. `POST
+/admin/users/:id/lift { note? }` (409 `not_restricted`; pending appeals marked overturned). `GET /admin/users/:id/standing`. The old
+`PATCH /admin/users/:id { blocked }` switch records a `ban` / `lift` too. Suspensions with `until` lift themselves (tick, or at sign-in).
+Reason codes: under_review, safety_incident, abuse, fraud, document_fraud, repeated_cancellations, identity_check, other.
+Sign-in (`POST /auth/otp/verify`) for a suspended or banned account → 403 `account_restricted` with `details { kind, reason, until, appeal_token }`
+(was: a token that then failed). The appeal token (1 day, `scope: appeal`) is not a sign-in (refused by every other route and the socket):
+`GET /appeal` → `{ restriction, appeal }`, `POST /appeal { message (20–1500) }` → 201 (409 `appeal_pending`, `appeal_decided`). Ops: `GET
+/admin/appeals?status=`, `PATCH /admin/appeals/:id { decision: upheld|overturned, note? }` (admin; overturned lifts; texted `appeal_decided`).
+
+**Emergency card:** `GET /safety/emergency-card?lat=&lng=&trip_id=` (any signed-in user) → `{ emergency_number, say, address, landmark { name,
+distance_m, direction }, lat, lng, dms, trip { ref, pickup, dropoff, car }, numbers }`. `say` is what to tell 000 ("I'm about 300 metres north of
+Todd Mall, Alice Springs. GPS: latitude minus 23.69840, longitude 133.88220. I'm in a DingoGo car: White Toyota Camry, rego C D 1 2 A B …").
+Without lat/lng it uses the car's last position on the caller's live trip. A street address comes from `REVERSE_GEOCODE_URL` when set (1.5 s
+timeout), otherwise the nearest known landmark.
+
+Uploads: purposes `selfie` (drivers) and `evidence` (anyone signed in) are private (signed links, owner and staff only).

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link, Route, Routes, useNavigate, useSearchParams } from 'react-router-dom';
-import { Acknowledgement, ApiError, DraftNotice, Icon, NotifySettings, ago, date, del, get, langInfo, money, normaliseLang, patch, post, put, t, useLoad, Ranges } from '@dingogo/shared';
+import { Acknowledgement, ApiError, DraftNotice, Icon, MyReports, NotifySettings, SafetyReportForm, TrustedContacts, ago, date, del, get, langInfo, money, normaliseLang, patch, post, put, t, useLoad, Ranges } from '@dingogo/shared';
 import { Dialog, Page, Spinner } from '../components/ui';
 import { useMe } from '../ctx';
 import { CLIENT_KINDS } from './Clients';
@@ -15,6 +15,7 @@ export function AccountScreen() {
       <Route path="notifications/settings" element={<Page title="Notification settings" back="/account/notifications"><NotifySettings app="rider" /></Page>} />
       <Route path="help" element={<Help />} />
       <Route path="safety" element={<Safety />} />
+      <Route path="safety/report" element={<SafetyReport />} />
       <Route path="privacy" element={<Privacy />} />
       <Route path="organisations" element={<Organisations />} />
     </Routes>
@@ -32,7 +33,7 @@ function Menu() {
     ...((me?.corporate_accounts?.length ?? 0) > 0 ? [{ to: '/business', icon: 'package', title: 'Business deliveries', sub: 'Parcels sent, runs of several drops, spreadsheet import' }] : []),
     ...((me?.corporate_accounts ?? []).some((a) => CLIENT_KINDS.includes(a.kind ?? '')) ? [{ to: '/clients', icon: 'users', title: 'Book for clients', sub: 'Rides for your clients, with their consent' }] : []),
     { to: 'help', icon: 'help', title: 'Help', sub: 'Lost property, fares, report a problem' },
-    { to: 'safety', icon: 'shield', title: 'Safety', sub: 'Trip PIN, sharing, SOS, our drivers' },
+    { to: 'safety', icon: 'shield', title: 'Safety', sub: 'Trusted contacts, trip sharing, reports, SOS' },
     { to: 'organisations', icon: 'users', title: 'Organisations', sub: 'Who can book rides for you' },
     { to: 'privacy', icon: 'lock', title: 'Privacy and your data', sub: 'Download or delete your data' },
   ];
@@ -92,7 +93,7 @@ function Profile() {
         <label className="dg-field"><span>Name</span><input className="dg-input" value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} autoComplete="name" /></label>
         <label className="dg-field"><span>Email for receipts</span><input className="dg-input" type="email" value={f.email} onChange={(e) => setF({ ...f, email: e.target.value })} autoComplete="email" /></label>
         <h2 className="section__title" style={{ marginTop: 24 }}>Emergency contact</h2>
-        <p className="dg-muted" style={{ marginTop: 0 }}>If you press SOS, we text this person your live trip link.</p>
+        <p className="dg-muted" style={{ marginTop: 0 }}>If you press SOS, we text this person your live trip link. Add more people in Account, Safety.</p>
         <div className="grid2">
           <label className="dg-field"><span>Their name</span><input className="dg-input" value={f.ec_name} onChange={(e) => setF({ ...f, ec_name: e.target.value })} /></label>
           <label className="dg-field"><span>Their mobile</span><input className="dg-input" type="tel" value={f.ec_phone} onChange={(e) => setF({ ...f, ec_phone: e.target.value })} /></label>
@@ -361,20 +362,43 @@ function Help() {
 function Safety() {
   return (
     <Page title="Safety" back="/account">
+      <section className="section" aria-labelledby="tc-h">
+        <h2 className="section__title" id="tc-h">Trusted contacts</h2>
+        <TrustedContacts role="rider" />
+      </section>
+      <section className="section" aria-labelledby="rep-h">
+        <h2 className="section__title" id="rep-h">Report a safety problem</h2>
+        <p className="dg-muted" style={{ marginTop: 0 }}>Something happened on a trip, or after it? Tell our safety team. To report a trip, open it from Trips and choose "Report a safety problem".</p>
+        <Link className="dg-btn dg-btn--ghost" to="/account/safety/report">Report a safety problem</Link>
+        <h3 style={{ marginTop: 16 }}>Your reports</h3>
+        <MyReports />
+      </section>
       <div className="prose">
         <h2>Check the car and the PIN</h2>
-        <p>Before you get in, check the rego plate matches the app. Tell the driver your 4-digit trip PIN. Drivers can't start the trip without it.</p>
+        <p>Before you get in, check the rego plate matches the app. Tell the driver your 4-digit trip PIN. Drivers can't start the trip without it. If the driver or car doesn't match, don't get in: report it.</p>
         <h2>Share your trip</h2>
-        <p>Tap "Share my trip" to send family a live map link. They don't need the app.</p>
+        <p>Tap "Share my trip" to send family a live map link, or "Text my contacts". They don't need the app. You can also share every trip, or night trips, automatically.</p>
         <h2>SOS</h2>
-        <p>The red SOS button on the trip screen calls 000 and alerts our safety team with your location. If you've added an emergency contact, they get a text too.</p>
+        <p>The red SOS button on the trip screen calls 000 and alerts our safety team with your location. It also shows what to tell 000: where you are and the car. Your trusted contacts get a text too.</p>
+        <h2>Are you OK?</h2>
+        <p>If the car stops for a long time or goes well off the expected route, we ask "Are you OK?". If you don't answer within a few minutes, our team checks on you and texts your trusted contacts.</p>
         <h2>Our drivers</h2>
-        <p>Every driver holds an NT H endorsement and commercial passenger vehicle ID, and has passed a national police check and medical. They do disability awareness training and must carry assistance animals.</p>
-        <h2>If a trip goes off route</h2>
-        <p>If the car goes well off the expected route, we'll check in with you and our team is alerted.</p>
+        <p>Every driver holds an NT H endorsement and commercial passenger vehicle ID, and has passed a national police check and medical. They do disability awareness training and must carry assistance animals. Drivers have limits on how long they can drive without a rest.</p>
+        <h2>Women riders</h2>
+        <p>You can ask for a woman driver when you book. DingoGo checks each woman driver's ID before turning this on. Reports of sexual harassment or assault put the other person's account on hold while we look into it. For support any time, call 1800RESPECT on <a href="tel:1800737732">1800 737 732</a>.</p>
         <h2>No alcohol in the car</h2>
         <p>Drinking in DingoGo cars isn't allowed, and we don't deliver alcohol.</p>
       </div>
+    </Page>
+  );
+}
+
+function SafetyReport() {
+  const [params] = useSearchParams();
+  const tripId = params.get('trip') ?? undefined;
+  return (
+    <Page title="Report a safety problem" back={tripId ? `/trips/${tripId}` : '/account/safety'}>
+      <SafetyReportForm tripId={tripId} />
     </Page>
   );
 }
