@@ -1764,3 +1764,108 @@ Ideas for next rounds:
 - In-app update prompt (Play In-App Updates) and a minimum app version in `/public/config` so old APKs are told to update.
 - `noUnusedLocals`/`noUnusedParameters` in `tsconfig.base.json` and a small ESLint config for hooks rules (`react-hooks`) only.
 - iOS project on Capacitor 8 (SPM template) with the strings in `docs/store/ios-usage-strings.md`.
+
+### Round 24 — business and government customers (accounts, approvals, invoicing, recurring trips)
+Scan: read business accounts end to end — `corporate_accounts`/`corporate_members` (001/002), the admin Business page (create, add a
+member, monthly statement), `GET /admin/corporate/:id/statement`, `checkAccountLimit`/`accountMonthCents`, client consents and
+`/business/rides` (Round 12), business deliveries (Round 11), NDIS invoices and the PDF writer (Round 16), the scheduled-trip release
+in the dispatcher tick, public holidays, the website Business page and the rider booking form's account option. Found: no way for an
+organisation to sign itself up (the website form is a hire enquiry, ops type everything in); a business account has one flat list of
+members — no cost centres, approvers, purpose codes or PO numbers, so a government or health customer can't reconcile the bill; a
+staff member can't book a ride for a colleague or visitor (only community accounts can, for consented clients); the "statement" is a
+live query, never issued — no invoice number, issue or due date, nothing marks it paid, overdue accounts are never chased and refunds
+after the fact silently change last month's figures; nothing to import into Xero or MYOB; NDIS plan managers get one invoice per
+participant from the Tax page but the account statement has no support item code, provider ABN or registration; account managers
+can't see what their organisation spends; dialysis and clinic runs are booked one trip at a time by phone.
+
+Suggested:
+1. [add] Self-serve business sign-up (migration 027): website form (organisation, type, ABN with the ATO check digits, billing email,
+   contact mobile, address, expected spend, PO/NDIS needs) creates a pending account; admin Applications queue approves (terms,
+   limit, discount) or declines with a note; on approval the contact becomes the account manager and is texted; per-IP limit.
+2. [add] Account set-up for managers: invite/remove members (member, approver, manager), cost centres (code, name, approver,
+   monthly budget), trip purpose codes, booking rules (require cost centre / purpose / PO, default PO, approval over $X, one
+   invoice per PO, NDIS number required, who may book for others).
+3. [add] Business fields on every account booking (rider app, book-for-others, client rides, recurring): cost centre, purpose and PO
+   checked against the account's rules; cost-centre budget enforced (402); bookings over the approval amount by someone who isn't an
+   approver are held for approval (booked ahead) or refused (`approval_required`, booking now); approvers see and approve/decline;
+   a booking still waiting when it is due is cancelled without a fee.
+4. [add] Book on behalf: `POST /business/trips` for a colleague (member) or a guest (name + mobile) — the trip is the traveller's,
+   texted to them with the booker and organisation; community accounts still need client consent for non-staff.
+5. [add] Monthly tax invoices: issued for a closed Darwin month (by admin or automatically on the 1st when switched on), numbered
+   `INV-YYYYMM-NNNN`, one per account (or per PO), lines frozen with traveller, cost centre, purpose, PO and NDIS details; PDF tax
+   invoice; mark paid with a reference, void and reissue; managers download theirs.
+6. [add] Accounting exports: Xero sales-invoice CSV (tax-inclusive, AU dates, account code and cost centre tracking) and MYOB
+   AccountRight service-sales import (blank line between invoices), per month.
+7. [add] Payment terms and overdue reminders: due date from the account's terms; reminders to managers at set days overdue (texts +
+   app), counted and audited; optional hold on new account bookings after N days overdue (off by default).
+8. [add] NDIS plan-managed and government detail: NDIS plan-manager invoices grouped by participant with NDIS number, support item
+   code, GST code, provider ABN and NDIS registration; PO number on the invoice and in the exports.
+9. [add] Usage dashboard for managers and approvers (`GET /business/usage`): spend, trips, refunds, limit, by cost centre, purpose,
+   traveller and day, approvals waiting, open and overdue invoices; rider app Business account screen (usage, invoices, approvals,
+   book for someone, regular trips, set-up) and cost centre/purpose/PO fields in the booking form; admin Business tabs.
+10. [add] Recurring trips (dialysis, clinic, work rosters): weekdays + time (Darwin), optional return trip, start/end dates, skip public
+    holidays and chosen dates; booked 14 days ahead by the dispatcher tick (never twice for the same time), problems recorded on the
+    series; one text to the traveller for the series; stop with or without cancelling what's booked.
+
+Done (all 10). Migration: `services/api/migrations/027_business_billing.sql` (columns `corporate_accounts.status/application/applied_at/
+reviewed_at/reviewed_by/review_note/contact_name/contact_phone/address/booking_rules`; tables `account_cost_centres`, `account_purposes`,
+`account_recurring_trips`, `account_invoices` (one non-void invoice per account, month and PO); columns `trips.cost_centre_id/
+purpose_code/po_number/approval_status/approval_by/approval_at/recurring_id` with a unique index on `(recurring_id, scheduled_for)`;
+additive, IF NOT EXISTS). Before it (`services/businessRules.ts` `businessReady()`, re-checked once a minute): account bookings, the
+monthly limit, the live statement and phone bookings work as before; bookings with business fields, applications, set-up, approvals,
+booking for others, usage, invoices and recurring trips answer 503 `migration_pending`; admin lists say `ready: false`; the tick skips
+billing and recurring. Tests: 230 → 243 (`business.test.ts` 6 unit tests — rules validation and the lenient copy, every booking-rule
+outcome incl. default PO and the three approval results, who may book for others, billing settings and the reminder schedule (once a
+day, latest after missed days, none when paid), recurrence (weekdays in Darwin, return legs, end date, holidays and skipped dates,
+weekday wording), Xero and MYOB files (quotes, formula text, refunded lines left out, GST split, blank line between invoices); 7 e2e —
+application with ABN check digits, duplicate ABN, approve (contact becomes manager, texted) and decline with a note; set-up roles,
+cost centres with approver and budget, purposes, rules, last manager; bookings refused without cost centre/purpose, unknown values,
+budget 402, approval refused now / held ahead / approved / declined (two approvers at once decide once) / expired at release with no
+fee, approvers' own bookings, ops phone bookings not held; booking for a colleague and a guest (texted, "Sam at …"), landline/staff
+numbers refused, community kinds need consent, guests and book-for-others rules; usage by cost centre/purpose, invoices issued once for
+a closed month, frozen lines, PDF with NDIS participants, Xero/MYOB, void and reissue, one per PO, reminders once a day and texted,
+overdue list, the booking hold and paid; recurring preview, booking with holiday and skipped date left out, one text, never twice
+(incl. after the horizon is reset and through the tick), skip a day, stop and cancel free; everything with 027's tables and columns
+renamed away). `messages.test.ts` covers the 12 new templates.
+- API: new `src/lib/business.ts` (roles, rules, `checkBooking`, `mayBookForOthers`, billing settings, `reminderDue`, invoice numbers,
+  recurrence, Xero/MYOB CSV), `src/services/businessRules.ts` (readiness, billing settings, `checkAccountBooking` with budget, approval
+  and the overdue hold), `src/services/business.ts` (applications, set-up, approvals, booking for others, usage, invoices and PDF,
+  exports, reminders, `runBillingIfDue`, recurring series and `runRecurringIfDue`), `src/routes/businessAccounts.ts`; `services/trips.ts`
+  (business fields on `CreateTripInput`, rules in `insertTrip`, approvers told after a held booking, unapproved bookings not released,
+  billing and recurring in the tick), `routes/rider.ts`, `routes/clients.ts`, `routes/business.ts` (fields on bookings, client rides and
+  courier runs), `lib/messages.ts` (12 templates), `lib/ids.ts` (`BA-`, `REG-`).
+- Apps: website Business page — "Open a business account" application form (quote form kept for events). Rider — new Business account
+  screen (Spend by cost centre/purpose/traveller with limit and invoices, Book for someone, Regular trips with preview/skip/stop,
+  Approvals, Invoices with PDF, Set-up: rules, people, cost centres, purposes) and cost centre / purpose / PO fields (with the approval
+  note) in the booking form when paying by account. Admin — Business tabs: Applications (ABR link, terms, approve/decline), Invoices
+  (issue, Xero/MYOB, reminders, PDF, paid, void), Billing settings; account drawer shows rules, cost centres and regular trips.
+- Docs: API.md (Round 24 section), OPERATIONS.md 9e (applications, monthly invoicing, accounting, getting paid, approvals, regular
+  trips, NDIS), README (features, test count).
+- Behaviour changes to note: none for existing accounts until they set rules (default rules require nothing and approve everything);
+  `POST /trips` with `cost_centre_id`/`purpose_code`/`po_number` but not paying by account is 400 `corporate_required`; pending
+  applications show in admin → Business accounts as "Application" (inactive, so nobody can book on them).
+- Deploy: apply migration 027 (AUTO_MIGRATE does it). No env vars. Before the first invoice run: admin → Business accounts → Billing
+  settings → "How to pay" (bank details), and check the Xero/MYOB account codes with the accountant; Tax → NDIS registration and
+  support item for plan-manager invoices. Automatic issue and the overdue booking hold stay off until switched on.
+
+Deferred:
+- Emailing invoices and reminders to the billing email: no email provider is configured (texts and in-app only). The PDF and the
+  billing email are ready for it.
+- Credit notes as separate numbered documents for refunds after an invoice is issued (today: void and reissue, which is fine before
+  payment; a paid invoice can't be voided).
+- Card or direct-debit payment of invoices (Stripe invoices / BECS) and automatic reconciliation from the bank feed.
+- Approval of parcel runs and CSV imports (courier runs follow the cost centre/PO rules but are never held for approval; approvals are
+  for rides).
+- Exact Xero/MYOB import templates differ by edition and region; the files follow the AU sales-invoice/service-sale layouts and need a
+  test import by the accountant before relying on them.
+- Per-traveller default cost centre and home/clinic addresses for recurring riders (they are typed into each series today).
+
+Ideas for next rounds:
+- Email delivery (Postmark/SES behind config) for invoices, statements, reminders and receipts, with bounce handling.
+- Credit notes and statements of account (opening balance, invoices, payments, credit notes) per business account, with ageing
+  (current, 30, 60, 90 days) on the admin dashboard.
+- Stripe invoice payment links on each invoice and BECS direct debit for regular customers, with webhooks marking invoices paid.
+- Dispatch board view of recurring dialysis/clinic runs for the next day (who, when, wheelchair), and grouping riders going to the same
+  clinic at the same time into one car with consent.
+- Government procurement pack: supplier details form, insurance certificates, WHS and child-safe policies downloadable for tenders.
+- Spend alerts for managers (80% of the limit or a cost-centre budget) and a monthly usage email/PDF.

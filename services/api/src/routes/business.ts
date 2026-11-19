@@ -29,6 +29,10 @@ const runBase = z.object({
   prohibited_ack: z.boolean().default(false),
   /** Deliver in the order given (otherwise nearest drop first). */
   keep_order: z.boolean().optional(),
+  // Round 24: business account fields (checked against the account's booking rules).
+  cost_centre_id: z.string().uuid().nullable().optional(),
+  purpose_code: z.string().trim().max(20).nullable().optional(),
+  po_number: z.string().trim().max(40).nullable().optional(),
 });
 const dropParcel = parcelSchema.omit({ sender_name: true, sender_phone: true, prohibited_items: true, prohibited_ack: true });
 
@@ -39,6 +43,7 @@ const baseInput = (b: Base) => ({
   kind: 'courier' as const, pickup: b.pickup, payment_method: b.payment_method, corporate_account_id: b.corporate_account_id ?? null,
   scheduled_for: b.scheduled_for ?? null, pickup_window_end: b.pickup_window_end ?? null, promo_code: b.promo_code ?? null,
   ndis_number: b.ndis_number, notes: b.notes,
+  cost_centre_id: b.cost_centre_id ?? null, purpose_code: b.purpose_code ?? null, po_number: b.po_number ?? null,
 });
 
 /** Book drops as runs of up to MAX_DROPS (a single drop is an ordinary parcel booking). */

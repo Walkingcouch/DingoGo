@@ -275,6 +275,32 @@ work the old way (one message, reply as a notification) and the lost property an
   a short note before the due date. Each download is in the audit log (it holds personal information): keep it to the dispute.
 - **Canned replies (admin):** keep them short and plain; `{first_name}`, `{trip_ref}` and `{ticket_ref}` are filled in for you.
 
+## 9e. Business and government accounts (Round 24)
+
+Migration `027_business_billing.sql` (AUTO_MIGRATE applies it). Before it, accounts, account bookings, the monthly limit and the
+live statement work as before; the application form, set-up, approvals, invoices and regular trips answer "migration pending".
+
+- **Applications (Business accounts → Applications):** organisations apply at dingogo.com.au/business (ABN checked with the ATO
+  check digits; one application per ABN). Check the ABN on the ABR (link in the drawer: active, the right name, GST registered for
+  a government or business customer), set payment terms, an optional monthly limit and discount, then Approve. The contact's mobile
+  becomes the account manager and is texted; they add staff, approvers, cost centres, trip purposes and booking rules themselves in
+  the rider app (Account → Business account). Decline needs a reason (texted).
+- **Monthly invoices (Invoices tab):** after the month ends, "Issue invoices for <month>" (or switch on automatic issue in Billing
+  settings: the 1st, Darwin time). One invoice per account, or per PO when the account asks; lines are frozen, so a refund after
+  issue means Void (with a reason) and issue again (new number). Set "How to pay" in Billing settings before the first run.
+- **Accounting:** Xero CSV (Sales → Import, choose "Tax inclusive") or MYOB AccountRight service sales import, per month. Confirm the
+  account codes and tax types with the accountant first (defaults: Xero 200 / GST on Income, MYOB 4-1000 / GST).
+- **Getting paid:** mark an invoice Paid with the bank reference when the money arrives. Reminders go to the account's managers (app
+  and text) 1, 7 and 14 days after the due date by default ("Send due reminders" runs them now; the tick runs them every few hours).
+  "Pause new bookings after N days overdue" is off (0) until the owner decides; ops phone bookings are never paused.
+- **Approvals:** trips over an account's approval amount booked by someone who isn't an approver wait for an approver; a trip still
+  waiting when it is due is not sent and costs nothing. Bookings for now over the amount are refused with a plain message.
+- **Regular trips (dialysis, clinics):** booked 14 days ahead, skipping public holidays unless the series says otherwise (keep
+  Pricing → Holidays up to date: the same list decides holiday skips). Problems (limit, budget, consent ended) are on the series and
+  the person who set it up is told. A client withdrawing consent stops their series.
+- **NDIS plan managers:** set the provider registration number, support item and GST code (Tax → NDIS) before the first invoice:
+  plan-manager invoices group trips per participant with those details.
+
 ## 10. Performance and load testing (Round 18)
 - **Migration 022** (indexes only, safe any time; AUTO_MIGRATE applies it). Until it is in, `/health/deep` reports it pending and
   the API runs as before, just with slower dispatch queries as trips grow.

@@ -441,3 +441,7 @@ p { text-wrap: pretty; }
 .status-steps li.current { color: var(--text); }
 .status-steps li.current::before { background: var(--ochre); border-color: var(--ochre); }
 .faq-more { display: inline-block; margin-top: 4px; }
+
+/* Round 24: business account application */
+.check { display: flex; gap: 10px; align-items: flex-start; font-size: .98rem; margin: 4px 0; }
+.check input { margin-top: 4px; width: 18px; height: 18px; flex: none; accent-color: var(--saltbush); }

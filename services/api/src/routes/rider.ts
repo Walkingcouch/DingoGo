@@ -75,6 +75,10 @@ const tripSchema = quoteSchema.extend({
   ndis_number: z.string().regex(/^\d{9}$/, 'NDIS number is 9 digits').optional(),
   parcel: parcelSchema.optional(),
   pickup_window_end: z.string().datetime().nullable().optional(),
+  // Round 24: business account fields (checked against the account's booking rules).
+  cost_centre_id: z.string().uuid().nullable().optional(),
+  purpose_code: z.string().trim().max(20).nullable().optional(),
+  po_number: z.string().trim().max(40).nullable().optional(),
 });
 
 export default async function riderRoutes(app: FastifyInstance) {

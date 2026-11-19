@@ -1303,3 +1303,94 @@ thinned to about 60 rows).
 Refactor: the refund rules moved from the admin route to `services/refunds.ts` (`refundTrip`, `refundIn`); the receipt to
 `services/receipts.ts` (`buildReceipt`). Messages: `ticket_received` (now with the reference and reply-by time), `ticket_resolved`,
 `lost_item_driver`, `lost_item_found`, `lost_item_not_found`, `lost_item_collect`, `lost_item_courier`.
+
+## Business and government customers (Round 24)
+
+Needs migration 027 (`services/businessRules.ts` `businessReady()`, re-checked once a minute). Before it: account bookings, the monthly
+limit and `GET /admin/corporate/:id/statement` work as before; bookings that send `cost_centre_id`, `purpose_code` or `po_number`, and
+every route below except the admin lists (`ready: false`), answer 503 `migration_pending`. Business routes accept the account's members by
+role and DingoGo staff (admin, dispatcher) acting as a manager. Member roles: `member`, `approver`, `manager`.
+
+**Applications.** `POST /public/business-applications { organisation, kind (account kind), abn (ATO check digits: 400 `invalid_abn`),
+billing_email, contact_name, contact_phone (Australian mobile: 400 `contact_phone`), address?, expected_monthly_cents?, needs?:
+[cost_centres|approvals|po_numbers|ndis|recurring|parcels], notes?, agree: true }` (per-IP form limit) → 201 `{ ok, ref (BA-XXXXXX),
+application_status: pending }`; 409 `account_exists` when the ABN already has an account or a pending application; texted
+`business_application_received`. Creates a `corporate_accounts` row with `status: pending, active: false`. `GET
+/admin/business/applications?status=pending|approved|declined` (staff) → `{ ready, applications }`. `POST
+/admin/business/applications/:id/review { approve, note? (required to decline), monthly_limit_cents?, invoice_terms_days?, discount_pct? }`
+(admin; 409 `already_reviewed`) → `{ account }`: approving makes the account active and the contact's mobile (an account is made if
+needed) its manager, texted `business_account_approved`; declining texts `business_account_declined` with the note.
+
+**Set-up.** `GET /business/accounts/:id/setup` → `{ account, role, rules, cost_centres, purposes, members }` (members see active cost
+centres and purposes and no member list). Managers only: `PUT /business/accounts/:id/rules { require_cost_centre, require_purpose,
+require_po, default_po, approval_over_cents (0 = never), invoice_per_po, require_ndis_number, book_for_others: everyone|approvers|nobody,
+guests }` (merged with the current rules; 400 `invalid_rules`); `POST /business/accounts/:id/cost-centres { code, name, approver_id?
+(a member), monthly_budget_cents? }` → 201, `PATCH /business/accounts/:id/cost-centres/:cc` (also `active`); `POST
+/business/accounts/:id/purposes { code, label }` → 201, `PATCH /business/accounts/:id/purposes/:pid { label?, active? }` (409
+`code_taken`, 400 `invalid_code`); `POST /business/accounts/:id/members { phone, name, role }` → 201 (texted and notified
+`business_member_added` when new to the account); `DELETE /business/accounts/:id/members/:userId` (409 `last_manager`).
+
+**Account bookings.** `POST /trips`, `POST /business/rides` (clients), `POST /courier/runs` and the CSV import take `cost_centre_id`,
+`purpose_code`, `po_number` with `payment_method: corporate` (with another payment method: 400 `corporate_required`). Checked against the
+account's rules: 400 `cost_centre_required|invalid_cost_centre|purpose_required|invalid_purpose|po_required|invalid_po|ndis_required`; the
+account's `default_po` fills a blank PO; a cost centre's monthly budget counts like the account limit (402 `cost_centre_budget_reached`
+with `budget_cents, used_cents, left_cents`). Over `approval_over_cents`, a booking by a member who isn't the cost centre's approver is
+refused when it is for now (403 `approval_required`) or held when booked ahead (`approval_status: pending`, approvers notified
+`business_approval_needed`); approvers', managers' and the cost-centre approver's own bookings are `approved` at once. A held booking
+still pending when it is released is cancelled with no fee (`Not approved in time`, `business_trip_unapproved`, trip event
+`approval_expired`). Ops phone bookings (`POST /admin/bookings`) are never required to give the fields or held. With the billing setting
+`hold_after_days` > 0, new bookings on an account with an invoice more than that many days overdue are refused (402 `account_overdue`).
+
+**Approvals.** `GET /business/approvals?account_id=` → `{ approvals }` (managers and approvers all; a member who approves a cost centre
+sees those). `POST /business/approvals/:tripId { approve, note? }` → `{ trip }` (409 `not_pending`; two approvers at once decide once):
+approve → `business_trip_approved` to the traveller and booker; decline → cancelled with no fee, `business_trip_declined`. Audited.
+
+**Booking for someone.** `POST /business/trips/quote` and `POST /business/trips { account_id, traveller: { self: true } | { member_id } |
+{ consent_id } | { name, phone }, pickup, dropoff, scheduled_for?, passengers?, needs_wheelchair?, assistance_animal?, women_driver_pref?,
+notes?, ndis_number?, cost_centre_id?, purpose_code?, po_number? }` → 201 `{ trip: { id, ref, status, scheduled_for, quote_cents,
+approval_status, traveller ("First L."), pickup_address, dropoff_address } }` (quote: `{ quote, route, needs_approval }`). The trip is
+the traveller's (channel `org`, `booked_by` the booker) and they are texted `ride_booked_for_you` as "<booker> at <organisation>".
+Guests get a DingoGo account by mobile (400 `traveller` for landlines, staff/driver numbers or someone not on the account); 403 when
+`book_for_others`/`guests` don't allow it; community kinds (health, NDIS, government, community, Aboriginal corporation) need a client
+consent for anyone not on the account (403 `consent_required`). `GET /business/trips?account_id=&month=` → `{ trips }` (approvers and
+managers see the account's; members what they took or booked).
+
+**Usage.** `GET /business/usage?account_id=&month=` (approvers and managers) → `{ account, month, totals { trips, cancellation_fees,
+charges_cents, refunds_cents, spend_cents, gst_cents, average_cents }, limit, by_cost_centre, by_purpose, by_traveller (top 20), by_day
+[{ key, trips, spend_cents }], approvals_waiting, booked { trips, quote_cents }, recurring_series, invoices { open, open_cents, overdue,
+overdue_cents, list } }`.
+
+**Invoices.** `POST /admin/business/invoices/run { month? (default last month), account_id? }` (admin) → `{ month, issued, skipped }`:
+one invoice per account (or per PO with `invoice_per_po`) for a closed Darwin month (400 `month_not_closed`), never twice (a void one
+can be reissued), numbered `INV-YYYYMM-NNNN`, due after the account's `invoice_terms_days`; lines are frozen (`date, trip_ref, traveller,
+booked_by, description, amount_cents, refunded_cents, cost_centre, purpose, po_number, ndis_number, cancellation`) and managers are
+notified `invoice_issued`. `GET /admin/business/invoices?month=&status=all|issued|paid|void|overdue&account_id=` → `{ ready, invoices
+(with overdue_days), summary }`; `GET /admin/business/invoices/:id?format=pdf` (PDF tax invoice: NDIS lines grouped per participant
+with the NDIS number, support item and GST code, provider ABN and registration; PO; how to pay); `POST /admin/business/invoices/:id/paid { paid_on?,
+paid_ref? }`, `POST /admin/business/invoices/:id/void { reason }` (only unpaid ones: 409 `not_open`); `GET
+/admin/business/invoices/export?month=&format=xero|myob` (admin, audited): Xero sales invoice import (tax inclusive, dd/mm/yyyy, account
+code, tax type, cost centre as tracking) or MYOB AccountRight service sales (ex-GST and inc-GST amounts, tax code, a blank line between
+invoices). Managers and approvers: `GET /business/invoices?account_id=` and `GET /business/invoices/:id?format=pdf`.
+
+**Billing settings and reminders.** `GET /admin/business/billing` → `{ ready, settings }`, `PUT /admin/business/billing { auto_issue,
+reminder_days (up to 6, 1–120), hold_after_days (0–180, 0 = never), pay_to, xero_account_code, xero_tax_type, myob_income_account,
+myob_tax_code }` (admin; 400 `invalid_billing`). The dispatcher tick (every 3 hours at most) issues last month's invoices once when
+`auto_issue` is on and sends overdue reminders: on each reminder day (default 1, 7 and 14 days overdue; a missed day sends the latest
+one once; one a day at most) the managers get `invoice_overdue` (app and text), counted on the invoice and audited. `POST
+/admin/business/reminders/run` runs it now (admin).
+
+**Recurring trips.** `POST /business/recurring { account_id, traveller (as above), pickup, dropoff, weekdays [1 = Mon … 7 = Sun],
+pickup_time (HH:MM Darwin), return_time?, starts_on, ends_on? (up to a year), skip_holidays (default true), skip_dates?, options?: {
+cost_centre_id, purpose_code, po_number, ndis_number, notes, needs_wheelchair, assistance_animal, passengers, women_driver_pref },
+dry_run? }` → dry run `{ preview: { trips, skipped }, traveller }`, else 201 `{ series, booked, problems, skipped }`: trips are booked 14
+days ahead as ordinary account bookings (rules, limits and approvals apply; at most one per series and time — unique index), one
+`regular_rides_booked` text to the traveller; the tick tops series up hourly and records problems on the series (`last_run`, the booker
+is notified `recurring_problem`); a series stops when the account closes or the client's consent ends. `GET
+/business/recurring?account_id=` → `{ series: [{ …, traveller, days, upcoming, next_at, skip_dates, last_run }] }`. `POST
+/business/recurring/:id/skip { date }` (adds the date, cancels that day's trips free) and `POST /business/recurring/:id/stop {
+cancel_booked? }` (who set it up, approvers, managers). `GET /admin/business/accounts/:id` (staff) → set-up, recurring series and the
+application.
+
+Messages: `business_application_received`, `business_account_approved`, `business_account_declined`, `business_member_added`,
+`business_approval_needed`, `business_trip_approved`, `business_trip_declined`, `business_trip_unapproved`, `regular_rides_booked`,
+`recurring_problem`, `invoice_issued`, `invoice_overdue`.

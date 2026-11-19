@@ -24,6 +24,8 @@ import { NO_FAULT_CANCEL_REASONS, concessionFor, loadCommunityPricing, localDate
 import { cached, settingValue } from '../lib/cache.js';
 import * as tours from './tours.js';
 import { depositCents } from '../lib/tours.js';
+import { checkAccountBooking } from './businessRules.js';
+import { bg } from '../lib/background.js';
 import type { TripDeposit } from '../lib/fares.js';
 
 export const ACTIVE = ['requested', 'accepted', 'arrived', 'in_progress'] as const;
@@ -242,6 +244,11 @@ export interface CreateTripInput extends QuoteInput {
   parcel?: ParcelIn;
   /** Courier: collect any time between scheduled_for and this (30 min to 4 h). */
   pickup_window_end?: string | null;
+  /** Round 24: business account fields (migration 027), checked against the account's booking rules. */
+  cost_centre_id?: string | null;
+  purpose_code?: string | null;
+  po_number?: string | null;
+  recurring_id?: string | null;
 }
 
 /** What a business account has been billed in one Darwin-time month: completed trips, late-cancel fees, trips booked or
@@ -353,6 +360,8 @@ export async function createTrip(userId: string, input: CreateTripInput) {
 async function afterCreate(trip: any, input: CreateTripInput) {
   toOps('trip.created', { id: trip.id, ref: trip.ref, status: trip.status });
   if (trip.status === 'requested') await dispatchTrip(trip.id).catch((e) => logError('dispatch', e));
+  // Round 24: a business booking waiting for an approver: tell the approvers.
+  if (trip.approval_status === 'pending') void bg(import('./business.js').then((m) => m.notifyApprovers(trip)));
   if (input.kind === 'courier') {
     const p = await one('SELECT * FROM parcels WHERE trip_id = $1', [trip.id]);
     const url = `${config.publicWebUrl}/track/${trip.share_token}`;
@@ -440,8 +449,13 @@ async function insertTrip(c: pg.PoolClient, userId: string, input: CreateTripInp
     if (input.payment_method === 'wallet' && user.wallet_cents < quote.total_cents) {
       throw bad('wallet_insufficient', 'Not enough DingoGo credit for this trip');
     }
+    let biz: Awaited<ReturnType<typeof checkAccountBooking>> = null;
     if (input.payment_method === 'corporate' && input.corporate_account_id) {
       await checkAccountLimit(c, input.corporate_account_id, quote.total_cents, scheduled ?? new Date());
+      biz = await checkAccountBooking(c, { accountId: input.corporate_account_id, bookerId: input.booked_by ?? userId, input, totalCents: quote.total_cents,
+        at: scheduled ?? new Date(), scheduled: !!scheduled, opsBooking: input.channel === 'phone' });
+    } else if (input.cost_centre_id || input.purpose_code || input.po_number) {
+      throw bad('corporate_required', 'Cost centre, purpose and PO number are for trips billed to a business account');
     }
 
     const trip = await one(
@@ -464,6 +478,15 @@ async function insertTrip(c: pg.PoolClient, userId: string, input: CreateTripInp
     if (run || input.pickup_window_end) {
       const extra = await one(`UPDATE trips SET batch_id = $2, batch_seq = $3, pickup_window_end = $4 WHERE id = $1 RETURNING batch_id, batch_seq, pickup_window_end`,
         [trip.id, run?.batchId ?? null, run?.seq ?? null, input.pickup_window_end ?? null], c);
+      Object.assign(trip, extra);
+    }
+
+    if (biz) {
+      const extra = await one(
+        `UPDATE trips SET cost_centre_id = $2, purpose_code = $3, po_number = $4, recurring_id = $5, approval_status = $6::text,
+           approval_by = CASE WHEN $6::text = 'approved' THEN $7::uuid END, approval_at = CASE WHEN $6::text = 'approved' THEN now() END
+         WHERE id = $1 RETURNING cost_centre_id, purpose_code, po_number, recurring_id, approval_status, approval_by, approval_at`,
+        [trip.id, biz.cost_centre_id, biz.purpose_code, biz.po_number, biz.recurring_id, biz.approval, input.booked_by ?? userId], c);
       Object.assign(trip, extra);
     }
 
@@ -910,6 +933,10 @@ export async function dispatchTick() {
     await (await import('./tax.js')).runRetentionIfDue().catch((e) => logError('record retention', e));
     await runLoyaltyIfDue().catch((e) => logError('loyalty', e));
     await (await import('./fleet.js')).autoWeeklyIfDue().catch((e) => logError('fleet weekly', e));
+    // Round 24: business invoices (automatic issue on the 1st when switched on, overdue reminders) and recurring trips.
+    const biz = await import('./business.js');
+    await biz.runBillingIfDue().catch((e) => logError('business billing', e));
+    await biz.runRecurringIfDue().catch((e) => logError('recurring trips', e));
 
     const open = await q(`SELECT id FROM trips WHERE status = 'requested' ORDER BY requested_at LIMIT 50`);
     for (const t of open) await dispatchTrip(t.id).catch((e) => logError('dispatch', e));
@@ -924,6 +951,15 @@ async function releaseBooking(tripId: string) {
   const out = await tx(async (c) => {
     const t = await one(`SELECT * FROM trips WHERE id = $1 FOR UPDATE SKIP LOCKED`, [tripId], c);
     if (!t || t.status !== 'scheduled') return null;
+    // Round 24: a business booking still waiting for an approver when it is due is not sent (no fee: nobody said yes).
+    if (t.approval_status === 'pending') {
+      await c.query(`UPDATE trips SET status = 'cancelled_admin', cancelled_at = now(), cancel_reason = $2, approval_status = 'declined' WHERE id = $1`,
+        [t.id, 'Not approved in time']);
+      await givePromoBack(c, t);
+      await releaseHoldsAndPoints(c, { ...t, payment_status: 'none' });
+      await event(c, t.id, 'approval_expired', null, {});
+      return { t, failed: null, unapproved: true };
+    }
     if (t.payment_method === 'card' && t.quote_cents > 0 && t.payment_status !== 'authorised') {
       const auth = await placeHold(c, t);
       if (!auth.ok) {
@@ -934,14 +970,22 @@ async function releaseBooking(tripId: string) {
         await applyDeposit(c, t, 0);
         await tours.onTourCancelled(c, t, 0);
         await event(c, t.id, 'payment_failed', null, { stage: 'release', reason: auth.code ?? null });
-        return { t, failed: auth };
+        return { t, failed: auth, unapproved: false };
       }
     }
     await c.query(`UPDATE trips SET status = 'requested', requested_at = now() WHERE id = $1`, [t.id]);
-    return { t, failed: null };
+    return { t, failed: null, unapproved: false };
   });
   if (!out) return;
   const { t, failed } = out;
+  if (out.unapproved) {
+    toTrip(t.id, 'trip.updated', { id: t.id, status: 'cancelled_admin' });
+    toUser(t.rider_id, 'trip.updated', { id: t.id, ref: t.ref, status: 'cancelled_admin' });
+    toOps('trip.updated', { id: t.id, ref: t.ref, status: 'cancelled_admin' });
+    void send(t.rider_id, 'business_trip_unapproved', { ref: t.ref, when: pickupWhen(t.scheduled_for) }, { trip: t });
+    if (t.booked_by && t.booked_by !== t.rider_id) void send(t.booked_by, 'business_trip_unapproved', { ref: t.ref, when: pickupWhen(t.scheduled_for) }, { trip: { id: t.id } });
+    return;
+  }
   if (failed) {
     toTrip(t.id, 'trip.updated', { id: t.id, status: 'cancelled_admin' });
     toUser(t.rider_id, 'trip.updated', { id: t.id, ref: t.ref, status: 'cancelled_admin' });

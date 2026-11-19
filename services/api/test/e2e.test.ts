@@ -5502,3 +5502,396 @@ test('before migration 026: messages to support, the desk list and replies, rece
     resetSupportReady();
   }
 });
+
+// ───────────── Round 24: business and government customers ─────────────
+import { resetBusinessReady } from '../src/services/businessRules.js';
+import { generateSeries, resetBillingClock } from '../src/services/business.js';
+
+/** A valid ABN (ATO check digits) built from a seed. */
+function abnFor(seed: number) {
+  const w = [10, 1, 3, 5, 7, 9, 11, 13, 15, 17, 19];
+  const body = String(100000000 + seed).slice(-9).split('').map(Number);
+  for (let a = 1; a <= 9; a++) for (let b = 0; b <= 9; b++) {
+    if ([a - 1, b, ...body].reduce((s, x, i) => s + x * w[i], 0) % 89 === 0) return `${a}${b}${body.join('')}`;
+  }
+  throw new Error('no ABN');
+}
+const darwinDay = (offset = 0) => new Date(Date.now() + 9.5 * 3600e3 + offset * 864e5).toISOString().slice(0, 10);
+const lastMonth = () => { const d = darwinDay(); const y = +d.slice(0, 4), m = +d.slice(5, 7); return m === 1 ? `${y - 1}-12` : `${y}-${String(m - 1).padStart(2, '0')}`; };
+const inHours = (h: number) => new Date(Date.now() + h * 3600e3).toISOString();
+const biz24: { acct: string; mgr: string; staff: string; appr: string; renal: string; admin: string } = { acct: '', mgr: '', staff: '', appr: '', renal: '', admin: '' };
+async function rawReq(method: string, url: string, who: string, body?: unknown) {
+  const r = await app.inject({ method: method as any, url, payload: body as any, headers: { authorization: `Bearer ${tokens[who]}` } });
+  return { status: r.statusCode, type: String(r.headers['content-type'] ?? ''), body: r.rawPayload };
+}
+/** A trip billed to the account, completed in a given month (copy of a seeded completed trip). */
+async function accountTrip(o: { rider: string; cents: number; at: string; cc?: string | null; purpose?: string | null; po?: string | null; ndis?: string | null; refund?: number }) {
+  const r = await one<{ id: string }>(
+    `INSERT INTO trips SELECT (jsonb_populate_record(NULL::trips, to_jsonb(t) || jsonb_build_object('id', gen_random_uuid(), 'ref', 'DG-B' || upper(substr(md5(random()::text), 1, 5)),
+       'rider_id', $1::uuid, 'status', 'completed', 'kind', 'ride', 'service', 'ride', 'requested_at', $3::timestamptz, 'completed_at', $3::timestamptz,
+       'share_token', substr(md5(random()::text), 1, 20), 'promo_code', NULL, 'batch_id', NULL, 'tour_package_id', NULL, 'scheduled_for', NULL,
+       'quote_cents', $4::int, 'final_cents', $4::int, 'payment_method', 'corporate', 'payment_status', 'captured', 'tip_cents', 0, 'cancel_fee_cents', 0,
+       'corporate_account_id', $2::uuid, 'cost_centre_id', $5::uuid, 'purpose_code', $6::text, 'po_number', $7::text, 'ndis_number', $8::text,
+       'approval_status', NULL, 'recurring_id', NULL, 'booked_by', NULL, 'channel', 'app'))).*
+     FROM trips t WHERE t.status = 'completed' AND t.kind = 'ride' LIMIT 1 RETURNING id`,
+    [o.rider, biz24.acct, o.at, o.cents, o.cc ?? null, o.purpose ?? null, o.po ?? null, o.ndis ?? null]);
+  if (o.refund) await q(`INSERT INTO payments (trip_id, user_id, provider, kind, amount_cents, status) VALUES ($1,$2,'corporate','refund',$3,'succeeded')`, [r!.id, o.rider, -o.refund]);
+  return r!.id;
+}
+
+test('round 24: business sign-up — website application, ABN check, one per ABN, admin approves (contact becomes manager, texted) or declines with a note', async () => {
+  const abn = abnFor(240001);
+  const app24 = { organisation: 'Mparntwe Renal Health (test)', kind: 'government', abn: abn.replace(/^(\d\d)(\d{3})(\d{3})(\d{3})$/, '$1 $2 $3 $4'), billing_email: 'ap@renal.example',
+    contact_name: 'Rita Manager', contact_phone: '0400 002 401', needs: ['cost_centres', 'recurring', 'po_numbers'], agree: true };
+  assert.equal((await call('POST', '/public/business-applications', undefined, { ...app24, abn: '12345678901' })).error, 'invalid_abn');
+  assert.equal((await call('POST', '/public/business-applications', undefined, { ...app24, agree: false })).status, 400);
+  assert.equal((await call('POST', '/public/business-applications', undefined, { ...app24, contact_phone: '08 8950 1234' })).error, 'contact_phone');
+  const made = await call('POST', '/public/business-applications', undefined, app24, '10.24.0.1');
+  assert.equal(made.status, 201, JSON.stringify(made));
+  assert.match(made.ref, /^BA-[A-Z0-9]{6}$/);
+  assert.equal((await call('POST', '/public/business-applications', undefined, app24, '10.24.0.2')).error, 'account_exists');
+  await flushBackground(3000);
+  assert.ok(await one(`SELECT 1 FROM comms_log WHERE template = 'business_application_received' AND to_tail = '401'`));
+  assert.equal((await call('GET', '/admin/business/applications', 'rider')).status, 403);
+  const list = await call('GET', '/admin/business/applications', 'admin');
+  const row = list.applications.find((a: any) => a.name === app24.organisation);
+  assert.ok(row && row.status === 'pending' && row.active === false && row.abn === abn && row.application.needs.includes('recurring'));
+  assert.equal((await call('POST', `/admin/business/applications/${row.id}/review`, 'admin', { approve: false })).error, 'note_required');
+  const ok = await call('POST', `/admin/business/applications/${row.id}/review`, 'admin', { approve: true, invoice_terms_days: 30, monthly_limit_cents: null, note: 'Checked ABN' });
+  assert.equal(ok.status, 200, JSON.stringify(ok));
+  assert.deepEqual([ok.account.status, ok.account.active, ok.account.invoice_terms_days], ['approved', true, 30]);
+  assert.equal((await call('POST', `/admin/business/applications/${row.id}/review`, 'admin', { approve: true })).error, 'already_reviewed');
+  const mgr = await one(`SELECT u.id, m.role FROM users u JOIN corporate_members m ON m.user_id = u.id AND m.account_id = $1 WHERE u.phone = '+61400002401'`, [row.id]);
+  assert.equal(mgr.role, 'manager');
+  await flushBackground(3000);
+  assert.ok(await one(`SELECT 1 FROM comms_log WHERE template = 'business_account_approved' AND to_tail = '401'`));
+  assert.ok(await one(`SELECT 1 FROM audit_log WHERE action = 'business_application_approved' AND entity_id = $1`, [row.id]));
+  // A second organisation is declined with a reason (texted).
+  const other = await call('POST', '/public/business-applications', undefined, { ...app24, organisation: 'Not Yet Pty Ltd', abn: abnFor(240002), contact_phone: '0400 002 409' }, '10.24.0.3');
+  const oid = (await call('GET', '/admin/business/applications', 'admin')).applications.find((a: any) => a.name === 'Not Yet Pty Ltd').id;
+  assert.equal(other.status, 201);
+  assert.equal((await call('POST', `/admin/business/applications/${oid}/review`, 'admin', { approve: false, note: 'We need a trading address' })).account.status, 'declined');
+  await flushBackground(3000);
+  assert.ok(await one(`SELECT 1 FROM comms_log WHERE template = 'business_account_declined' AND to_tail = '409'`));
+  biz24.acct = row.id; biz24.mgr = mgr.id;
+  tokens.bmgr = signToken({ id: mgr.id, role: 'rider' });
+  assert.ok((await call('GET', '/me', 'bmgr')).corporate_accounts.some((a: any) => a.id === row.id && a.role === 'manager'));
+});
+
+test('round 24: account set-up — members and roles, cost centres with approvers and budgets, purposes and booking rules; only managers change them', async () => {
+  const A = biz24.acct;
+  const staff = await call('POST', `/business/accounts/${A}/members`, 'bmgr', { phone: '0400 002 402', name: 'Sam Staff', role: 'member' });
+  assert.equal(staff.status, 201, JSON.stringify(staff));
+  const appr = await call('POST', `/business/accounts/${A}/members`, 'bmgr', { phone: '0400 002 403', name: 'Ari Approver', role: 'approver' });
+  biz24.staff = staff.member.id; biz24.appr = appr.member.id;
+  tokens.bstaff = signToken({ id: biz24.staff, role: 'rider' }); tokens.bappr = signToken({ id: biz24.appr, role: 'rider' });
+  await flushBackground(3000);
+  assert.ok(await one(`SELECT 1 FROM comms_log WHERE template = 'business_member_added' AND to_tail = '402'`));
+  assert.equal((await call('POST', `/business/accounts/${A}/members`, 'bstaff', { phone: '0400 002 405', name: 'X', role: 'manager' })).status, 403, 'members can’t add people');
+  assert.equal((await call('PUT', `/business/accounts/${A}/rules`, 'bappr', { require_po: true })).status, 403, 'approvers can’t change rules');
+  assert.equal((await call('GET', `/business/accounts/${A}/setup`, 'rider')).status, 403, 'not on the account');
+  const renal = await call('POST', `/business/accounts/${A}/cost-centres`, 'bmgr', { code: 'RENAL', name: 'Renal unit', approver_id: biz24.appr });
+  assert.equal(renal.status, 201, JSON.stringify(renal));
+  const adm = await call('POST', `/business/accounts/${A}/cost-centres`, 'bmgr', { code: 'ADMIN', name: 'Administration', monthly_budget_cents: 1500 });
+  biz24.renal = renal.cost_centre.id; biz24.admin = adm.cost_centre.id;
+  assert.equal((await call('POST', `/business/accounts/${A}/cost-centres`, 'bmgr', { code: 'RENAL', name: 'Again' })).error, 'code_taken');
+  assert.equal((await call('POST', `/business/accounts/${A}/cost-centres`, 'bmgr', { code: 'X', name: 'Y', approver_id: await userIdOf('+61400000100') })).error, 'invalid_approver');
+  assert.equal((await call('POST', `/business/accounts/${A}/cost-centres`, 'bmgr', { code: 'bad code!', name: 'Y' })).error, 'invalid_code');
+  for (const [code, label] of [['DIAL', 'Dialysis'], ['MEET', 'Meeting'], ['OLD', 'Old purpose']]) assert.equal((await call('POST', `/business/accounts/${A}/purposes`, 'bmgr', { code, label })).status, 201);
+  const old = (await call('GET', `/business/accounts/${A}/setup`, 'bmgr')).purposes.find((p: any) => p.code === 'OLD');
+  assert.equal((await call('PATCH', `/business/accounts/${A}/purposes/${old.id}`, 'bmgr', { active: false })).purpose.active, false);
+  assert.equal((await call('PUT', `/business/accounts/${A}/rules`, 'bmgr', { approval_over_cents: -5 })).error, 'invalid_rules');
+  const rules = await call('PUT', `/business/accounts/${A}/rules`, 'bmgr', { require_cost_centre: true, require_purpose: true, approval_over_cents: 2500 });
+  assert.equal(rules.rules.require_cost_centre, true);
+  // A member sees what they need to book: active cost centres and purposes, no member list.
+  const mine = await call('GET', `/business/accounts/${A}/setup`, 'bstaff');
+  assert.deepEqual([mine.role, mine.purposes.map((p: any) => p.code).sort().join()], ['member', 'DIAL,MEET']);
+  assert.ok(mine.members.length === 2 && mine.members.every((m: any) => !m.phone && m.name), 'colleagues by name only, to book for them');
+  const full = await call('GET', `/business/accounts/${A}/setup`, 'bmgr');
+  assert.deepEqual(full.members.map((m: any) => m.role).sort(), ['approver', 'manager', 'member']);
+  assert.equal((await call('DELETE', `/business/accounts/${A}/members/${biz24.mgr}`, 'bmgr')).error, 'last_manager');
+  // Staff see it too (admin drawer).
+  assert.equal((await call('GET', `/admin/business/accounts/${A}`, 'admin')).cost_centres.length, 2);
+});
+
+test('round 24: bookings on the account follow its rules — cost centre and purpose required, budget, approval over the amount (held, approved, declined, expired)', async () => {
+  const A = biz24.acct;
+  const ride = (who: string, extra: Record<string, unknown> = {}, to = HOSPITAL) =>
+    call('POST', '/trips', who, { kind: 'ride', service: 'ride', pickup: TODD_MALL, dropoff: to, payment_method: 'corporate', corporate_account_id: A, scheduled_for: inHours(3), ...extra });
+  assert.equal((await ride('bstaff')).error, 'cost_centre_required');
+  assert.equal((await ride('bstaff', { cost_centre_id: biz24.renal })).error, 'purpose_required');
+  assert.equal((await ride('bstaff', { cost_centre_id: biz24.renal, purpose_code: 'OLD' })).error, 'invalid_purpose');
+  assert.equal((await ride('bstaff', { cost_centre_id: crypto.randomUUID(), purpose_code: 'DIAL' })).error, 'invalid_cost_centre');
+  assert.equal((await call('POST', '/trips', 'rider', { kind: 'ride', service: 'ride', pickup: TODD_MALL, dropoff: HOSPITAL, payment_method: 'wallet', po_number: 'PO1' })).error, 'corporate_required');
+  const t1 = await ride('bstaff', { cost_centre_id: biz24.renal, purpose_code: 'DIAL', po_number: 'PO-77' });
+  assert.equal(t1.status, 201, JSON.stringify(t1));
+  const row1 = await one(`SELECT cost_centre_id, purpose_code, po_number, approval_status FROM trips WHERE id = $1`, [t1.trip.id]);
+  assert.deepEqual(row1, { cost_centre_id: biz24.renal, purpose_code: 'DIAL', po_number: 'PO-77', approval_status: null });
+  // Budget: ADMIN has $15 a month; a short trip is about $12, so the second one is over.
+  const b1 = await ride('bstaff', { cost_centre_id: biz24.admin, purpose_code: 'MEET' });
+  assert.equal(b1.status, 201, JSON.stringify(b1));
+  const b2 = await ride('bstaff', { cost_centre_id: biz24.admin, purpose_code: 'MEET', scheduled_for: inHours(4) });
+  assert.deepEqual([b2.status, b2.error], [402, 'cost_centre_budget_reached']);
+  assert.ok(b2.details.left_cents < 1500);
+  // Approval over $25: an airport trip now is refused for a member; booked ahead it waits for the cost centre's approver.
+  assert.equal((await ride('bstaff', { cost_centre_id: biz24.renal, purpose_code: 'DIAL', scheduled_for: null }, AIRPORT)).error, 'approval_required');
+  const p1 = await ride('bstaff', { cost_centre_id: biz24.renal, purpose_code: 'DIAL' }, AIRPORT);
+  assert.equal(p1.status, 201, JSON.stringify(p1));
+  assert.equal((await one(`SELECT approval_status FROM trips WHERE id = $1`, [p1.trip.id])).approval_status, 'pending');
+  const note = await lastNote('+61400002403');
+  assert.equal(note.title, 'Trip waiting for your OK');
+  assert.equal(note.data.trip_id, p1.trip.id);
+  assert.ok((await call('GET', `/business/approvals?account_id=${A}`, 'bmgr')).approvals.some((x: any) => x.id === p1.trip.id));
+  assert.equal((await call('GET', `/business/approvals?account_id=${A}`, 'bstaff')).approvals.length, 0, 'members see none');
+  assert.equal((await call('POST', `/business/approvals/${p1.trip.id}`, 'bstaff', { approve: true })).status, 403);
+  const yes = await call('POST', `/business/approvals/${p1.trip.id}`, 'bappr', { approve: true });
+  assert.equal(yes.trip.approval_status, 'approved');
+  assert.equal((await call('POST', `/business/approvals/${p1.trip.id}`, 'bmgr', { approve: false })).error, 'not_pending');
+  assert.equal((await lastNote('+61400002402')).title, 'Trip approved');
+  // Declined: cancelled with no fee; two approvers at once decide once.
+  const p2 = await ride('bstaff', { cost_centre_id: biz24.renal, purpose_code: 'DIAL', scheduled_for: inHours(5) }, AIRPORT);
+  const both = await Promise.all([call('POST', `/business/approvals/${p2.trip.id}`, 'bmgr', { approve: false, note: 'Use the shuttle' }),
+    call('POST', `/business/approvals/${p2.trip.id}`, 'bappr', { approve: false })]);
+  assert.deepEqual(both.map((r) => r.status).sort(), [200, 409]);
+  const d2 = await one(`SELECT status, cancel_fee_cents, approval_status FROM trips WHERE id = $1`, [p2.trip.id]);
+  assert.deepEqual(d2, { status: 'cancelled_admin', cancel_fee_cents: 0, approval_status: 'declined' });
+  assert.equal((await lastNote('+61400002402')).title, 'Trip not approved');
+  // Still waiting when it is due: not sent, no fee.
+  const p3 = await ride('bstaff', { cost_centre_id: biz24.renal, purpose_code: 'DIAL', scheduled_for: inHours(6) }, AIRPORT);
+  await q(`UPDATE trips SET scheduled_for = now() + interval '1 minute' WHERE id = $1`, [p3.trip.id]);
+  await dispatchTick();
+  const d3 = await one(`SELECT status, cancel_reason, cancel_fee_cents FROM trips WHERE id = $1`, [p3.trip.id]);
+  assert.deepEqual(d3, { status: 'cancelled_admin', cancel_reason: 'Not approved in time', cancel_fee_cents: 0 });
+  assert.equal((await lastNote('+61400002402')).title, 'Trip not sent');
+  // Approvers' own bookings are approved at once.
+  const own = await ride('bappr', { cost_centre_id: biz24.renal, purpose_code: 'DIAL', scheduled_for: inHours(7) }, AIRPORT);
+  assert.equal((await one(`SELECT approval_status, approval_by FROM trips WHERE id = $1`, [own.trip.id])).approval_by, biz24.appr);
+  // Ops phone bookings are taken on the customer's word (no required fields).
+  const phoneBooking = await call('POST', '/admin/bookings', 'admin', { phone: '+61400002402', name: 'Sam Staff', trip: { kind: 'ride', service: 'ride', pickup: TODD_MALL,
+    dropoff: AIRPORT, payment_method: 'corporate', corporate_account_id: A, scheduled_for: inHours(8) } });
+  assert.equal(phoneBooking.status, 201, JSON.stringify(phoneBooking));
+  assert.equal((await one(`SELECT approval_status FROM trips WHERE id = $1`, [phoneBooking.trip.id])).approval_status, null);
+  for (const id of [t1.trip.id, b1.trip.id, p1.trip.id, own.trip.id, phoneBooking.trip?.id].filter(Boolean)) await q(`UPDATE trips SET status = 'cancelled_admin', cancelled_at = now() WHERE id = $1 AND status = 'scheduled'`, [id]);
+});
+
+test('round 24: booking for someone else — a colleague or a guest, texted with who booked it; rules on who may; community accounts need consent for non-staff', async () => {
+  const A = biz24.acct;
+  const base = { account_id: A, pickup: TODD_MALL, dropoff: HOSPITAL, scheduled_for: inHours(3), cost_centre_id: biz24.renal, purpose_code: 'DIAL' };
+  const q1 = await call('POST', '/business/trips/quote', 'bstaff', { ...base, traveller: { member_id: biz24.mgr }, dropoff: AIRPORT });
+  assert.equal(q1.needs_approval, true);
+  const before = await textCount('ride_booked_for_you');
+  const col = await call('POST', '/business/trips', 'bstaff', { ...base, traveller: { member_id: biz24.mgr } });
+  assert.equal(col.status, 201, JSON.stringify(col));
+  assert.equal(col.trip.traveller, 'Rita M.');
+  const t = await one(`SELECT rider_id, booked_by, channel FROM trips WHERE id = $1`, [col.trip.id]);
+  assert.deepEqual(t, { rider_id: biz24.mgr, booked_by: biz24.staff, channel: 'org' });
+  await flushBackground(3000);
+  assert.ok(await one(`SELECT 1 FROM comms_log WHERE template = 'ride_booked_for_you' AND to_tail = '401'`), 'the traveller is texted');
+  assert.match((await lastNote('+61400002401')).body, /Sam at Mparntwe Renal Health \(test\) booked ride/);
+  // Government (a community kind): guests need client consent.
+  assert.equal((await call('POST', '/business/trips', 'bstaff', { ...base, traveller: { name: 'Dr Visitor', phone: '0400 002 404' } })).error, 'consent_required');
+  await q(`UPDATE corporate_accounts SET kind = 'business' WHERE id = $1`, [A]);
+  try {
+    assert.equal((await call('POST', '/business/trips', 'bstaff', { ...base, traveller: { name: 'Dr Visitor', phone: '08 8950 1234' } })).error, 'traveller');
+    assert.equal((await call('POST', '/business/trips', 'bstaff', { ...base, traveller: { name: 'A Driver', phone: '0400 000 011' } })).error, 'traveller');
+    const g = await call('POST', '/business/trips', 'bstaff', { ...base, traveller: { name: 'Dr Visitor', phone: '0400 002 404' } });
+    assert.equal(g.status, 201, JSON.stringify(g));
+    assert.equal(g.trip.traveller, 'Dr V.');
+    await flushBackground(3000);
+    assert.equal(await textCount('ride_booked_for_you'), before + 2);
+    assert.ok(await one(`SELECT 1 FROM users WHERE phone = '+61400002404' AND role = 'rider'`), 'the guest has an account for trip texts');
+    assert.equal((await call('POST', '/business/trips', 'bstaff', { ...base, traveller: { member_id: await userIdOf('+61400000100') } })).error, 'traveller');
+    await call('PUT', `/business/accounts/${A}/rules`, 'bmgr', { guests: false });
+    assert.equal((await call('POST', '/business/trips', 'bstaff', { ...base, traveller: { name: 'Dr Visitor', phone: '0400 002 404' } })).status, 403);
+    await call('PUT', `/business/accounts/${A}/rules`, 'bmgr', { book_for_others: 'approvers', guests: true });
+    assert.equal((await call('POST', '/business/trips', 'bstaff', { ...base, traveller: { member_id: biz24.mgr } })).status, 403);
+    assert.equal((await call('POST', '/business/trips', 'bappr', { ...base, traveller: { member_id: biz24.staff }, scheduled_for: inHours(4) })).status, 201);
+    assert.equal((await call('POST', '/business/trips', 'bstaff', { ...base, traveller: { self: true }, scheduled_for: inHours(5) })).status, 201, 'booking for yourself is always fine');
+    await call('PUT', `/business/accounts/${A}/rules`, 'bmgr', { book_for_others: 'everyone' });
+    // Who sees what: managers the account, members what they took or booked.
+    const all = await call('GET', `/business/trips?account_id=${A}`, 'bmgr');
+    const own = await call('GET', `/business/trips?account_id=${A}`, 'bstaff');
+    assert.ok(all.trips.length > own.trips.length || all.trips.length === own.trips.length);
+    assert.ok(own.trips.every((x: any) => x.rider_id === biz24.staff || x.booked_by === biz24.staff));
+  } finally {
+    await q(`UPDATE corporate_accounts SET kind = 'government' WHERE id = $1`, [A]);
+    await q(`UPDATE trips SET status = 'cancelled_admin', cancelled_at = now() WHERE corporate_account_id = $1 AND status = 'scheduled'`, [A]);
+  }
+});
+
+test('round 24: monthly invoices — usage, issue once for a closed month, PDF, paid / void and reissue, one per PO, Xero and MYOB, reminders and the overdue hold', async () => {
+  const A = biz24.acct; const pm = lastMonth(); const at = `${pm}-10T03:00:00Z`;
+  await accountTrip({ rider: biz24.staff, cents: 3300, at, cc: biz24.renal, purpose: 'DIAL', po: 'PO-A' });
+  await accountTrip({ rider: biz24.mgr, cents: 2200, at, cc: biz24.admin, purpose: 'MEET', po: 'PO-B', refund: 200 });
+  await accountTrip({ rider: biz24.staff, cents: 1100, at, ndis: '430000000' });
+  const use = await call('GET', `/business/usage?account_id=${A}&month=${pm}`, 'bmgr');
+  assert.equal(use.status, 200, JSON.stringify(use));
+  assert.deepEqual([use.totals.trips, use.totals.spend_cents, use.totals.refunds_cents], [3, 6400, 200]);
+  assert.deepEqual(use.by_cost_centre.map((g: any) => [g.key, g.spend_cents]), [['RENAL Renal unit', 3300], ['ADMIN Administration', 2000], ['No cost centre', 1100]]);
+  assert.equal(use.by_purpose[0].key, 'Dialysis');
+  assert.equal((await call('GET', `/business/usage?account_id=${A}`, 'bstaff')).status, 403, 'members don’t see the account’s spend');
+  assert.equal((await call('GET', `/business/usage?account_id=${A}`, 'bappr')).status, 200);
+
+  assert.equal((await call('POST', '/admin/business/invoices/run', 'admin', { month: darwinDay().slice(0, 7) })).error, 'month_not_closed');
+  assert.equal((await call('POST', '/admin/business/invoices/run', 'bmgr', { month: pm })).status, 403);
+  const run = await call('POST', '/admin/business/invoices/run', 'admin', { month: pm, account_id: A });
+  assert.equal(run.issued.length, 1, JSON.stringify(run));
+  const inv = run.issued[0];
+  assert.match(inv.number, new RegExp(`^INV-${pm.replace('-', '')}-\\d{4}$`));
+  assert.deepEqual([inv.total_cents, inv.gst_cents, inv.issued_on, inv.due_on], [6400, Math.round(6400 / 11), darwinDay(), darwinDay(30)]);
+  assert.equal((await call('POST', '/admin/business/invoices/run', 'admin', { month: pm, account_id: A })).issued.length, 0, 'never twice');
+  assert.equal((await lastNote('+61400002401')).title, `Invoice ${inv.number}`);
+  // Late refunds don't change an issued invoice (its lines are frozen).
+  const frozen = await call('GET', `/admin/business/invoices/${inv.id}`, 'admin');
+  assert.equal(frozen.invoice.lines.length, 3);
+  assert.ok(frozen.invoice.lines.some((l: any) => l.cost_centre === 'RENAL Renal unit' && l.purpose === 'Dialysis' && l.po_number === 'PO-A'));
+  const mine = await call('GET', `/business/invoices?account_id=${A}`, 'bmgr');
+  assert.deepEqual(mine.invoices.map((i: any) => i.number), [inv.number]);
+  assert.equal((await call('GET', `/business/invoices?account_id=${A}`, 'bstaff')).status, 403);
+  const pdf = await rawReq('GET', `/business/invoices/${inv.id}?format=pdf`, 'bmgr');
+  assert.equal(pdf.type, 'application/pdf');
+  assert.ok(pdf.body.subarray(0, 5).toString() === '%PDF-');
+  const text = pdf.body.toString('latin1');
+  assert.ok(text.includes(inv.number) && text.includes('Participant') && text.includes('430000000'), 'NDIS lines grouped by participant');
+  assert.equal((await rawReq('GET', `/business/invoices/${inv.id}?format=pdf`, 'rider')).status, 403);
+  // Accounting exports.
+  const xero = await rawReq('GET', `/admin/business/invoices/export?month=${pm}&format=xero`, 'admin');
+  assert.ok(xero.type.startsWith('text/csv'));
+  const xl = xero.body.toString('utf8').split('\r\n');
+  assert.ok(xl[0].includes('*InvoiceNumber'));
+  assert.equal(xl.filter((l) => l.includes(inv.number)).length, 3);
+  const myob = (await rawReq('GET', `/admin/business/invoices/export?month=${pm}&format=myob`, 'admin')).body.toString('utf8');
+  assert.ok(myob.includes('Co./Last Name') && myob.includes(inv.number));
+  assert.equal((await rawReq('GET', `/admin/business/invoices/export?month=${pm}&format=xero`, 'bmgr')).status, 403);
+  // Void and reissue (a new number), then one invoice per PO.
+  assert.equal((await call('POST', `/admin/business/invoices/${inv.id}/void`, 'admin', { reason: 'Wrong address' })).invoice.status, 'void');
+  const again = await call('POST', '/admin/business/invoices/run', 'admin', { month: pm, account_id: A });
+  assert.equal(again.issued.length, 1);
+  assert.notEqual(again.issued[0].number, inv.number);
+  await call('POST', `/admin/business/invoices/${again.issued[0].id}/void`, 'admin', { reason: 'Split by PO' });
+  await call('PUT', `/business/accounts/${A}/rules`, 'bmgr', { invoice_per_po: true });
+  const perPo = await call('POST', '/admin/business/invoices/run', 'admin', { month: pm, account_id: A });
+  assert.deepEqual(perPo.issued.map((i: any) => [i.po_number, i.total_cents]).sort(), [['', 1100], ['PO-A', 3300], ['PO-B', 2000]]);
+  await call('PUT', `/business/accounts/${A}/rules`, 'bmgr', { invoice_per_po: false });
+  const poA = perPo.issued.find((i: any) => i.po_number === 'PO-A');
+  const poB = perPo.issued.find((i: any) => i.po_number === 'PO-B');
+  assert.ok((await rawReq('GET', `/admin/business/invoices/${poA.id}?format=pdf`, 'admin')).body.toString('latin1').includes('Purchase order'));
+  // Reminders: 8 days overdue → the 7-day reminder (texted to the manager), once a day; paid invoices never.
+  await q(`UPDATE account_invoices SET due_on = $2::date - 8 WHERE id = $1`, [poA.id, darwinDay()]);
+  const r1 = await call('POST', '/admin/business/reminders/run', 'admin');
+  assert.deepEqual(r1.sent.filter((s: any) => s.number === poA.number).map((s: any) => [s.reminder, s.days, s.to]), [[2, 8, 1]]);
+  assert.equal((await call('POST', '/admin/business/reminders/run', 'admin')).sent.filter((s: any) => s.number === poA.number).length, 0);
+  await flushBackground(3000);
+  assert.ok(await one(`SELECT 1 FROM comms_log WHERE template = 'invoice_overdue' AND to_tail = '401'`));
+  const overdue = await call('GET', '/admin/business/invoices?status=overdue', 'admin');
+  assert.ok(overdue.invoices.some((i: any) => i.id === poA.id && i.overdue_days === 8));
+  // The optional hold: new bookings paused while an invoice is over N days late; ops can still book.
+  assert.equal((await call('PUT', '/admin/business/billing', 'admin', { hold_after_days: 400 })).error, 'invalid_billing');
+  assert.equal((await call('PUT', '/admin/business/billing', 'admin', { hold_after_days: 5 })).settings.hold_after_days, 5);
+  try {
+    const held = await call('POST', '/trips', 'bstaff', { kind: 'ride', service: 'ride', pickup: TODD_MALL, dropoff: HOSPITAL, payment_method: 'corporate', corporate_account_id: A,
+      scheduled_for: inHours(3), cost_centre_id: biz24.renal, purpose_code: 'DIAL' });
+    assert.deepEqual([held.status, held.error, held.details.invoice], [402, 'account_overdue', poA.number]);
+    const paid = await call('POST', `/admin/business/invoices/${poA.id}/paid`, 'admin', { paid_ref: 'EFT 12345' });
+    assert.deepEqual([paid.invoice.status, paid.invoice.paid_ref, paid.invoice.paid_on], ['paid', 'EFT 12345', darwinDay()]);
+    assert.equal((await call('POST', `/admin/business/invoices/${poA.id}/paid`, 'admin', {})).error, 'not_open');
+    assert.equal((await call('POST', `/admin/business/invoices/${poA.id}/void`, 'admin', { reason: 'Too late' })).error, 'not_open');
+    const ok = await call('POST', '/trips', 'bstaff', { kind: 'ride', service: 'ride', pickup: TODD_MALL, dropoff: HOSPITAL, payment_method: 'corporate', corporate_account_id: A,
+      scheduled_for: inHours(3), cost_centre_id: biz24.renal, purpose_code: 'DIAL' });
+    assert.equal(ok.status, 201, 'paid: bookings work again');
+    await q(`UPDATE trips SET status = 'cancelled_admin', cancelled_at = now() WHERE id = $1`, [ok.trip.id]);
+  } finally {
+    await call('PUT', '/admin/business/billing', 'admin', { hold_after_days: 0 });
+  }
+  const sumUp = await call('GET', `/business/usage?account_id=${A}&month=${pm}`, 'bmgr');
+  assert.equal(sumUp.invoices.open, 2);
+  assert.ok(poB);
+});
+
+test('round 24: recurring trips — weekly rule with a return, public holidays and skipped dates left out, booked ahead once, one text, skip a day, stop', async () => {
+  const A = biz24.acct;
+  const holiday = darwinDay(3);
+  await q(`INSERT INTO public_holidays (day, name) VALUES ($1, 'Test holiday') ON CONFLICT DO NOTHING`, [holiday]);
+  invalidateConfig();
+  try {
+    const body = { account_id: A, traveller: { member_id: biz24.staff }, pickup: HOSPITAL, dropoff: TODD_MALL, weekdays: [1, 2, 3, 4, 5, 6, 7], pickup_time: '10:00', return_time: '14:00',
+      starts_on: darwinDay(1), skip_holidays: true, skip_dates: [darwinDay(5)], options: { cost_centre_id: biz24.renal, purpose_code: 'DIAL', notes: 'Dialysis, door 3' } };
+    const badTime = await call('POST', '/business/recurring', 'bmgr', { ...body, pickup_time: '25:00' });
+    assert.equal(badTime.error, 'invalid_recurrence', JSON.stringify(badTime));
+    assert.equal((await call('POST', '/business/recurring', 'bmgr', { ...body, starts_on: darwinDay(-1) })).error, 'invalid_recurrence');
+    const preview = await call('POST', '/business/recurring', 'bmgr', { ...body, dry_run: true });
+    assert.equal(preview.status, 200, JSON.stringify(preview));
+    const skippedDays = preview.preview.skipped.map((s: any) => s.date);
+    assert.ok(skippedDays.includes(holiday) && skippedDays.includes(darwinDay(5)), 'the holiday and the skipped date');
+    const expected = (13 - skippedDays.length) * 2;   // 13 days from tomorrow, less the skipped ones (any real holidays too), there and back
+    assert.equal(preview.preview.trips.length, expected);
+    const texts = await textCount('regular_rides_booked');
+    const made = await call('POST', '/business/recurring', 'bmgr', body);
+    assert.equal(made.status, 201, JSON.stringify(made));
+    assert.equal(made.booked.length, expected, JSON.stringify(made.problems));
+    assert.equal(made.problems.length, 0);
+    const series = made.series;
+    assert.match(series.ref, /^REG-/);
+    const rows = await q(`SELECT rider_id, booked_by, channel, cost_centre_id, purpose_code, notes, to_char(scheduled_for AT TIME ZONE 'Australia/Darwin', 'YYYY-MM-DD HH24:MI') AS at,
+                           pickup_address FROM trips WHERE recurring_id = $1 ORDER BY scheduled_for`, [series.id]);
+    assert.equal(rows.length, expected);
+    assert.ok(rows.every((r) => r.rider_id === biz24.staff && r.booked_by === biz24.mgr && r.channel === 'org' && r.cost_centre_id === biz24.renal && r.notes === 'Dialysis, door 3'));
+    assert.ok(!rows.some((r) => r.at.startsWith(holiday) || r.at.startsWith(darwinDay(5))));
+    assert.deepEqual([rows[0].at.slice(11), rows[0].pickup_address, rows[1].at.slice(11), rows[1].pickup_address], ['10:00', HOSPITAL.address, '14:00', TODD_MALL.address]);
+    await flushBackground(3000);
+    assert.equal(await textCount('regular_rides_booked'), texts + 1, 'one text for the series, not one per trip');
+    // Topping up never books the same time twice.
+    assert.equal((await generateSeries(series.id)).booked.length, 0);
+    await q(`UPDATE account_recurring_trips SET booked_through = NULL WHERE id = $1`, [series.id]);
+    assert.equal((await generateSeries(series.id)).booked.length, 0);
+    resetBillingClock(); await dispatchTick();
+    assert.equal((await one(`SELECT count(*)::int n FROM trips WHERE recurring_id = $1`, [series.id])).n, expected);
+    // Lists: the manager sees it, the traveller too; others on the account don't.
+    assert.equal((await call('GET', `/business/recurring?account_id=${A}`, 'bmgr')).series[0].upcoming, expected);
+    assert.equal((await call('GET', `/business/recurring?account_id=${A}`, 'bstaff')).series.length, 1);
+    assert.equal((await call('POST', `/business/recurring/${series.id}/skip`, 'bstaff', { date: darwinDay(2) })).status, 403, 'only who set it up or an approver');
+    const day2 = rows.filter((r) => r.at.startsWith(darwinDay(2))).length;
+    const skip = await call('POST', `/business/recurring/${series.id}/skip`, 'bappr', { date: darwinDay(2) });
+    assert.equal(skip.cancelled, day2);
+    assert.ok(skip.series.skip_dates.includes(darwinDay(2)));
+    const stop = await call('POST', `/business/recurring/${series.id}/stop`, 'bmgr', { cancel_booked: true });
+    assert.deepEqual([stop.series.active, stop.cancelled, stop.series.upcoming], [false, expected - day2, 0]);
+    assert.equal((await one(`SELECT count(*)::int n FROM trips WHERE recurring_id = $1 AND cancel_fee_cents > 0`, [series.id])).n, 0, 'no fees');
+  } finally {
+    await q(`DELETE FROM public_holidays WHERE day = $1 AND name = 'Test holiday'`, [holiday]);
+    invalidateConfig();
+  }
+});
+
+test('before migration 027: account bookings and the live statement work; applications, set-up, invoices and recurring trips say migration_pending', async () => {
+  const tables = ['account_cost_centres', 'account_purposes', 'account_invoices', 'account_recurring_trips'];
+  const acctCols = ['status', 'application', 'applied_at', 'reviewed_at', 'reviewed_by', 'review_note', 'contact_name', 'contact_phone', 'address', 'booking_rules'];
+  const tripCols = ['cost_centre_id', 'purpose_code', 'po_number', 'approval_status', 'approval_by', 'approval_at', 'recurring_id'];
+  const demo = (await call('GET', '/me', 'rider')).corporate_accounts[0];
+  for (const t of tables) await q(`ALTER TABLE ${t} RENAME TO ${t}_off`);
+  for (const c of acctCols) await q(`ALTER TABLE corporate_accounts RENAME COLUMN ${c} TO ${c}_off`);
+  for (const c of tripCols) await q(`ALTER TABLE trips RENAME COLUMN ${c} TO ${c}_off`);
+  resetBusinessReady(); resetBillingClock();
+  try {
+    const t = await call('POST', '/trips', 'rider', { kind: 'ride', service: 'ride', pickup: TODD_MALL, dropoff: HOSPITAL, payment_method: 'corporate', corporate_account_id: demo.id, scheduled_for: inHours(3) });
+    assert.equal(t.status, 201, JSON.stringify(t));
+    assert.equal((await call('POST', '/trips', 'rider', { kind: 'ride', service: 'ride', pickup: TODD_MALL, dropoff: HOSPITAL, payment_method: 'corporate', corporate_account_id: demo.id,
+      scheduled_for: inHours(4), po_number: 'PO-1' })).error, 'migration_pending');
+    await call('POST', `/trips/${t.trip.id}/cancel`, 'rider', {});
+    assert.equal((await call('GET', `/admin/corporate/${demo.id}/statement`, 'admin')).status, 200);
+    assert.ok((await call('GET', '/admin/corporate', 'admin')).items.length > 0);
+    assert.equal((await call('POST', '/public/business-applications', undefined, { organisation: 'Later Pty Ltd', kind: 'business', abn: abnFor(240003), billing_email: 'a@b.example',
+      contact_name: 'Lee Later', contact_phone: '0400 002 410', agree: true }, '10.24.0.9')).error, 'migration_pending');
+    assert.equal((await call('GET', '/admin/business/applications', 'admin')).ready, false);
+    assert.equal((await call('GET', '/admin/business/invoices', 'admin')).ready, false);
+    assert.equal((await call('GET', '/admin/business/billing', 'admin')).ready, false);
+    assert.equal((await call('GET', `/business/accounts/${demo.id}/setup`, 'rider')).error, 'migration_pending');
+    assert.equal((await call('GET', `/business/usage?account_id=${demo.id}`, 'rider')).error, 'migration_pending');
+    await dispatchTick();
+  } finally {
+    for (const t of tables) await q(`ALTER TABLE ${t}_off RENAME TO ${t}`);
+    for (const c of acctCols) await q(`ALTER TABLE corporate_accounts RENAME COLUMN ${c}_off TO ${c}`);
+    for (const c of tripCols) await q(`ALTER TABLE trips RENAME COLUMN ${c}_off TO ${c}`);
+    resetBusinessReady();
+  }
+});

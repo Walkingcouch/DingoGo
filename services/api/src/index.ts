@@ -26,6 +26,7 @@ import commsRoutes from './routes/comms.js';
 import healthRoutes from './routes/health.js';
 import businessRoutes from './routes/business.js';
 import clientRoutes from './routes/clients.js';
+import businessAccountRoutes from './routes/businessAccounts.js';
 import communityRoutes from './routes/community.js';
 import safetyRoutes from './routes/safety.js';
 import taxRoutes from './routes/tax.js';
@@ -208,6 +209,7 @@ export async function buildServer() {
   await app.register(commsRoutes);
   await app.register(businessRoutes);
   await app.register(clientRoutes);
+  await app.register(businessAccountRoutes);
   await app.register(communityRoutes);
   await app.register(safetyRoutes);
   await app.register(taxRoutes);

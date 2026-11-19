@@ -16,3 +16,5 @@ export const supportRef = () => `ST-${upper()}`;
 export const voucherCode = () => `DG${upper()}`;
 export const displayKey = () => `led_${token()}${token()}`;
 export const sha256 = (s: string) => crypto.createHash('sha256').update(s).digest('hex');
+export const businessApplicationRef = () => `BA-${upper()}`;
+export const recurringRef = () => `REG-${upper()}`;

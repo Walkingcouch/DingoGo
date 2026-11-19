@@ -57,6 +57,10 @@ const rideBody = z.object({
   women_driver_pref: z.boolean().optional(),
   notes: z.string().max(300).optional(),
   ndis_number: z.string().regex(/^\d{9}$/, 'NDIS number is 9 digits').optional(),
+  // Round 24: business account fields (checked against the account's booking rules).
+  cost_centre_id: z.string().uuid().nullable().optional(),
+  purpose_code: z.string().trim().max(20).nullable().optional(),
+  po_number: z.string().trim().max(40).nullable().optional(),
 });
 
 export default async function clientRoutes(app: FastifyInstance) {
@@ -142,6 +146,7 @@ export default async function clientRoutes(app: FastifyInstance) {
       kind: 'ride', service: 'ride', pickup: b.pickup, dropoff: b.dropoff, scheduled_for: b.scheduled_for ?? null,
       passengers: b.passengers, assistance_animal: b.assistance_animal, needs_wheelchair: b.needs_wheelchair, women_driver_pref: b.women_driver_pref,
       notes: b.notes, ndis_number: b.ndis_number, payment_method: 'corporate', corporate_account_id: m.id, channel: 'org', booked_by: me.id,
+      cost_centre_id: b.cost_centre_id ?? null, purpose_code: b.purpose_code ?? null, po_number: b.po_number ?? null,
     });
     await audit(me.id, 'client_ride_booked', 'trip', t.id, { account_id: m.id, consent_id: c.id });
     void send(c.client_id, 'ride_booked_for_you', { org: m.name, ref: t.ref, when: pickupWhen(t.scheduled_for ?? new Date()), pickup: t.pickup_address }, { trip: { id: t.id, channel: 'org' } });

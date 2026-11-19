@@ -4,6 +4,7 @@ import { ApiError, Icon, PARCEL_SIZE_MAX_KG, takeHandoff, PROHIBITED_ITEMS, canS
 import { DgMap, type MapMarker } from '@dingogo/shared/map';
 import { PlaceField, type Place } from '../components/PlaceField';
 import { QuoteBox } from '../components/QuoteBox';
+import { AccountFields, EMPTY_ACCOUNT_VALUES, accountBody, accountMissing, useAccountSetup, type AccountValues } from '../components/AccountFields';
 import { useMe } from '../ctx';
 import { ToursPanel } from './Tours';
 import { HirePanel } from './Hire';
@@ -55,6 +56,10 @@ export function RideScreen() {
   const [ndis, setNdis] = useState(false);
   const [ndisNo, setNdisNo] = useState('');
   const [pay, setPay] = useState<Pay>({ method: 'card' });
+  // Round 24: cost centre, purpose and PO for trips billed to a business account (only what the account uses).
+  const acctSetup = useAccountSetup(pay.method === 'corporate' ? pay.account : null);
+  const [acctValues, setAcctValues] = useState<AccountValues>(EMPTY_ACCOUNT_VALUES);
+  useEffect(() => { setAcctValues(EMPTY_ACCOUNT_VALUES); }, [pay.account]);
   const [cards, setCards] = useState<any[]>([]);
   const [cardMode, setCardMode] = useState<'stripe' | 'test' | 'off'>('test');
   const [showMore, setShowMore] = useState(false);
@@ -172,6 +177,7 @@ export function RideScreen() {
         if (later && when && windowH > 0) body.pickup_window_end = new Date(new Date(when).getTime() + windowH * 3600_000).toISOString();
       }
       if (ndis && ndisNo) body.ndis_number = ndisNo;
+      if (pay.method === 'corporate') Object.assign(body, accountBody(acctValues));
       const r = await post('/trips', body);
       void reload();
       nav(r.trip.status === 'scheduled' ? `/trips/${r.trip.id}` : `/trip/${r.trip.id}`);
@@ -200,6 +206,7 @@ export function RideScreen() {
       tooHeavy && `a weight up to ${PARCEL_SIZE_MAX_KG[size]} kg for this size (or a bigger size)`,
     ] : []),
     ndis && !/^\d{9}$/.test(ndisNo) && 'your 9-digit NDIS number',
+    pay.method === 'corporate' && accountMissing(acctSetup, acctValues),
   ].filter(Boolean) as string[];
   const canRequest = !!quote && !qError && !qLoading && missing.length === 0;
   const why = missing.length ? `To book, add ${listWords(missing)}.` : qLoading ? 'Getting your price…' : qError ? 'We can’t price this trip yet. See the message above.' : null;
@@ -386,6 +393,7 @@ export function RideScreen() {
                   <PayOpt key={c.id} on={pay.method === 'corporate' && pay.account === c.id} onClick={() => setPay({ method: 'corporate', account: c.id })} icon="receipt" title={c.name} sub="Business account, invoiced monthly" />
                 ))}
               </div>
+              {pay.method === 'corporate' && <AccountFields setup={acctSetup} value={acctValues} onChange={setAcctValues} totalCents={quote?.total_cents} later={later} />}
             </fieldset>
 
             <QuoteBox quote={quote} loading={qLoading} error={qError && soonZone ? null : qError} />

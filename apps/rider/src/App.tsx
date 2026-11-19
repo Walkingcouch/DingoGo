@@ -9,6 +9,7 @@ import { AccountScreen } from './screens/Account';
 // Round 18: rewards (QR codes), business and client screens are fetched when first opened.
 const RewardsScreen = lazyWithRetry(() => import('./screens/Rewards').then((m) => ({ default: m.RewardsScreen })));
 const BusinessScreen = lazyWithRetry(() => import('./screens/Business').then((m) => ({ default: m.BusinessScreen })));
+const BusinessAccountScreen = lazyWithRetry(() => import('./screens/BusinessAccount').then((m) => ({ default: m.BusinessAccountScreen })));
 const ClientsScreen = lazyWithRetry(() => import('./screens/Clients').then((m) => ({ default: m.ClientsScreen })));
 // Round 21: a shared trip opened from a text message (Android App Links), no sign-in needed. Map code loads only here.
 const SharedTrack = lazyWithRetry(() => import('@dingogo/shared/track').then((m) => ({ default: m.SharedTrack })));
@@ -94,6 +95,7 @@ export function App() {
             <Route path="/rewards" element={<RewardsScreen />} />
             <Route path="/business" element={<BusinessScreen />} />
             <Route path="/clients" element={<ClientsScreen />} />
+            <Route path="/business-account" element={<BusinessAccountScreen />} />
             <Route path="/account/*" element={<AccountScreen />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>

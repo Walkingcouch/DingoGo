@@ -30,6 +30,7 @@ function Menu() {
     { to: 'profile', icon: 'user', title: 'Profile and preferences', sub: 'Name, emergency contact, accessibility, language' },
     { to: 'payment', icon: 'wallet', title: 'Payment and credit', sub: `${money(me?.user.wallet_cents ?? 0)} DingoGo credit` },
     { to: 'notifications', icon: 'bell', title: 'Notifications', sub: `${n ? `${n} unread` : 'All caught up'}. Settings and offers` },
+    ...((me?.corporate_accounts?.length ?? 0) > 0 ? [{ to: '/business-account', icon: 'receipt', title: 'Business account', sub: 'Book for others, regular trips, approvals, spend and invoices' }] : []),
     ...((me?.corporate_accounts?.length ?? 0) > 0 ? [{ to: '/business', icon: 'package', title: 'Business deliveries', sub: 'Parcels sent, runs of several drops, spreadsheet import' }] : []),
     ...((me?.corporate_accounts ?? []).some((a) => CLIENT_KINDS.includes(a.kind ?? '')) ? [{ to: '/clients', icon: 'users', title: 'Book for clients', sub: 'Rides for your clients, with their consent' }] : []),
     { to: 'help', icon: 'help', title: 'Help', sub: 'Lost property, fares, report a problem' },

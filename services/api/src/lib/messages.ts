@@ -257,6 +257,56 @@ export const templates = {
   hire_quote: t<{ name: string; cents: number; url: string; days: number }>({ category: 'account', smsKind: 'transactional',
     render: (v) => ({ sms: `DingoGo: hi ${v.name}, your hire quote is ${money(v.cents)} incl. GST. See it and accept here within ${v.days} days: ${v.url}` }) }),
 
+  // ── Business accounts (Round 24) ──
+  business_application_received: t<{ org: string; ref: string }>({ category: 'account', smsKind: 'transactional',
+    render: (v) => ({ sms: `DingoGo: thanks for applying for a business account for ${v.org} (ref ${v.ref}). We check every application within one business day.` }) }),
+  business_account_approved: t<{ org: string; terms: number }>({ category: 'account', smsKind: 'transactional',
+    render: (v) => ({
+      title: `${v.org} account is open`,
+      body: `Your DingoGo business account for ${v.org} is open. You manage it: add staff, cost centres and rules in Account, Business account. Invoices are monthly, due in ${v.terms} days.`,
+      sms: `DingoGo: your business account for ${v.org} is open. Sign in to the DingoGo app with this number to add staff and book. Invoices are monthly, due in ${v.terms} days.`,
+    }) }),
+  business_account_declined: t<{ org: string; note: string | null }>({ category: 'account', smsKind: 'transactional',
+    render: (v) => ({ sms: `DingoGo: we can't open a business account for ${v.org} at the moment${v.note ? `: ${v.note}` : ''}. Call us to talk it through.` }) }),
+  business_member_added: t<{ org: string; role: string; by: string }>({ category: 'account', smsKind: 'transactional',
+    render: (v) => ({
+      title: `You're on the ${v.org} account`,
+      body: `${v.by} added you to ${v.org} on DingoGo as ${v.role}. Choose ${v.org} under Payment when you book a work trip.`,
+      sms: `DingoGo: ${v.by} added you to the ${v.org} business account (${v.role}). Get the DingoGo app and sign in with this number to book work trips.`,
+    }) }),
+  business_approval_needed: t<{ org: string; ref: string; who: string; when: string; cents: number }>({ category: 'account',
+    render: (v) => ({ title: 'Trip waiting for your OK', body: `${v.who} booked ${v.ref} on ${v.org} for ${v.when} (${money(v.cents)}). Approve or decline it in Account, Business account.` }) }),
+  business_trip_approved: t<{ ref: string; when: string }>({ category: 'trip',
+    render: (v) => ({ title: 'Trip approved', body: `Booking ${v.ref} for ${v.when} is approved. We'll find a driver closer to the time.` }) }),
+  business_trip_declined: t<{ ref: string; when: string; note: string | null }>({ category: 'trip', smsKind: 'transactional',
+    render: (v) => ({
+      title: 'Trip not approved',
+      body: `Booking ${v.ref} for ${v.when} was not approved, so it is cancelled with no charge.${v.note ? ` ${v.note}` : ''}`,
+      sms: `DingoGo: booking ${v.ref} for ${v.when} was not approved by the account, so it is cancelled with no charge.`,
+    }) }),
+  business_trip_unapproved: t<{ ref: string; when: string }>({ category: 'trip', smsKind: 'transactional',
+    render: (v) => ({
+      title: 'Trip not sent',
+      body: `Booking ${v.ref} for ${v.when} wasn't approved in time, so no driver was sent and there is no charge.`,
+      sms: `DingoGo: booking ${v.ref} for ${v.when} wasn't approved in time, so no driver was sent and there is no charge.`,
+    }) }),
+  regular_rides_booked: t<{ org: string; days: string; time: string; pickup: string; next: string }>({ category: 'trip', smsKind: 'transactional',
+    render: (v) => ({
+      title: 'Regular rides booked for you',
+      body: `${v.org} booked regular rides for you: ${v.days} at ${v.time} from ${v.pickup}. First one ${v.next}.`,
+      sms: `DingoGo: ${v.org} booked regular rides for you, ${v.days} at ${v.time} from ${v.pickup}. First one ${v.next}. We'll text when each driver is on the way.`,
+    }) }),
+  recurring_problem: t<{ ref: string; date: string; reason: string }>({ category: 'account',
+    render: (v) => ({ title: 'A regular trip could not be booked', body: `Series ${v.ref}: the trip on ${v.date} was not booked: ${v.reason}` }) }),
+  invoice_issued: t<{ org: string; number: string; cents: number; due: string }>({ category: 'account',
+    render: (v) => ({ title: `Invoice ${v.number}`, body: `${v.org}: invoice ${v.number} for ${money(v.cents)} incl. GST is ready, due ${v.due}. Download it in Account, Business account.` }) }),
+  invoice_overdue: t<{ org: string; number: string; cents: number; days: number }>({ category: 'account', smsKind: 'transactional',
+    render: (v) => ({
+      title: `Invoice ${v.number} is overdue`,
+      body: `${v.org}: invoice ${v.number} (${money(v.cents)}) is ${v.days} day${v.days === 1 ? '' : 's'} overdue. Please pay it or call us if something is wrong.`,
+      sms: `DingoGo: invoice ${v.number} for ${v.org} (${money(v.cents)}) is ${v.days} day${v.days === 1 ? '' : 's'} overdue. Please pay it, or call us if something is wrong.`,
+    }) }),
+
   // ── Marketing (only with consent; footer names DingoGo and how to stop) ──
   promo: t<{ title: string; body: string }>({ category: 'promo', smsKind: 'marketing',
     render: (v) => ({
