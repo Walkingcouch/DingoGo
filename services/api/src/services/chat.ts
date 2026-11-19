@@ -157,7 +157,8 @@ export async function postMessage(t: any, sender: { id: string; role: string; na
 export async function tripForPhone(phone: string, opts: { recent?: boolean; lostDays?: number } = {}) {
   const lost = opts.lostDays && opts.lostDays > 0
     ? `OR (t.status = 'completed' AND EXISTS (SELECT 1 FROM lost_items l WHERE l.trip_id = t.id AND l.status IN ('reported','found','collect','return_booked')
-                                            AND l.created_at > now() - make_interval(days => $4)))` : '';
+                                            AND l.created_at > now() - make_interval(days => $4))
+                                 AND NOT EXISTS (SELECT 1 FROM incident_reports i WHERE i.trip_id = t.id))` : '';
   const t = await one(
     `SELECT t.*, ru.phone AS rider_phone, ru.name AS rider_name, du.phone AS driver_phone, du.name AS driver_name
      FROM trips t JOIN users ru ON ru.id = t.rider_id LEFT JOIN users du ON du.id = t.driver_id

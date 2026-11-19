@@ -20,14 +20,25 @@ const local = (d: Date | string | null | undefined) => (d ? new Intl.DateTimeFor
 const EVENT_LABEL: Record<string, string> = {
   requested: 'Booked', created: 'Booked', offered: 'Offered to a driver', accepted: 'Driver accepted', arrived: 'Driver arrived at pickup', started: 'Trip started',
   completed: 'Trip completed', cancelled: 'Cancelled', refund: 'Refund', tip: 'Tip added', rated: 'Rated', payment_failed: 'Payment failed', captured: 'Payment taken',
-  sos: 'SOS pressed', relay_call: 'Masked call', fare_review: 'Fare check', lost_item_reported: 'Lost property reported', dispute_opened: 'Dispute opened',
+  relay_call: 'Masked call', fare_review: 'Fare check', lost_item_reported: 'Lost property reported', dispute_opened: 'Dispute opened',
   dispute_updated: 'Dispute updated', dispute_closed: 'Dispute closed', pod_pin_failed: 'Wrong delivery PIN',
+};
+
+/** Round 26: the pack goes to a card issuer, a third party. Safety matters between rider and driver (reports, shared trips,
+ *  check-ins, SOS) aren't theirs to see, and the driver is named by first name and initial only. */
+const PRIVATE_EVENTS = /^(incident_|shared_with_contacts|safety_|check_in|sos|identity_)/;
+export const driverLabel = (name?: string | null) => {
+  const [first, ...rest] = String(name ?? '').trim().split(/\s+/).filter(Boolean);
+  if (!first) return null;
+  const last = rest.at(-1);
+  return last ? `${first} ${last[0].toUpperCase()}.` : first;
 };
 
 export async function evidencePack(tripId: string) {
   const t = await trips.getTrip(tripId);
   const [events, track, payments, messages, tickets, riderStats] = await Promise.all([
-    q(`SELECT e.at, e.type, e.data, u.role AS actor_role FROM trip_events e LEFT JOIN users u ON u.id = e.actor_id WHERE e.trip_id = $1 ORDER BY e.at, e.id`, [t.id]),
+    q(`SELECT e.at, e.type, e.data, u.role AS actor_role FROM trip_events e LEFT JOIN users u ON u.id = e.actor_id WHERE e.trip_id = $1 ORDER BY e.at, e.id`, [t.id])
+      .then((rows) => rows.filter((e: any) => !PRIVATE_EVENTS.test(e.type))),
     q(`SELECT lat, lng, at FROM trip_track WHERE trip_id = $1 ORDER BY at`, [t.id]),
     q(`SELECT created_at, kind, provider, provider_ref, amount_cents, gst_cents, status FROM payments WHERE trip_id = $1 ORDER BY created_at`, [t.id]),
     opt(q(`SELECT m.created_at, m.sender_role, m.body, m.via FROM trip_messages m WHERE m.trip_id = $1 ORDER BY m.id`, [t.id]), [] as any[]),
@@ -53,7 +64,7 @@ export async function evidencePack(tripId: string) {
   const summary = [
     `${ride ? 'Ride' : 'Delivery'} ${t.ref} for ${t.rider?.name ?? 'the customer'}, ${t.pickup_address} to ${t.dropoff_address}.`,
     `Booked in the DingoGo app ${local(t.requested_at)} with an upfront price of ${money(t.quote_cents)}${t.final_cents != null && t.final_cents !== t.quote_cents ? `; final charge ${money(t.final_cents)} (route change)` : ''}.`,
-    t.completed_at ? `Completed ${local(t.completed_at)} by driver ${t.driver?.name ?? '-'} in ${t.vehicle ? `${t.vehicle.colour ?? ''} ${t.vehicle.make ?? ''} ${t.vehicle.model ?? ''}, rego ${t.vehicle.rego}`.replace(/\s+/g, ' ').trim() : 'a registered car'}.` : `Status: ${t.status}.`,
+    t.completed_at ? `Completed ${local(t.completed_at)} by driver ${driverLabel(t.driver?.name) ?? '-'} in ${t.vehicle ? `${t.vehicle.colour ?? ''} ${t.vehicle.make ?? ''} ${t.vehicle.model ?? ''}, rego ${t.vehicle.rego}`.replace(/\s+/g, ' ').trim() : 'a registered car'}.` : `Status: ${t.status}.`,
     proof.text,
     trackedM != null ? `GPS track: ${inTrip.length} points, ${(trackedM / 1000).toFixed(1)} km driven during the trip (estimate ${(t.est_distance_m / 1000).toFixed(1)} km).` : 'GPS track: not enough points recorded.',
     `${messages.length} chat message${messages.length === 1 ? '' : 's'} between rider and driver.`,
@@ -71,7 +82,7 @@ export async function evidencePack(tripId: string) {
       cancel_fee_cents: t.cancel_fee_cents, payment_method: t.payment_method, payment_status: t.payment_status, payment_ref: t.payment_ref, fare_lines: t.fare_breakdown?.lines ?? [],
     },
     customer: { name: t.rider?.name ?? null, phone: tail(t.rider?.phone), ...(riderStats ?? {}) },
-    driver: t.driver ? { name: t.driver.name, phone: tail(t.driver.phone) } : null,
+    driver: t.driver ? { name: driverLabel(t.driver.name), phone: tail(t.driver.phone) } : null,
     vehicle: t.vehicle ? { rego: t.vehicle.rego, make: t.vehicle.make, model: t.vehicle.model, colour: t.vehicle.colour } : null,
     proof,
     timeline: events.map((e: any) => ({ at: e.at, type: e.type, label: EVENT_LABEL[e.type] ?? e.type.replace(/_/g, ' '), by: e.actor_role ?? 'system' })),
@@ -82,7 +93,7 @@ export async function evidencePack(tripId: string) {
     payments: payments.map((p: any) => ({ at: p.created_at, kind: p.kind, provider: p.provider, ref: p.provider_ref, cents: p.amount_cents, status: p.status })),
     refunded_cents: refunded,
     ratings: { rider_rating: t.rider_rating, rider_feedback: t.rider_feedback, driver_rating: t.driver_rating },
-    support: tickets.map((s: any) => ({ ref: s.ref ?? null, category: s.category, subject: s.subject, status: s.status, at: s.created_at })),
+    support: tickets.filter((s: any) => s.category !== 'safety').map((s: any) => ({ ref: s.ref ?? null, category: s.category, subject: s.subject, status: s.status, at: s.created_at })),
   };
 }
 

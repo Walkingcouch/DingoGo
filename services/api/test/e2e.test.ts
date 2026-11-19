@@ -2250,6 +2250,11 @@ test('relay number: masked calls and texts between rider and driver; phone booki
     assert.match(t.body, /<Response\/>/);
     const thread = await call('GET', `/trips/${id}/messages`, 'd1');
     assert.deepEqual([thread.messages.at(-1).body, thread.messages.at(-1).via, thread.messages.at(-1).from], ["I'm at the front gate", 'sms', 'rider']);
+    // Round 26: the same Twilio message sent again (a replayed request) is stored once.
+    const sms1 = { From: '+61400123456', To: RELAY, Body: 'Blue door', MessageSid: 'SM0123456789abcdef0123456789abcdef' };
+    await twilioHook('/comms/twilio/sms', sms1);
+    await twilioHook('/comms/twilio/sms', sms1);
+    assert.equal((await one(`SELECT count(*)::int n FROM trip_messages WHERE trip_id = $1 AND body = 'Blue door'`, [id])).n, 1, 'replay stored once');
     // The driver answers in the app: passed on by text from the relay, so Nan can reply.
     comms.sms = [];
     await call('POST', `/trips/${id}/messages`, 'd1', { body: 'Coming to the gate now' });
@@ -4713,6 +4718,9 @@ test('round 19: hotel / visitor-centre desk books a tour for a guest on its acco
   assert.equal((await call('GET', '/admin/tour-commissions', 'admin')).partners.some((r: any) => r.partner_id === p.item.id), true);
   assert.equal((await call('GET', '/admin/tour-bookings', 'admin')).items.some((r: any) => r.id === b2.booking.id && r.partner_name === 'Desert Palms Resort (test)'), true);
 
+  // Round 26: the guest's own mobile only — not a driver's or staff number (the trip would land on their account).
+  const drv = await call('POST', '/partner/tours/bookings', 'desk', { ...body, guest_phone: '+61400000011', scheduled_for: await tourSlot('town-heritage', 120) });
+  assert.deepEqual([drv.status, drv.error], [400, 'guest_phone']);
   // Not linked to an account: refused plainly.
   await call('PATCH', `/admin/partners/${p.item.id}`, 'admin', { corporate_account_id: null });
   assert.equal((await call('POST', '/partner/tours/bookings', 'desk', body)).error, 'partner_account_required');
@@ -5295,6 +5303,9 @@ test('round 22: tickets — reference, priority and due times; thread with repli
   assert.equal(back.ticket.status, 'open');
   assert.equal((await call('POST', `/admin/support/${id}/messages`, 'admin', { body: 'Found it, sending it back.', status: 'resolved' })).ticket.status, 'resolved');
   assert.equal((await lastNote('+61400000100')).title, 'Sorted');
+  // Round 26: the reply and "Sorted" arrive in that order every time (they used to race).
+  const lastTwo = await q(`SELECT title FROM notifications WHERE user_id = $1 ORDER BY id DESC LIMIT 2`, [await userIdOf('+61400000100')]);
+  assert.deepEqual(lastTwo.map((n) => n.title), ['Sorted', 'Re: Black hat']);
   assert.equal((await call('GET', `/support/${id}`, 'rider')).ticket.can_rate, true);
   assert.equal((await call('POST', `/support/${id}/rating`, 'rider', { score: 4, comment: 'Quick, thanks' })).csat_score, 4);
   assert.equal((await call('POST', `/support/${id}/rating`, 'rider', { score: 1 })).error, 'already_rated');
@@ -5895,5 +5906,114 @@ test('before migration 027: account bookings and the live statement work; applic
     for (const c of acctCols) await q(`ALTER TABLE corporate_accounts RENAME COLUMN ${c}_off TO ${c}`);
     for (const c of tripCols) await q(`ALTER TABLE trips RENAME COLUMN ${c}_off TO ${c}`);
     resetBusinessReady();
+  }
+});
+
+// ───────────── Round 26: security review ─────────────
+import { autoHoldBlocker } from '../src/lib/safety.js';
+import { driverLabel } from '../src/services/evidence.js';
+
+test('round 26: automatic holds need a real, recent trip and one per reporter a month (unit)', () => {
+  const now = new Date('2026-11-19T00:00:00Z');
+  const done = { status: 'completed', started_at: '2026-11-18T00:00:00Z', completed_at: '2026-11-18T00:30:00Z' };
+  assert.equal(autoHoldBlocker(done, 0, now), null);
+  assert.equal(autoHoldBlocker({ status: 'cancelled_rider', cancelled_at: '2026-11-18T00:00:00Z' }, 0, now), 'not_met', 'driver never arrived');
+  assert.equal(autoHoldBlocker({ status: 'cancelled_rider', arrived_at: '2026-11-18T00:00:00Z', cancelled_at: '2026-11-18T00:05:00Z' }, 0, now), null, 'met at the pickup');
+  assert.equal(autoHoldBlocker({ ...done, completed_at: '2026-11-01T00:00:00Z' }, 0, now), 'old_trip');
+  assert.equal(autoHoldBlocker({ status: 'in_progress' }, 0, now), null);
+  assert.equal(autoHoldBlocker(done, 1, now), 'reporter_limit');
+  assert.deepEqual([driverLabel('Jarrah Kngwarreye Smith'), driverLabel('Kumanjayi'), driverLabel(''), driverLabel(null)], ['Jarrah S.', 'Kumanjayi', null, null]);
+});
+
+test('round 26: made-up critical reports — no hold for an old trip, a trip where they never met, or a second hold by one reporter; ops still see them', async () => {
+  await login('r26', '+61400002601');
+  const reporter = await userIdOf('+61400002601');
+  const d1 = await userIdOf('+61400000011');
+  const report = (trip: string) => call('POST', '/safety/reports', 'r26', { trip_id: trip, category: 'sexual_misconduct', description: 'Something happened that I want looked at' });
+  const tripFor = async (o: Parameters<typeof supportTrip>[0], extra = '') => {
+    const id = await supportTrip(o);
+    await q(`UPDATE trips SET rider_id = $2 ${extra} WHERE id = $1`, [id, reporter]);
+    return id;
+  };
+  const old = await tripFor({ doneMinAgo: 60 * 24 * 10 });
+  const r1 = await report(old);
+  assert.equal(r1.status, 201, JSON.stringify(r1));
+  const never = await tripFor({ doneMinAgo: 60 }, `, status = 'cancelled_rider', started_at = NULL, arrived_at = NULL, completed_at = NULL, cancelled_at = now()`);
+  assert.equal((await report(never)).status, 201);
+  // A hold this month already (made earlier): the next one waits for a person.
+  await q(`INSERT INTO incident_reports (ref, reporter_id, reporter_role, subject_id, category, severity, description, held) VALUES ('IR-T26A', $1, 'rider', $2, 'physical_assault', 'critical', 'earlier', true)`, [reporter, d1]);
+  const recent = await tripFor({ doneMinAgo: 30 });
+  assert.equal((await report(recent)).status, 201);
+  assert.equal((await one(`SELECT blocked FROM users WHERE id = $1`, [d1])).blocked, false, 'driver 1 not taken off the road');
+  const skipped = await q(`SELECT trip_id, data->>'reason' AS reason FROM trip_events WHERE type = 'incident_hold_skipped' AND trip_id = ANY($1) ORDER BY at`, [[old, never, recent]]);
+  assert.deepEqual(skipped.map((e) => e.reason), ['old_trip', 'not_met', 'reporter_limit']);
+  const rows = await q(`SELECT held, severity, status FROM incident_reports WHERE reporter_id = $1 AND ref <> 'IR-T26A'`, [reporter]);
+  assert.ok(rows.length === 3 && rows.every((r) => !r.held && r.severity === 'critical'), 'still critical in the queue');
+
+  // A safety report closes direct contact: no lost property case (and so no reopened chat or masked calls) for that trip.
+  const lost = await call('POST', `/trips/${recent}/help/lost-item`, 'r26', { description: 'My phone charger' });
+  assert.deepEqual([lost.status, lost.error], [409, 'contact_closed']);
+  await q(`INSERT INTO lost_items (trip_id, rider_id, driver_id, reported_by, description) VALUES ($1,$2,$3,'rider','Bag')`, [recent, reporter, d1]);
+  assert.equal(await tripForPhone('+61400002601', { lostDays: 7 }), null, 'relay calls stay closed');
+  assert.equal((await call('GET', `/trips/${recent}/messages`, 'r26')).can_send, false);
+
+  // The evidence pack for a card dispute leaves the safety report out and names the driver by first name and initial.
+  const pack = (await call('GET', `/admin/trips/${recent}/evidence-pack`, 'admin')).pack;
+  assert.ok(!pack.timeline.some((e: any) => /incident/.test(e.type)), 'no safety events');
+  const full = (await one(`SELECT name FROM users WHERE id = $1`, [d1])).name as string;
+  assert.equal(pack.driver.name, driverLabel(full));
+  // (The receipt keeps the supplier's name and ABN: it is the rider's own tax invoice.)
+  assert.ok(!full.includes(' ') || !JSON.stringify([pack.summary, pack.driver, pack.timeline]).includes(full), 'driver full name not in the summary');
+});
+
+test('round 26: lost property can’t be reported again once a case is closed (no reopening contact on demand)', async () => {
+  const trip = await supportTrip({ doneMinAgo: 90 });
+  const r = await call('POST', `/trips/${trip}/help/lost-item`, 'rider', { description: 'Green beanie' });
+  assert.equal(r.status, 201, JSON.stringify(r));
+  assert.equal((await call('POST', `/lost-items/${r.lost_item.id}/respond`, 'd1', { found: false })).lost_item.status, 'not_found');
+  const again = await call('POST', `/trips/${trip}/help/lost-item`, 'rider', { description: 'Green beanie, look again' });
+  assert.deepEqual([again.status, again.error], [409, 'lost_item_closed']);
+  assert.equal((await call('POST', `/trips/${trip}/help/found-item`, 'd1', { description: 'A beanie after all' })).error, 'lost_item_closed');
+});
+
+test('round 26: a regular booking stops when the person who set it up leaves the account', async () => {
+  const A = biz24.acct;
+  await login('r26b', '+61400002602');
+  const left = await userIdOf('+61400002602');
+  await q(`INSERT INTO corporate_members (account_id, user_id, role) VALUES ($1,$2,'member') ON CONFLICT DO NOTHING`, [A, left]);
+  const s = await one(`INSERT INTO account_recurring_trips (ref, account_id, created_by, rider_id, pickup, dropoff, weekdays, pickup_time, starts_on)
+                       VALUES ('REG-T26', $1, $2, $2, $3, $4, '{1,2,3,4,5,6,7}', '10:00', $5) RETURNING id`, [A, left, JSON.stringify(HOSPITAL), JSON.stringify(TODD_MALL), darwinDay(1)]);
+  assert.equal((await call('DELETE', `/business/accounts/${A}/members/${left}`, 'bmgr')).ok, true);
+  const run = await generateSeries(s.id);
+  assert.equal(run.booked.length, 0);
+  const after = await one(`SELECT active, stopped_reason FROM account_recurring_trips WHERE id = $1`, [s.id]);
+  assert.deepEqual([after.active, after.stopped_reason], [false, 'The person who set it up is no longer on the account']);
+  assert.equal((await one(`SELECT count(*)::int n FROM trips WHERE recurring_id = $1`, [s.id])).n, 0);
+});
+
+test('round 26: settings with their own checked page (billing, retention, loyalty…) and internal markers can’t be written through the generic settings route', async () => {
+  for (const k of ['business_billing', 'record_retention', 'record_retention_last_run', 'loyalty', 'support_policy', 'fleet_policy', 'ndis', '_tick', 'anything_new']) {
+    const r = await call('PUT', `/admin/settings/${k}`, 'admin', { value: { hold_after_days: -5 } });
+    assert.deepEqual([r.status, r.error], [400, 'setting_not_writable'], k);
+  }
+  const cur = (await call('GET', '/admin/settings', 'admin')).items.find((s: any) => s.key === 'support').value;
+  assert.equal((await call('PUT', '/admin/settings/support', 'admin', { value: cur })).status, 200, 'the Settings page still saves');
+  assert.equal((await call('PUT', '/admin/settings/support', 'd1', { value: cur })).status, 403);
+});
+
+test('round 26: business routes check the account before the form, and texts to new numbers are limited', async () => {
+  assert.equal((await call('GET', `/business/usage?account_id=bad`)).status, 401);
+  assert.equal((await call('GET', `/business/trips`)).status, 401);
+  assert.equal((await call('POST', `/business/recurring`, undefined, {})).status, 401);
+  const { LIMITS } = await import('../src/services/business.js');
+  assert.ok(LIMITS.membersPerAccountDay > 0 && LIMITS.bookForOthersPerDay > 0 && LIMITS.seriesPerDay > 0);
+  // Members added by a manager count against the account's daily limit.
+  await q(`INSERT INTO rate_events (bucket, key) SELECT 'business_member_add', $1 FROM generate_series(1, $2)`, [biz24.acct, LIMITS.membersPerAccountDay]);
+  try {
+    const r = await call('POST', `/business/accounts/${biz24.acct}/members`, 'bmgr', { phone: '0400 002 699', name: 'One Too Many', role: 'member' });
+    assert.deepEqual([r.status, r.error], [429, 'rate_limited']);
+    assert.equal((await call('POST', `/business/accounts/${biz24.acct}/members`, 'admin', { phone: '0400 002 698', name: 'Staff Add', role: 'member' })).status, 201, 'DingoGo staff are not limited');
+  } finally {
+    await q(`DELETE FROM rate_events WHERE bucket = 'business_member_add' AND key = $1`, [biz24.acct]);
   }
 });

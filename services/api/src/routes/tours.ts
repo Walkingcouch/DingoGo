@@ -21,6 +21,8 @@ import * as tours from '../services/tours.js';
 import * as trips from '../services/trips.js';
 import { sendSmsT } from '../services/notify.js';
 
+/** Each desk booking texts the guest: a cap per desk a day (Round 26). */
+export const PARTNER_TOUR_BOOKINGS_PER_DAY = 40;
 const ops = (req: FastifyRequest) => requireUser(req, 'admin', 'dispatcher');
 const admin = (req: FastifyRequest) => requireUser(req, 'admin');
 const langOf = (req: FastifyRequest) => {
@@ -150,7 +152,11 @@ export default async function tourRoutes(app: FastifyInstance) {
     if (!tour || !tour.active) throw notFound('Tour');
     const pickup = b.pickup ?? (p.lat != null ? { lat: p.lat, lng: p.lng, address: p.address ?? p.name } : null);
     if (!pickup) throw bad('pickup_required', 'Add a pickup address');
-    let u = await one('SELECT * FROM users WHERE phone = $1 AND deleted_at IS NULL', [b.guest_phone]);
+    // Round 26: the guest's own mobile only — not a closed account, a driver's or a DingoGo staff number (the trip would be theirs).
+    let u = await one('SELECT * FROM users WHERE phone = $1', [b.guest_phone]);
+    if (u?.deleted_at) throw bad('guest_phone', 'That number belongs to a closed DingoGo account. Use another mobile for the guest.', { field: 'guest_phone' });
+    if (u && u.role !== 'rider') throw bad('guest_phone', 'That number belongs to a DingoGo staff or driver account. Use the guest’s own mobile.', { field: 'guest_phone' });
+    await limit('partner_tour_booking', p.id, PARTNER_TOUR_BOOKINGS_PER_DAY, 86400, 'That is a lot of tour bookings from this desk today. Call DingoGo to book more.');
     if (!u) u = await one(`INSERT INTO users (phone, name, referral_code) VALUES ($1,$2,$3) RETURNING *`, [b.guest_phone, b.guest_name, referralCode(b.guest_name)]);
     const trip = await trips.createTrip(u.id, {
       kind: 'ride', service: 'tour', tour_package_id: tour.id, pickup, dropoff: pickup, scheduled_for: b.scheduled_for, passengers: b.guests,

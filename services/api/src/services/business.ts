@@ -18,6 +18,7 @@ import { auMobile } from '../lib/courier.js';
 import { CLIENT_BOOKING_KINDS, clientName } from '../lib/community.js';
 import { businessApplicationRef, recurringRef, referralCode } from '../lib/ids.js';
 import { logError } from '../lib/log.js';
+import { limit } from '../lib/rateLimit.js';
 import { Pdf } from '../lib/pdf.js';
 import { abnFormat, cents, gstIn, longDate, GST_CODES } from '../lib/tax.js';
 import { addDays, darwinTime } from '../lib/tours.js';
@@ -181,8 +182,12 @@ export async function savePurpose(me: Me, accountId: string, id: string | null, 
 }
 
 /** Add (or change the role of) a member by mobile. New numbers get an account and a text. */
+/** Round 26: texts to new numbers (people added, guests booked for, regular trips) are limited per account and per booker. */
+export const LIMITS = { membersPerAccountDay: 50, bookForOthersPerDay: 60, seriesPerDay: 20 };
+
 export async function addMember(me: Me, accountId: string, b: { phone: string; name: string; role: MemberRole }) {
   const a = await access(me, accountId); needManager(a);
+  if (!a.staff) await limit('business_member_add', accountId, LIMITS.membersPerAccountDay, 86400, 'That is a lot of people added today. Call DingoGo to add more.');
   const mobile = auMobile(b.phone);
   if (!mobile) throw bad('phone', 'Use an Australian mobile number', { field: 'phone' });
   let u = await one(`SELECT id, name, deleted_at FROM users WHERE phone = $1`, [mobile]);
@@ -317,6 +322,7 @@ export async function bookFor(me: Me, b: ForBody) {
   const a = await access(me, b.account_id);
   if (!a.account.active) throw forbidden('This account is closed');
   const who = await resolveTraveller(me, a, b.traveller);
+  if (!who.self && !a.staff) await limit('business_book_for', me.id, LIMITS.bookForOthersPerDay, 86400, 'That is a lot of bookings for other people today. Call DingoGo to book more.');
   const t = await trips.createTrip(who.id, {
     kind: 'ride', service: b.service ?? 'ride', pickup: b.pickup, dropoff: b.dropoff, scheduled_for: b.scheduled_for ?? null, passengers: b.passengers,
     needs_wheelchair: b.needs_wheelchair, assistance_animal: b.assistance_animal, women_driver_pref: b.women_driver_pref, notes: b.notes, ndis_number: b.ndis_number,
@@ -633,6 +639,7 @@ export async function createRecurring(me: Me, b: RecurringBody) {
   const hol = await holidays();
   const preview = occurrences(rule, today, addDays(today, RECURRING_HORIZON_DAYS - 1), hol);
   if (b.dry_run) return { preview: { trips: preview.trips.slice(0, 40), skipped: preview.skipped }, traveller: who.self ? 'You' : clientName(who.name) };
+  if (!a.staff) await limit('business_series', me.id, LIMITS.seriesPerDay, 86400, 'That is a lot of regular bookings set up today. Call DingoGo to add more.');
   const row = await one(
     `INSERT INTO account_recurring_trips (ref, account_id, created_by, rider_id, consent_id, pickup, dropoff, weekdays, pickup_time, return_time, starts_on, ends_on,
        skip_holidays, skip_dates, options) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING *`,
@@ -678,6 +685,14 @@ export async function generateSeries(id: string, o: { notify?: boolean; now?: Da
     if (s.created_by) void send(s.created_by, 'recurring_problem', { ref: s.ref, date: longDate(today), reason: `${reason}. The series has stopped.` });
   };
   if (!acct?.active) { await stop('The account is closed'); return out; }
+  // Round 26: a series keeps billing the account only while the person who set it up may still book on it (left the account →
+  // stopped), and the traveller is still on it when they were booked as a colleague.
+  if (s.created_by) {
+    const by = await one(`SELECT u.role, m.role AS member_role FROM users u LEFT JOIN corporate_members m ON m.user_id = u.id AND m.account_id = $2
+                          WHERE u.id = $1 AND u.deleted_at IS NULL`, [s.created_by, s.account_id]);
+    const staffBy = by && (by.role === 'admin' || by.role === 'dispatcher');
+    if (!by || (!staffBy && !by.member_role)) { await stop('The person who set it up is no longer on the account'); return out; }
+  }
   if (s.consent_id) {
     const c = await one(`SELECT 1 FROM client_consents WHERE id = $1 AND withdrawn_at IS NULL AND (expires_at IS NULL OR expires_at > now())`, [s.consent_id]);
     if (!c) { await stop('The client withdrew consent (or it expired)'); return out; }

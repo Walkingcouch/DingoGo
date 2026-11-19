@@ -1956,3 +1956,82 @@ Ideas for next rounds:
 - Replace `confirm()`/`prompt()` in the rider app with the shared modal and a decline-reason sheet.
 - Thousands separators in `money()` for screens (keeping CSV raw) and AU-format date pickers.
 - Run the tour against the Capacitor shells on an emulator (safe areas, Back button, keyboard over forms).
+
+### Round 26 — security review #2 (rounds 3–25 with fresh eyes) and an authorisation matrix
+Scan: listed every route the server registers (402, via a new `onRoute` registry) and called each one signed out and as a rider,
+driver, partner, dispatcher and admin against the seeded database, then read the handlers behind the surprising answers. Threat-modelled
+the newer surfaces: business accounts (membership on every `access()`, approvals, cost centres, booking for others, recurring series,
+invoices), support and lost property, the chargeback evidence pack, tour desks and commissions, fleet and investor reports, loyalty,
+promos, gift vouchers and the wallet, tax/SERR exports, chat and the masked relay, safety reports, the Stripe and Twilio webhooks,
+uploads, rate limits and dispatcher vs admin. Held up well: no cross-organisation IDOR (every business route goes through `access()`
+with the account of the record), approvals claim the decision atomically, wallet/points/promos/vouchers are locked or conditional (points
+have a CHECK), refunds capped, investor/profitability admin only, tax exports admin and audited, Stripe signature with tolerance and
+event ids applied once, uploads typed/owned/signed, CSV formula escaping. Found: (1) any rider with a past trip could file a "critical"
+report and the driver was suspended automatically — on a trip years old, one where the driver never arrived, or against driver after
+driver; (2) lost property reopened chat and masked calls on demand: once a driver said "not found" the rider could report again (and
+again), even after a safety report about that trip; (3) a regular booking kept billing the account after the person who set it up left
+it; (4) `PUT /admin/settings/:key` wrote any key, bypassing the checks on billing, retention, NDIS, loyalty, support and fleet policies
+(e.g. `hold_after_days: -5`) and internal last-run markers; (5) tour desks could put a booking on a driver's or staff member's number, and
+a closed account's number gave a 500; (6) no limits on new endpoints that text new numbers (people added to a business account, bookings
+for guests, regular bookings, desk tour bookings), and the business application form only counted valid ABNs; (7) the evidence pack sent
+to card issuers included safety events (incident reports, SOS, shared trips), safety tickets and the driver's full name; (8) a replayed
+Twilio SMS webhook posted the chat message again (Twilio signatures have no timestamp); (9) three business routes validated the form
+before the sign-in (400 to signed-out callers); (10) round 25's flaky support test: the reply and "Sorted" notifications were sent
+concurrently, so their order was random.
+
+Suggested:
+1. [add] Route registry (`routeTable` in `buildServer`) and an authorisation matrix: `test/helpers/routeAccess.ts` (every route with
+   public / signed in / roles / own credential) and `test/authz.test.ts` (new or stale routes fail; path rules for `/admin`, `/driver`,
+   `/partner` and public routes; signed out → 401; every unlisted role → 403; appeal, roof screen and webhook credentials).
+2. [fix] Automatic holds on critical reports only for a real trip (arrived or started), ended within 7 days, one hold per reporter per
+   30 days; otherwise the report stays critical for a person, with `hold_skipped` to ops and an `incident_hold_skipped` trip event.
+3. [fix] Lost property can't reopen contact on demand: one case per trip, none after a safety report (and an open case doesn't reopen
+   chat or relay calls once a report exists), 5 cases a day per person.
+4. [fix] Recurring series stop when the person who set them up is no longer on the account (staff-made series continue).
+5. [fix] Generic settings write limited to the Settings page keys and the policies it already checks; others 400 `setting_not_writable`.
+6. [fix] Tour desk guest numbers: closed, driver and staff numbers refused (400 `guest_phone`, was a 500 for closed accounts).
+7. [add] Limits on texts to new numbers: business members (50/account/day), bookings for others (60/person/day), regular bookings
+   (20/person/day), desk tour bookings (40/desk/day); every business application try counts against the per-IP limit.
+8. [fix] Evidence pack data minimisation: no safety events or safety tickets, driver as first name and initial.
+9. [fix] Twilio SMS replay: chat messages from the relay keyed by `MessageSid`.
+10. [fix] Sign-in checked before the form on `GET /business/trips`, `GET /business/usage`, `POST /business/recurring`; support reply and
+    "Sorted" sent in order (fixes the flaky test).
+
+Done (all 10). No migration, no env vars. Tests: 244 → 255 (`authz.test.ts` 5: list complete and not stale, path rules, 401 for every
+route needing an account, 403 for every unlisted role — 944 role checks across 402 routes — and the appeal/roof screen/webhook
+credentials; checked to fail when a route's role check is removed; e2e 6: automatic hold blockers (unit) and `driverLabel`; made-up
+critical reports on an old trip, a never-met trip and a reporter's second hold not held, still critical, events recorded, lost property
+`contact_closed`, relay and chat closed, evidence pack without safety events and with the short driver name; lost property not reopened
+after "not found" (rider and driver); series stopped when its creator leaves; settings not writable (9 keys) while the Settings page
+still saves; business sign-in before the form and the member limit (staff not limited); plus a Twilio replay check in the relay test, a
+guest-number check in the tour desk test and an order check in the support test). `npx tsc --noEmit` passes for the API; full suite
+passes; `node scripts/build-vercel.mjs` builds.
+- API: `src/index.ts` (`routeTable`), `src/lib/safety.ts` (`autoHoldBlocker`, `AUTO_HOLD_WITHIN_DAYS`, `AUTO_HOLDS_PER_REPORTER_30D`),
+  `routes/safety.ts`, `services/support.ts` (`lostTrip` checks, `safetyReportOn`, `LOST_REPORTS_PER_DAY`, ordered reply notifications),
+  `services/chat.ts` (relay lookup skips trips with a safety report), `services/business.ts` (`LIMITS`, series creator check),
+  `routes/businessAccounts.ts`, `routes/admin.ts` (`WRITABLE_SETTINGS`), `routes/tours.ts` (`PARTNER_TOUR_BOOKINGS_PER_DAY`, guest
+  numbers), `routes/comms.ts` (MessageSid), `services/evidence.ts` (`driverLabel`, private events).
+- Tests: `test/authz.test.ts`, `test/helpers/routeAccess.ts`, `test/e2e.test.ts`. Docs: API.md (Round 26 section), OPERATIONS 7 (holds,
+  new routes), README (test count).
+- Behaviour changes to note: some critical reports no longer suspend the other person straight away (ops must look and hold from
+  Standing); a rider can't open a second lost property case for a trip, or any after a safety report about it; admin-only settings
+  outside the Settings page can only be changed on their own pages; new rate limits (429) on the endpoints in item 7.
+- Deploy: nothing to apply (no migration, no env vars). Tell the ops team about the hold change (OPERATIONS 7).
+
+Deferred:
+- Dispatchers can read money reports (payouts list, GST/levy reports, partner settlements, tour commissions, business invoices, loyalty
+  overview, fleet agreements). Earlier rounds chose this on purpose and the admin app shows those pages to dispatchers; narrowing it is an
+  owner decision about what the desk staff should see (the matrix makes the change one line per route).
+- Sessions: tokens still last 30 days with no revocation (Round 2's deferred item); blocked/deleted/role changes are caught per request.
+- A `wallet_cents >= 0` CHECK constraint (every debit is already locked or conditional; a NOT VALID constraint is a small migration but
+  needs a check of historical rows on live first).
+- Retention for support threads, lost property cases and safety evidence uploads (chat, GPS and comms logs are covered; these aren't yet).
+- Twilio voice replays (a replayed call request would just bridge the same live trip again; no data change).
+
+Ideas for next rounds:
+- Dispatcher vs admin data view: hide rider phone numbers and money reports from dispatchers unless needed, driven by the matrix.
+- Refresh tokens with 7-day access tokens, a token version on users and "sign out everywhere".
+- Retention policy entries for support messages, lost property and incident evidence, with the privacy policy updated.
+- A per-route rate-limit matrix like the authorisation one: every mutating public or SMS-sending route must name its limit.
+- CSP in report-only mode for the web apps (still deferred from Round 2), now that the tour can check every screen for violations.
+- Stripe dispute evidence submitted from admin using the minimised pack.

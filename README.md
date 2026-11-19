@@ -39,7 +39,7 @@ npm install
 npm run db:setup                                   # migrations + demo data (local databases only)
 npm run dev:api                                    # http://localhost:4000
 npm run dev:web    # and/or dev:rider, dev:driver, dev:admin, dev:partner, dev:roof
-npm test                                           # 244 API, money, tax, loyalty, tours, fleet, support, business, website, store-readiness and toolchain tests (needs a throwaway DB: they reset it, and create/drop scratch databases)
+npm test                                           # 255 API, authorisation matrix, money, tax, loyalty, tours, fleet, support, business, website, store-readiness and toolchain tests (needs a throwaway DB: they reset it, and create/drop scratch databases)
 node scripts/build-vercel.mjs && npm run db:reset -w services/api && npm run smoke   # browser smoke test: rider books, driver completes, admin approves a car (built apps + serverless API; Playwright)
 npm run a11y                                       # WCAG 2.2 AA check (axe-core + Playwright) of every screen and tab, light and dark, on the built apps (same setup as smoke)
 npm run tour                                       # screen-by-screen tour: screenshots at phone and desktop sizes, light and dark, with layout/console/API checks

@@ -14,7 +14,7 @@ import { incidentRef } from '../lib/ids.js';
 import { ownUpload } from '../lib/uploads.js';
 import { toOps } from '../realtime.js';
 import {
-  AUTO_SHARE, INCIDENT_CATEGORIES, INCIDENT_STATUSES, MAX_TRUSTED_CONTACTS, RESTRICT_REASONS, SAFETY_NUMBERS, checkSafetyPolicy,
+  AUTO_SHARE, autoHoldBlocker, INCIDENT_CATEGORIES, INCIDENT_STATUSES, MAX_TRUSTED_CONTACTS, RESTRICT_REASONS, SAFETY_NUMBERS, checkSafetyPolicy,
   fatigueStatus, loadSafetyPolicy, safetyPending, safetyReady, type IncidentCategory, type RestrictReason,
 } from '../lib/safety.js';
 import {
@@ -126,7 +126,7 @@ export default async function safetyRoutes(app: FastifyInstance) {
     await limit('incident_report', me.id, 10, 86400, 'You have sent a lot of reports today. Call DingoGo if you need help now.');
     let trip: any = null, role = me.role === 'driver' ? 'driver' : 'rider', subject: string | null = null;
     if (b.trip_id) {
-      trip = await one(`SELECT id, ref, rider_id, driver_id FROM trips WHERE id = $1`, [b.trip_id]);
+      trip = await one(`SELECT id, ref, rider_id, driver_id, status, arrived_at, started_at, completed_at, cancelled_at FROM trips WHERE id = $1`, [b.trip_id]);
       if (!trip || (trip.rider_id !== me.id && trip.driver_id !== me.id)) throw notFound('Trip');
       role = trip.driver_id === me.id ? 'driver' : 'rider';
       subject = role === 'driver' ? trip.rider_id : trip.driver_id;
@@ -139,9 +139,16 @@ export default async function safetyRoutes(app: FastifyInstance) {
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id, ref, category, severity, status, created_at`,
       [incidentRef(), me.id, role, trip?.id ?? null, subject, b.category, severity, b.description, JSON.stringify(evidence)]);
     if (trip) await q(`INSERT INTO trip_events (trip_id, type, actor_id, data) VALUES ($1,'incident_reported',$2,$3)`, [trip.id, me.id, { incident_id: report.id, category: b.category }]);
-    let held = false;
-    if (severity === 'critical' && subject && (await loadSafetyPolicy()).incidents.auto_hold_critical) held = await holdForReport(report, subject);
-    toOps('incident.new', { id: report.id, ref: report.ref, category: b.category, severity, trip_ref: trip?.ref ?? null, held });
+    let held = false; let hold_skipped: string | null = null;
+    if (severity === 'critical' && subject && (await loadSafetyPolicy()).incidents.auto_hold_critical) {
+      // Round 26: a made-up report must not be a way to take a driver (or rider) off the road. Holds only for a real, recent trip,
+      // and one per reporter a month; the rest wait for a person (still critical, top of the queue).
+      const mine = (await one<{ n: number }>(`SELECT count(*)::int n FROM incident_reports WHERE reporter_id = $1 AND held AND created_at > now() - interval '30 days'`, [me.id]))!.n;
+      hold_skipped = autoHoldBlocker(trip, mine);
+      if (!hold_skipped) held = await holdForReport(report, subject);
+    }
+    toOps('incident.new', { id: report.id, ref: report.ref, category: b.category, severity, trip_ref: trip?.ref ?? null, held, hold_skipped });
+    if (hold_skipped) await q(`INSERT INTO trip_events (trip_id, type, actor_id, data) VALUES ($1,'incident_hold_skipped',NULL,$2)`, [trip.id, { incident_id: report.id, reason: hold_skipped }]);
     void send(me.id, 'incident_received', { ref: report.ref, critical: severity === 'critical' }, { data: { incident_id: report.id } });
     reply.code(201);
     const numbers = ['sexual_misconduct', 'physical_assault', 'threats_abuse', 'contact_after_trip'].includes(b.category) ? SAFETY_NUMBERS : SAFETY_NUMBERS.slice(0, 2);

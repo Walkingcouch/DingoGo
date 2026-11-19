@@ -1394,3 +1394,37 @@ application.
 Messages: `business_application_received`, `business_account_approved`, `business_account_declined`, `business_member_added`,
 `business_approval_needed`, `business_trip_approved`, `business_trip_declined`, `business_trip_unapproved`, `regular_rides_booked`,
 `recurring_problem`, `invoice_issued`, `invoice_overdue`.
+
+## Round 26: security review — authorisation matrix and abuse limits
+
+**Who may call what.** `services/api/test/helpers/routeAccess.ts` lists every route with who may call it (public, any signed-in
+account with ownership checked in the handler, a set of roles, or its own credential: roof screen key, provider signature, appeal
+token). `test/authz.test.ts` fails when a registered route isn't listed (or a listed one is gone), when an `/admin` route allows more
+than admin/dispatcher, a `/driver` route more than drivers or a `/partner` route more than partners, when a public route sits outside
+`/public`, `/health` and `/auth` (apart from a short known list), and it calls every route: signed out → 401 (roof screens 403), every
+role not listed → 403, appeal routes refuse sign-in tokens, and the Stripe and Twilio webhooks refuse unsigned or wrongly signed calls.
+Business routes check the sign-in before the form (`GET /business/trips`, `GET /business/usage`, `POST /business/recurring` answered
+400 to signed-out callers).
+
+**Changes.**
+- `PUT /admin/settings/:key` writes only the Settings page's keys (`business`, `support`, `nt_levy_cents`, `home_tariff_cents_per_kwh`,
+  `vehicle_max_age_years`, `roof_display`, `cancellation_policy`, `cash_payments`) and the checked policies (`driver_pay`, `tour_policy`,
+  `community_pricing`, `safety_policy`); anything else (billing, retention, NDIS, loyalty, support, fleet and levy settings, which have
+  their own checked routes, internal `_…` and last-run records) is 400 `setting_not_writable`.
+- Safety reports (`POST /safety/reports`): a critical report puts the other person on hold automatically only when they really met on
+  that trip (the driver arrived or it started), the trip ended within 7 days, and the reporter hasn't caused a hold in the last 30 days.
+  Otherwise the report is still critical at the top of the queue; ops get `hold_skipped` on `incident.new` and the trip gets an
+  `incident_hold_skipped` event (`not_met`, `old_trip`, `reporter_limit`).
+- Lost property (`POST /trips/:id/help/lost-item`, `…/found-item`): one case per trip — once a case is closed, reporting again is 409
+  `lost_item_closed` (message us instead); after a safety report about the trip it is 409 `contact_closed`, and an open case no longer
+  reopens chat or relay calls for that trip; 5 cases a day per person (429 `rate_limited`).
+- Business accounts: a regular booking stops (`The person who set it up is no longer on the account`) when its creator leaves the
+  account; limits on texts to new numbers — 50 people added per account a day, 60 bookings for other people and 20 regular bookings set
+  up per person a day (429 `rate_limited`; DingoGo staff aren't limited). `POST /public/business-applications` counts every try against
+  the per-IP form limit (ABNs can't be checked one by one for free).
+- Tour desks (`POST /partner/tours/bookings`): the guest's mobile must not belong to a closed, driver or staff account (400 `guest_phone`);
+  40 bookings per desk a day.
+- Chargeback evidence pack (`GET /admin/trips/:id/evidence-pack`): safety events (reports, shared trips, check-ins, SOS, photo checks) and
+  safety tickets are left out, and the driver is named by first name and initial (the receipt, the rider's own tax invoice, is unchanged).
+- Twilio relay texts (`POST /comms/twilio/sms`) are stored once per `MessageSid`, so a replayed request doesn't post the message again.
+- Support desk replies that also resolve a ticket send the reply and then "Sorted" in that order.

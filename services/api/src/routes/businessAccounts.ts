@@ -63,6 +63,8 @@ export default async function businessAccountRoutes(app: FastifyInstance) {
   // ───────────── Applications ─────────────
   /** Website sign-up: creates a pending account that DingoGo checks (per-IP limit like the other public forms). */
   app.post('/public/business-applications', async (req, reply) => {
+    // Every try counts (Round 26): checking ABNs one by one would otherwise be free.
+    await limit('public_form_ip', req.ip, config.rateLimits.publicFormPerIp, 3600, 'Thanks — we’ve had a lot of messages from this connection. Please try again in an hour, or call us.');
     const b = parse(z.object({
       organisation: z.string().trim().min(2).max(120), kind: z.enum(ACCOUNT_KINDS),
       abn: z.string().transform((s) => s.replace(/\s/g, '')).pipe(z.string().regex(/^\d{11}$/, 'ABN is 11 digits')),
@@ -72,7 +74,6 @@ export default async function businessAccountRoutes(app: FastifyInstance) {
       notes: z.string().max(1000).optional(), agree: z.literal(true, { message: 'Agree to the account terms' }),
     }), req.body);
     if (!abnValid(b.abn)) throw bad('invalid_abn', 'That ABN fails the ATO check. Look it up on abr.business.gov.au', { field: 'abn' });
-    await limit('public_form_ip', req.ip, config.rateLimits.publicFormPerIp, 3600, 'Thanks — we’ve had a lot of messages from this connection. Please try again in an hour, or call us.');
     const row = await biz.apply({ ...b, address: b.address ?? null });
     reply.code(201);
     return { ok: true, ref: row.ref, application_status: row.status };
@@ -130,14 +131,16 @@ export default async function businessAccountRoutes(app: FastifyInstance) {
     reply.code(201); return r;
   });
   app.get('/business/trips', async (req) => {
+    const me = await requireUser(req);
     const f = parse(z.object({ account_id: uuid, month: month.optional(), limit: z.coerce.number().int().min(1).max(500).default(100) }), req.query);
-    return biz.accountTrips(await requireUser(req), f.account_id, f);
+    return biz.accountTrips(me, f.account_id, f);
   });
 
   // ───────────── Usage and invoices (managers and approvers) ─────────────
   app.get('/business/usage', async (req) => {
+    const me = await requireUser(req);
     const f = parse(z.object({ account_id: uuid, month: month.optional() }), req.query);
-    return biz.usage(await requireUser(req), f.account_id, f.month);
+    return biz.usage(me, f.account_id, f.month);
   });
   app.get('/business/invoices', async (req) => biz.myInvoices(await requireUser(req), parse(z.object({ account_id: uuid }), req.query).account_id));
   app.get('/business/invoices/:id', async (req, reply) => {
@@ -149,8 +152,9 @@ export default async function businessAccountRoutes(app: FastifyInstance) {
   // ───────────── Recurring trips ─────────────
   app.get('/business/recurring', async (req) => biz.listRecurring(await requireUser(req), parse(z.object({ account_id: uuid }), req.query).account_id));
   app.post('/business/recurring', async (req, reply) => {
+    const me = await requireUser(req);
     const b = parse(recurringBody, req.body);
-    const r = await biz.createRecurring(await requireUser(req), { ...b, return_time: b.return_time ?? null, ends_on: b.ends_on ?? null });
+    const r = await biz.createRecurring(me, { ...b, return_time: b.return_time ?? null, ends_on: b.ends_on ?? null });
     if (!b.dry_run) reply.code(201);
     return r;
   });

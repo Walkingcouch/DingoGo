@@ -61,6 +61,9 @@ async function saveDriverPay(actorId: string, body: unknown) {
 
 import { ROUND19_TOUR_COLUMNS, checkTourFields, checkTourPolicy, tourFields } from '../lib/tours.js';
 import { migrationPending as toursPending, toursReady } from '../services/tours.js';
+/** Settings PUT /admin/settings/:key may write (the Settings page's keys plus the policies checked below). */
+export const WRITABLE_SETTINGS = ['business', 'support', 'nt_levy_cents', 'home_tariff_cents_per_kwh', 'vehicle_max_age_years', 'roof_display',
+  'cancellation_policy', 'cash_payments', 'driver_pay', 'tour_policy', 'community_pricing', 'safety_policy'];
 const ops = (req: FastifyRequest) => requireUser(req, 'admin', 'dispatcher');
 const admin = (req: FastifyRequest) => requireUser(req, 'admin');
 
@@ -1061,6 +1064,11 @@ export default async function adminRoutes(app: FastifyInstance) {
   app.put('/admin/settings/:key', async (req) => {
     const me = await admin(req);
     const b = parse(z.object({ value: z.any() }), req.body);
+    // Round 26: only the plain settings are written as given. Policies with their own page and checks (billing, retention, NDIS,
+    // loyalty, support, fleet, levy returns, courier) and internal markers (`_…`, last-run records) can't be overwritten here.
+    if (!WRITABLE_SETTINGS.includes((req.params as any).key)) {
+      throw bad('setting_not_writable', 'That setting is changed on its own page (or by DingoGo itself), not here');
+    }
     // Driver pay goes through its own validation.
     if ((req.params as any).key === 'driver_pay') return { item: { key: 'driver_pay', value: await saveDriverPay(me.id, b.value) } };
     if ((req.params as any).key === 'tour_policy') {

@@ -45,12 +45,19 @@ export const isDbDown = (e: any) => !!e && (DB_DOWN.has(e.code)
 /** Missing table or column: the code is ahead of the database (a migration not applied yet). */
 export const isSchemaLag = (e: any) => e?.code === '42P01' || e?.code === '42703';
 
+/** Every route the server registers (method + path), filled by buildServer: the authorisation matrix test checks each one. */
+export const routeTable: { method: string; url: string }[] = [];
+
 export async function buildServer() {
   const app = Fastify({
     // Structured JSON logs (src/lib/log.ts) with a request id per request; one line per request is written in onResponse below.
     loggerInstance: log, logController: new LogController({ disableRequestLogging: true, requestIdLogLabel: 'request_id' }),
     genReqId: (req) => requestId(req.headers),
     bodyLimit: 1024 * 1024, trustProxy: config.trustProxy as any,
+  });
+  routeTable.length = 0;
+  app.addHook('onRoute', (r) => {
+    for (const m of ([] as string[]).concat(r.method)) if (m !== 'HEAD' && m !== 'OPTIONS') routeTable.push({ method: m, url: r.url });
   });
   app.addHook('onRequest', async (req, reply) => { reply.header('X-Request-Id', req.id); });
   app.addHook('onResponse', async (req, reply) => {

@@ -50,6 +50,24 @@ export const SAFETY_POLICY_DEFAULTS: SafetyPolicy = {
   incidents: { auto_hold_critical: true },
 };
 
+/** Round 26: an automatic hold is a strong step taken before anyone has looked, so a report only triggers one when the two people
+ *  really met on that trip (the driver arrived or it started), recently, and the reporter hasn't already put someone on hold this
+ *  month. Otherwise the report still goes to the top of the queue for a person to decide. */
+export const AUTO_HOLD_WITHIN_DAYS = 7;
+export const AUTO_HOLDS_PER_REPORTER_30D = 1;
+export type AutoHoldBlocker = 'not_met' | 'old_trip' | 'reporter_limit';
+export function autoHoldBlocker(
+  trip: { status: string; arrived_at?: Date | string | null; started_at?: Date | string | null; completed_at?: Date | string | null; cancelled_at?: Date | string | null },
+  reporterHolds30d: number, now = new Date(),
+): AutoHoldBlocker | null {
+  const met = !!(trip.arrived_at || trip.started_at) || ['arrived', 'in_progress', 'completed'].includes(trip.status);
+  if (!met) return 'not_met';
+  const end = trip.completed_at ?? trip.cancelled_at ?? null;
+  if (end && now.getTime() - new Date(end).getTime() > AUTO_HOLD_WITHIN_DAYS * 86400_000) return 'old_trip';
+  if (reporterHolds30d >= AUTO_HOLDS_PER_REPORTER_30D) return 'reporter_limit';
+  return null;
+}
+
 export async function loadSafetyPolicy(c: Q = pool): Promise<SafetyPolicy> {
   const v = (await one(`SELECT value FROM settings WHERE key = 'safety_policy'`, [], c).catch(() => null))?.value ?? {};
   const d = SAFETY_POLICY_DEFAULTS;

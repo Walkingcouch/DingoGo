@@ -20,6 +20,7 @@ import { send } from './notify.js';
 import * as trips from './trips.js';
 import { notifyRefund, refundIn } from './refunds.js';
 import { logError } from '../lib/log.js';
+import { bg } from '../lib/background.js';
 
 // ── Migration 026 ──
 let ready = false;
@@ -349,8 +350,14 @@ export async function staffReply(id: string, me: { id: string }, b: { body: stri
        WHERE id = $1 RETURNING *`, [t.id, status, !!b.internal, b.body, me.id], c);
   });
   await audit(me.id, b.internal ? 'ticket_note' : 'ticket_reply', 'support_ticket', t.id, { status, canned_id: b.canned_id ?? null });
-  if (!b.internal && t.user_id) void send(t.user_id, 'ticket_reply', { subject: t.subject, resolution: b.body }, { data: { ticket_id: t.id } });
-  if (status === 'resolved' && t.status !== 'resolved' && t.user_id) void send(t.user_id, 'ticket_resolved', { ref: t.ref, subject: t.subject }, { data: { ticket_id: t.id } });
+  // The reply first, then "Sorted": one after the other so the customer's inbox shows them in that order (Round 26).
+  const uid = t.user_id;
+  if (uid && (!b.internal || (status === 'resolved' && t.status !== 'resolved'))) {
+    void bg((async () => {
+      if (!b.internal) await send(uid, 'ticket_reply', { subject: t.subject, resolution: b.body }, { data: { ticket_id: t.id } });
+      if (status === 'resolved' && t.status !== 'resolved') await send(uid, 'ticket_resolved', { ref: t.ref, subject: t.subject }, { data: { ticket_id: t.id } });
+    })());
+  }
   toOps('support.updated', { id: t.id, ref: t.ref });
   return { ticket: row };
 }
@@ -542,11 +549,20 @@ export async function lostContactUntil(tripId: string): Promise<Date | null> {
   if (!(await supportReady())) return null;
   const row = await one<{ created_at: string }>(`SELECT created_at FROM lost_items WHERE trip_id = $1 AND status = ANY($2) ORDER BY created_at DESC LIMIT 1`, [tripId, LOST_OPEN]);
   if (!row) return null;
+  // Round 26: a safety report about the trip closes direct contact for good (lost property then goes through DingoGo).
+  if (await safetyReportOn(tripId)) return null;
   const until = new Date(new Date(row.created_at).getTime() + (await supportPolicy()).lost_property.contact_days * 86400_000);
   return until.getTime() > Date.now() ? until : null;
 }
 
 const firstName = (n?: string | null) => (n ?? '').trim().split(/\s+/)[0] || '';
+
+/** Was a safety report made about this trip (by either person)? Then rider and driver are never put back in touch directly. */
+async function safetyReportOn(tripId: string) {
+  return !!(await one(`SELECT 1 FROM incident_reports WHERE trip_id = $1 LIMIT 1`, [tripId]).catch((e) => { if (e?.code === '42P01') return null; throw e; }));
+}
+/** Lost property cases one person may open a day (each one texts or notifies the other person). */
+export const LOST_REPORTS_PER_DAY = 5;
 
 async function lostTrip(tripId: string, me: { id: string }, as: 'rider' | 'driver') {
   const t = await trips.getTrip(tripId);
@@ -556,6 +572,15 @@ async function lostTrip(tripId: string, me: { id: string }, as: 'rider' | 'drive
   if (daysSince(t.completed_at) > policy.lost_property.report_within_days) {
     throw conflict('too_late', `Lost property can be reported up to ${policy.lost_property.report_within_days} days after the trip. Please call DingoGo.`);
   }
+  // Round 26: a lost property case reopens messages and masked calls, so it can't be used to keep contacting someone: one case per
+  // trip (a closed one isn't reopened by reporting again), none after a safety report about the trip, and a daily limit.
+  if (await one(`SELECT 1 FROM lost_items WHERE trip_id = $1 AND NOT (status = ANY($2)) LIMIT 1`, [t.id, LOST_OPEN])) {
+    throw conflict('lost_item_closed', 'There has already been a lost property case for this trip. Send us a message from Help and we will look into it.');
+  }
+  if (await safetyReportOn(t.id)) {
+    throw conflict('contact_closed', 'Because a safety report was made about this trip, DingoGo handles lost property for it. Send us a message from Help.');
+  }
+  await limit('lost_item_report', me.id, LOST_REPORTS_PER_DAY, 86400, 'You have reported a lot of lost property today. Send us a message from Help.');
   return t;
 }
 const openCaseClash = (e: any) => { if (e?.code === '23505') throw conflict('lost_item_open', 'There is already a lost property case for this trip. Open it from the trip.'); throw e; };

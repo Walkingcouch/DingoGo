@@ -145,7 +145,9 @@ export default async function commsRoutes(app: FastifyInstance) {
     const found = await relayTrip(from, { recent: true });
     if (!found) return twiml.message(render('relay_no_trip_sms', { support: await supportPhone() }).sms!);
     try {
-      await postMessage(found.trip, { id: found.callerId, role: found.callerIs, name: found.callerName }, { body: body.slice(0, 500), via: 'sms' });
+      // Twilio signatures have no timestamp, so a captured request could be sent again: the message id makes a replay a no-op.
+      const sid = /^[A-Za-z0-9]{10,64}$/.test(String(p.MessageSid ?? '')) ? `tw-${p.MessageSid}` : undefined;
+      await postMessage(found.trip, { id: found.callerId, role: found.callerIs, name: found.callerName }, { body: body.slice(0, 500), via: 'sms', client_id: sid });
     } catch (e: any) {
       if (e instanceof ApiError) return twiml.message(`DingoGo: your text wasn't passed on (${e.message})`);
       throw e;

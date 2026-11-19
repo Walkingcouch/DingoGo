@@ -145,7 +145,12 @@ Migration `019_safety.sql` turns them on (AUTO_MIGRATE applies it). Until then S
 
 - **Every shift:** Safety → Emergency alerts (unanswered "Are you OK?" check-ins arrive here as alerts with the usual runbook), Reports (critical
   first; a critical report puts the other person on hold unless they were on a trip: then hold them from Standing when it ends), Photo checks
-  (when switched on), Appeals (admins decide).
+  (when switched on), Appeals (admins decide). Since Round 26 the automatic hold only happens when the two people actually met on that trip
+  (the driver arrived or it started), it ended in the last 7 days and the reporter hasn't caused a hold in the last 30 days. Other critical
+  reports are not held automatically: the trip timeline shows "incident hold skipped" with the reason. Read them first and hold from Standing
+  if the report holds up.
+- **New API routes** must be added to `services/api/test/helpers/routeAccess.ts` with who may call them (Round 26); the authorisation test
+  fails otherwise and checks the roles against the running API.
 - **Fatigue limits** are on by default (12 h online then a 6 h rest; a 20 min break after 5 h). Drivers are never set offline mid-trip. Check the
   numbers against current NT and SA point-to-point guidance before launch and change them in Policy.
 - **Photo check** is off by default. `photo_review` asks every driver for a selfie each day (DingoGo looks at it; they can drive meanwhile).
