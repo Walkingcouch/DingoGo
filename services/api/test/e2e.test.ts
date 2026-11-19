@@ -2602,6 +2602,8 @@ test('business deliveries: managers see the account, members their own; CSV expo
   tokens.bizboss = signToken({ id: boss, role: 'rider' });
   assert.equal((await call('GET', `/business/deliveries?account_id=${acct.id}`, 'bizboss')).status, 403, 'not a member yet');
   await q(`INSERT INTO corporate_members (account_id, user_id, role) VALUES ($1, $2, 'manager')`, [acct.id, boss]);
+  // The demo rider manages the demo account since Round 25; here they are an ordinary member.
+  await q(`UPDATE corporate_members SET role = 'member' WHERE account_id = $1 AND user_id = (SELECT id FROM users WHERE phone = '+61400000100')`, [acct.id]);
 
   const parcel = { size: 'S', description: 'Order', sender_name: 'Desert Conference Centre', sender_phone: '08 8950 1234', recipient_name: 'Guest One', recipient_phone: '0400 000 555', prohibited_items: ALL_ITEMS, customer_ref: 'INV-55' };
   const t = await call('POST', '/trips', 'rider', { kind: 'courier', service: 'courier_s', pickup: TODD_MALL, dropoff: HOSPITAL, payment_method: 'corporate', corporate_account_id: acct.id, parcel,

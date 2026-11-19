@@ -28,6 +28,9 @@ jobs:
       - run: npm run db:reset -w services/api
       - run: npm run smoke
         env: { SMOKE_SHOTS: smoke-shots }
+      # Round 25: WCAG 2.2 AA (axe-core) on every screen and tab in scripts/lib/screens.mjs, light and dark, on the same build.
+      - run: npm run db:reset -w services/api
+      - run: npm run a11y
       - if: failure()
         uses: actions/upload-artifact@v6
         with: { name: smoke-screenshots, path: smoke-shots, if-no-files-found: ignore }

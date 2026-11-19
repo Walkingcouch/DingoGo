@@ -148,7 +148,8 @@ export function Table<T extends Record<string, any>>({ rows, cols, onRow, empty 
   rows: T[] | null | undefined; cols: Col<T>[]; onRow?: (r: T) => void; empty?: string; rowKey?: (r: T) => string;
 }) {
   return (
-    <div className="tbl-wrap">
+    // Round 25: the wrapper scrolls (long lists, wide tables on a phone), so keyboard users can focus it to scroll when no row is focusable.
+    <div className="tbl-wrap" tabIndex={onRow ? undefined : 0}>
       <table className="tbl">
         <thead><tr>{cols.map((c) => <th key={c.key} className={c.num ? 'num' : ''} scope="col" style={c.width ? { width: c.width } : undefined}>{c.label}</th>)}</tr></thead>
         <tbody>

@@ -86,8 +86,8 @@ export default function Support() {
         { key: 'details', label: 'Details', render: (h) => <span style={{ fontSize: '.85rem' }}>{h.details}</span> },
         { key: 'quote', label: 'Quote', num: true, render: (h) => (h.quote_cents ? <>{money(h.quote_cents)}{h.accepted_at && <><br /><small className="dg-muted">accepted by {h.accepted_name}</small></>}</> : '—') },
         { key: 'status', label: 'Status', render: (h) => (
-          <span style={{ display: 'flex', gap: 6 }}>
-            <select className="dg-select" style={{ minHeight: 34, padding: '2px 6px' }} value={h.status} aria-label="Status"
+          <span style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+            <select className="dg-select" style={{ minHeight: 34, padding: '2px 6px', width: 'auto', minWidth: 112 }} value={h.status} aria-label="Status"
               onChange={async (e) => { await run(() => patch(`/admin/hire-requests/${h.id}`, { status: e.target.value }), 'Updated'); void hire.reload(); refreshCounts(); }}>
               {['new', 'quoted', 'confirmed', 'declined'].map((s) => <option key={s} value={s}>{label(TICKET_STATUS, s)}</option>)}
             </select>

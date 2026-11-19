@@ -359,8 +359,19 @@ li.row { padding: .8rem 0; }
 /* Round 24: business account fields and screen */
 .acct-fields { display: grid; gap: 4px; margin-top: 12px; }
 .acct-kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; margin: 12px 0; }
-.acct-kpi { background: var(--paper); border: 1px solid var(--line); border-radius: var(--r-md); padding: 12px; }
+.acct-kpi { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-md); padding: 12px; }
 .acct-kpi strong { display: block; font-size: 1.25rem; }
 .acct-bars { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; }
 .acct-bars li { display: grid; grid-template-columns: 1fr auto; gap: 2px 10px; font-size: var(--fs-sm); }
 .acct-bars .bar { grid-column: 1 / -1; height: 6px; border-radius: 3px; background: var(--ochre); }
+
+/* Round 25: segmented control (Business account sections, who is travelling, weekdays, Business deliveries). Was only styled in the
+   driver app, so the rider's business screens showed bare browser buttons. Wraps instead of squeezing when there are many choices. */
+.seg { display: flex; flex-wrap: wrap; gap: 4px; background: var(--line); padding: 4px; border-radius: var(--r-lg); margin: 0 0 16px; }
+.seg button { flex: 1 1 28%; min-height: 44px; padding: 0 14px; border: 0; border-radius: var(--r-pill); background: transparent; color: var(--text);
+  font: inherit; font-weight: 700; font-size: var(--fs-sm); cursor: pointer; white-space: nowrap; }
+.seg button:hover { background: color-mix(in srgb, var(--surface) 55%, transparent); }
+.seg button[aria-pressed="true"] { background: var(--surface); box-shadow: 0 1px 4px rgba(0,0,0,.15); }
+.block .seg { margin-bottom: 12px; }
+.seg--days button { flex: 1 1 0; padding: 0; min-width: 0; }
+.block + .section__title, .list + .section__title, .block + .block { margin-top: 24px; }

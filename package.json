@@ -27,6 +27,8 @@
     "test": "npm test -w services/api",
     "build:vercel": "node scripts/build-vercel.mjs",
     "smoke": "node scripts/smoke-e2e.mjs",
+    "a11y": "node scripts/a11y-check.mjs --built",
+    "tour": "node scripts/ui-tour.mjs",
     "i18n:review": "node scripts/i18n-review.mjs",
     "store:screenshots": "node scripts/store-screenshots.mjs",
     "android:assets": "node scripts/android-assets.mjs"

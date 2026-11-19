@@ -624,7 +624,7 @@ export function Receipt({ tripId, vehicle }: { tripId: string; vehicle?: any }) 
     <>
     {r.payment_status === 'failed' && <PayNow tripId={tripId} cents={r.fare_cents} onPaid={load} />}
     <details className="receipt">
-      <summary>{r.title ?? 'Tax invoice'}</summary>
+      <summary>{r.title ? r.title.replace('Tax Invoice', 'Tax invoice') : 'Tax invoice'}</summary>
       <div className="receipt__body">
         <p><strong>{r.supplier?.name ?? 'DingoGo'}</strong><br />ABN {r.supplier_abn ?? r.supplier?.abn ?? 'TBC'}<br />{r.supplier?.address}</p>
         {r.supplied_by && <p className="dg-muted">Issued by DingoGo on behalf of your driver {r.supplied_by.name}{r.supplied_by.abn ? `, ABN ${r.supplied_by.abn}` : ''}.</p>}

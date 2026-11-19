@@ -9,6 +9,8 @@
  *   3. Driver gets the offer, accepts, arrives, starts with the rider's PIN and completes; the rider sees it finished.
  *   4. Admin signs in and approves the waiting car (CB47JP) in Fleet → Cars to check.
  *   5. Driver sees the quarter's GST figures (Earnings) and tax details (Profile); admin opens every Tax & compliance tab.
+ *   6. (Round 25) Rider, as the demo business account's manager, sees Spend and adds a cost centre in Set-up, and searches Help;
+ *      driver opens Help; admin opens every tab of Support, Business, Loyalty, Tours and Fleet; partner opens every section.
  *
  * Needs: `node scripts/build-vercel.mjs`, a demo-seeded database (`DATABASE_URL=… npm run db:reset -w services/api`; sign-in
  * codes can be asked for once per 30 s per number, so reset before running again) and Playwright with Chromium
@@ -150,6 +152,50 @@ try {
       await admin.getByRole('tab', { name: tab }).click();
       await admin.getByRole('heading', { name: heading, exact: true }).first().waitFor({ timeout: 15000 });
     }
+  });
+
+  // Round 25: the screens added in rounds 17–24 (loyalty, tours, fleet, support, business) had no browser check.
+  await run('rider manages the business account and searches help', async () => {
+    await rider.goto(BASE + '/rider/business-account');
+    const sections = rider.getByRole('group', { name: 'Business account' });
+    await sections.getByRole('button', { name: 'Spend', pressed: true }).waitFor({ timeout: 15000 });
+    await rider.getByText('By cost centre').waitFor({ timeout: 15000 });
+    await sections.getByRole('button', { name: 'Set-up' }).click();
+    await rider.getByLabel('Code').first().fill('SMOKE');
+    await rider.getByLabel('Name').nth(1).fill('Smoke test team');
+    await rider.getByRole('button', { name: 'Add cost centre' }).click();
+    await rider.getByText('Cost centre added').waitFor({ timeout: 15000 });
+    await rider.getByText('SMOKE Smoke test team').waitFor({ timeout: 15000 });
+    await rider.goto(BASE + '/rider/account/help');
+    await rider.getByLabel('Search help').fill('refund');
+    await rider.getByText(/Refunds: when will I see my money/).first().waitFor({ timeout: 15000 });
+    await driver.goto(BASE + '/driver/help');
+    await driver.getByRole('heading', { name: 'Help', exact: true }).waitFor({ timeout: 15000 });
+  });
+
+  await run('admin opens every tab of Support, Business, Loyalty, Tours and Fleet', async () => {
+    const admin = pages[pages.length - 1];
+    for (const page of ['support', 'business', 'loyalty', 'tours', 'fleet']) {
+      await admin.goto(`${BASE}/admin/${page}`);
+      const tabs = admin.getByRole('tab');
+      await tabs.first().waitFor({ timeout: 15000 });
+      for (const name of await tabs.allTextContents()) {
+        await admin.getByRole('tab', { name, exact: true }).click();
+        await admin.waitForLoadState('networkidle');
+        if (await admin.locator('[role="tabpanel"] .dg-error[role="alert"]').count()) throw new Error(`${page} › ${name} shows an error`);
+      }
+    }
+  });
+
+  await run('partner signs in and opens every section', async () => {
+    const partner = await open('/partner/');
+    await signIn(partner, '0400 000 300');
+    await partner.getByLabel("Customer's reward code").waitFor({ timeout: 15000 });
+    await partner.getByRole('button', { name: 'This month' }).click();
+    await partner.getByRole('heading', { name: 'Last 6 months' }).waitFor({ timeout: 15000 });
+    await partner.getByRole('button', { name: 'Statements' }).click();
+    await partner.getByRole('button', { name: 'Sell credit' }).click();
+    await partner.getByLabel('Voucher card code').waitFor({ timeout: 15000 });
   });
 
   if (problems.length) throw new Error(`errors while running:\n  ${problems.join('\n  ')}`);

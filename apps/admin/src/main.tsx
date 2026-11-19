@@ -159,7 +159,7 @@ function Shell({ me, onSignOut }: { me: any; onSignOut: () => void }) {
             <Route path="*" element={<Navigate to="/live" replace />} />
           </Routes>
           </Suspense>
-          <Acknowledgement short style={{ margin: '32px 0 8px' }} />
+          <Acknowledgement short />
         </main>
       </div>
       {help && (

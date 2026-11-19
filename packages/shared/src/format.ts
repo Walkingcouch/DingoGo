@@ -6,6 +6,9 @@ export const time = (d?: string | Date | null) => (d ? new Date(d).toLocaleTimeS
 export const date = (d?: string | Date | null) => (d ? new Date(d).toLocaleDateString('en-AU', { day: 'numeric', month: 'short', year: 'numeric', timeZone: TZ }) : '—');
 export const dateTime = (d?: string | Date | null) => (d ? `${date(d)}, ${time(d)}` : '—');
 export const dayName = (d?: string | Date | null) => (d ? new Date(d).toLocaleDateString('en-AU', { weekday: 'short', day: 'numeric', month: 'short', timeZone: TZ }) : '—');
+/** A 'YYYY-MM' month key as words: '2026-10' → 'October 2026' (Round 25: screens showed the raw key). Anything else unchanged. */
+export const monthName = (m?: string | null) =>
+  m && /^\d{4}-\d{2}$/.test(m) ? new Date(`${m}-15T00:00:00Z`).toLocaleDateString('en-AU', { month: 'long', year: 'numeric', timeZone: 'UTC' }) : m ?? '—';
 export const km = (m?: number | null) => (m == null ? '—' : `${(m / 1000).toFixed(1)} km`);
 export const mins = (s?: number | null) => (s == null ? '—' : `${Math.max(1, Math.round(s / 60))} min`);
 export function ago(d?: string | Date | null) {

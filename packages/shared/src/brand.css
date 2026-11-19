@@ -66,6 +66,10 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .dg-btn:disabled { opacity: .5; cursor: not-allowed; }
 .dg-btn--dark { background: var(--night); color: var(--gum); }
 .dg-btn--dark:hover { background: var(--night-2); }
+/* Round 25: in dark mode a night-coloured button vanished into the night background (partner Check code, admin New/Search buttons). */
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .dg-btn--dark { background: var(--gum); color: var(--night); } :root:not([data-theme="light"]) .dg-btn--dark:hover { background: #E4E1DA; } }
+:root[data-theme="dark"] .dg-btn--dark { background: var(--gum); color: var(--night); }
+:root[data-theme="dark"] .dg-btn--dark:hover { background: #E4E1DA; }
 .dg-btn--ghost { background: transparent; border-color: var(--line); color: var(--text); }
 .dg-btn--ghost:hover { background: var(--ochre-soft); }
 .dg-btn--danger { background: var(--earth); color: #fff; }

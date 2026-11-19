@@ -323,9 +323,11 @@ p { text-wrap: pretty; }
 .page-head-copy { padding-top: clamp(44px, 6vw, 76px); padding-bottom: clamp(96px, 11vw, 150px); }
 .page-head h1 { font-size: clamp(2.3rem, 5.4vw, 4rem); line-height: 1; letter-spacing: -0.035em; max-width: 18ch; color: #fff; }
 .page-head p { color: var(--sky-muted); font-size: clamp(1.05rem, 1.5vw, 1.2rem); max-width: 54ch; margin: 0; }
-.page-head--noon, .page-head--dawn { color: var(--night); }
-.page-head--noon h1, .page-head--dawn h1 { color: var(--night); }
-.page-head--noon p, .page-head--dawn p { color: #22325A; }
+/* Round 25: the dawn and noon skies are dark at the top and light lower down, so navy text failed contrast where the heading sits
+   (Rides, Parcels, Rewards, Airport, Hospital, Invite). White text on a night scrim that fades out above the ranges reads on both. */
+.page-head--noon::after, .page-head--dawn::after { content: ''; position: absolute; inset: 0; z-index: -1; pointer-events: none;
+  background: linear-gradient(180deg, rgba(14, 24, 48, .66) 0%, rgba(14, 24, 48, .6) 70%, rgba(14, 24, 48, 0) 92%); }
+.page-head--noon p, .page-head--dawn p { color: var(--sky-ink); }
 .draft-flag { display: inline-block; background: var(--earth); color: #fff; padding: .25rem .7rem; border-radius: var(--r-pill); font-weight: 700; font-size: .85rem; margin-bottom: 14px; }
 
 /* Tables (prices) */
@@ -334,6 +336,7 @@ p { text-wrap: pretty; }
 .price-table thead th { font-size: .88rem; color: var(--muted); font-weight: 700; border-bottom: 2px solid var(--text); }
 .price-table td.n { font-variant-numeric: tabular-nums; white-space: nowrap; }
 .table-scroll { overflow-x: auto; }
+.table-scroll:focus-visible { box-shadow: var(--focus); border-radius: var(--r-sm); }
 
 /* Panels & forms */
 .panel { background: var(--surface); border-radius: 24px; padding: clamp(20px, 3vw, 32px); box-shadow: 0 0 0 1px var(--hairline), 0 12px 32px rgba(20,33,61,.06); }

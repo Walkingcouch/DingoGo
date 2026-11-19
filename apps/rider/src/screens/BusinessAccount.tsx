@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { ApiError, STATUS_LABEL, dateTime, del, downloadFile, get, money, patch, post, put, useLoad } from '@dingogo/shared';
+import { ApiError, STATUS_LABEL, dateTime, dayName, del, monthName, downloadFile, get, money, patch, post, put, useLoad } from '@dingogo/shared';
 import { Page, Spinner } from '../components/ui';
 import { PlaceField, type Place } from '../components/PlaceField';
 import { AccountFields, EMPTY_ACCOUNT_VALUES, accountBody, accountMissing, useAccountSetup, type AccountValues } from '../components/AccountFields';
@@ -7,6 +7,9 @@ import { CLIENT_KINDS, useMe } from '../ctx';
 
 type Tab = 'overview' | 'book' | 'regular' | 'approvals' | 'invoices' | 'setup';
 const ROLE: Record<string, string> = { member: 'Member', approver: 'Approver', manager: 'Manager' };
+/** What the signed-in person can do on the account, in a sentence. */
+const ROLE_LINE: Record<string, string> = { member: 'You can book trips on this account.', approver: 'You approve trips and see spend and invoices.',
+  manager: 'You manage this account: people, rules, approvals and invoices.' };
 const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 const darwinToday = () => new Date(Date.now() + 9.5 * 3600e3).toISOString().slice(0, 10);
 const errText = (e: unknown, fallback: string) => (e instanceof ApiError ? e.message : fallback);
@@ -17,7 +20,7 @@ export function BusinessAccountScreen() {
   const accounts: any[] = me?.corporate_accounts ?? [];
   const [accountId, setAccountId] = useState('');
   const acct = accounts.find((a) => a.id === accountId) ?? accounts[0];
-  const [tab, setTab] = useState<Tab>('book');
+  const [tab, setTab] = useState<Tab | ''>('');   // '' = the first section this person can see (Spend for approvers)
   if (!me) return <Page title="Business account" back="/account"><Spinner /></Page>;
   if (!acct) return <Page title="Business account" back="/account"><p>You're not on a business account. Your organisation can apply at dingogo.com.au/business.</p></Page>;
   const approver = acct.role === 'manager' || acct.role === 'approver';
@@ -33,7 +36,7 @@ export function BusinessAccountScreen() {
         <label className="dg-field"><span>Account</span>
           <select className="dg-select" value={acct.id} onChange={(e) => setAccountId(e.target.value)}>{accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}</select></label>
       )}
-      <p className="dg-muted" style={{ marginTop: 0 }}>{acct.name}. You are {ROLE[acct.role] ?? 'a member'}{acct.role === 'member' ? '' : ' on this account'}.</p>
+      <p className="dg-muted" style={{ marginTop: 0 }}><strong>{acct.name}</strong>. {ROLE_LINE[acct.role] ?? ROLE_LINE.member}</p>
       <div className="seg" role="group" aria-label="Business account">
         {tabs.map(([k, l]) => <button key={k} type="button" aria-pressed={shown === k} onClick={() => setTab(k)}>{l}</button>)}
       </div>
@@ -206,7 +209,7 @@ function Regular({ account }: { account: any }) {
           {list.data.series.map((s: any) => (
             <li key={s.id} className="row"><span className="row__main"><strong>{s.traveller}: {s.days} at {s.pickup_time}{s.return_time ? `, back at ${s.return_time}` : ''}</strong>
               <span className="dg-muted">{s.ref}. {s.pickup.address ?? 'Pickup'} to {s.dropoff.address ?? 'drop-off'}. {s.active ? `${s.upcoming} booked${s.next_at ? `, next ${dateTime(s.next_at)}` : ''}` : `Stopped${s.stopped_reason ? `: ${s.stopped_reason}` : ''}`}
-                {s.last_run?.problems?.length ? `. Not booked: ${s.last_run.problems[0].date} (${s.last_run.problems[0].reason})` : ''}</span></span>
+                {s.last_run?.problems?.length ? `. Not booked: ${dayName(s.last_run.problems[0].date)} (${s.last_run.problems[0].reason})` : ''}</span></span>
               {s.active && <SeriesActions onSkip={(d) => act(() => post(`/business/recurring/${s.id}/skip`, { date: d }))} onStop={(c) => act(() => post(`/business/recurring/${s.id}/stop`, { cancel_booked: c }))} />}</li>
           ))}
         </ul>
@@ -262,7 +265,7 @@ function NewSeries({ account, onDone, onCancel }: { account: any; onDone: () => 
         <PlaceField label="Drop-off" dot="B" value={dropoff} onChange={setDropoff} placeholder="Drop-off (e.g. the clinic)" />
       </div>
       <fieldset className="block"><legend>Days</legend>
-        <div className="seg" role="group" aria-label="Days of the week">
+        <div className="seg seg--days" role="group" aria-label="Days of the week">
           {WEEKDAYS.map((d, i) => <button key={d} type="button" aria-pressed={days.includes(i + 1)} onClick={() => setDays(days.includes(i + 1) ? days.filter((x) => x !== i + 1) : [...days, i + 1])}>{d}</button>)}
         </div>
       </fieldset>
@@ -275,7 +278,7 @@ function NewSeries({ account, onDone, onCancel }: { account: any; onDone: () => 
       <label className="dg-check"><input type="checkbox" checked={holidays} onChange={(e) => setHolidays(e.target.checked)} /><span>No trips on public holidays</span></label>
       <label className="dg-field"><span>Note for the driver (optional)</span><input className="dg-input" value={notes} maxLength={300} onChange={(e) => setNotes(e.target.value)} placeholder="e.g. renal unit, door 3" /></label>
       <AccountFields setup={setup} value={vals} onChange={setVals} later />
-      {preview && <p className="dg-note" role="status">The next two weeks: {preview.trips.length} trip{preview.trips.length === 1 ? '' : 's'}{preview.skipped.length ? `, ${preview.skipped.length} day${preview.skipped.length === 1 ? '' : 's'} skipped (${preview.skipped.map((s: any) => `${s.date}${s.reason === 'holiday' ? ' holiday' : ''}`).join(', ')})` : ''}.</p>}
+      {preview && <p className="dg-note" role="status">The next two weeks: {preview.trips.length} trip{preview.trips.length === 1 ? '' : 's'}{preview.skipped.length ? `, ${preview.skipped.length} day${preview.skipped.length === 1 ? '' : 's'} skipped (${preview.skipped.map((s: any) => `${dayName(s.date)}${s.reason === 'holiday' ? ', public holiday' : ''}`).join('; ')})` : ''}.</p>}
       {err && <p className="dg-error" role="alert">{err}</p>}
       <div className="grid2">
         <button type="button" className="dg-btn dg-btn--ghost" onClick={preview ? onCancel : () => void go(true)}>{preview ? 'Cancel' : 'Preview'}</button>
@@ -324,7 +327,7 @@ function Invoices({ accountId }: { accountId: string }) {
         <ul className="list">
           {list.data.invoices.map((i: any) => (
             <li key={i.id} className="row"><span className="row__main"><strong>{i.number}{i.po_number ? ` (PO ${i.po_number})` : ''}: {money(i.total_cents)}</strong>
-              <span className={i.overdue_days > 0 ? 'dg-error' : 'dg-muted'}>{i.month}. {i.status === 'paid' ? `Paid ${i.paid_on ?? ''}` : i.status === 'void' ? 'Void' : i.overdue_days > 0 ? `${i.overdue_days} days overdue` : `Due ${i.due_on}`}</span></span>
+              <span className={i.overdue_days > 0 ? 'dg-error' : 'dg-muted'}>{monthName(i.month)}. {i.status === 'paid' ? `Paid${i.paid_on ? ` ${dayName(i.paid_on)}` : ''}` : i.status === 'void' ? 'Void' : i.overdue_days > 0 ? `${i.overdue_days} days overdue` : `Due ${dayName(i.due_on)}`}</span></span>
               <button className="dg-btn dg-btn--sm dg-btn--ghost" onClick={() => downloadFile(`/business/invoices/${i.id}?format=pdf`, `${i.number}.pdf`).catch((e) => setErr(errText(e, 'Could not download')))}>PDF</button></li>
           ))}
         </ul>
@@ -361,7 +364,7 @@ function Setup({ accountId }: { accountId: string }) {
           <input className="dg-input" type="number" min={0} step={1} defaultValue={r.approval_over_cents / 100} onBlur={(e) => void rule('approval_over_cents', Math.round(Number(e.target.value || 0) * 100))} /></label>
         <label className="dg-field"><span>Standing PO number (optional)</span>
           <input className="dg-input" defaultValue={r.default_po ?? ''} maxLength={40} onBlur={(e) => void rule('default_po', e.target.value.trim() || null)} /></label>
-        <label className="dg-field"><span>Who can book for others</span>
+        <label className="dg-field" style={{ gridColumn: '1 / -1' }}><span>Who can book for others</span>
           <select className="dg-select" value={r.book_for_others} onChange={(e) => void rule('book_for_others', e.target.value)}>
             <option value="everyone">Everyone on the account</option><option value="approvers">Approvers and managers</option><option value="nobody">Managers only</option>
           </select></label>

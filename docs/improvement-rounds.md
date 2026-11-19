@@ -1869,3 +1869,90 @@ Ideas for next rounds:
   clinic at the same time into one car with consent.
 - Government procurement pack: supplier details form, insurance certificates, WHS and child-safe policies downloadable for tenders.
 - Spend alerts for managers (80% of the limit or a cost-centre budget) and a monthly usage email/PDF.
+
+### Round 25 — end-to-end UI verification and polish
+Scan: built the Vercel output, seeded a demo database and wrote `scripts/ui-tour.mjs` to open every screen of every app (and every
+admin tab) at phone (390 × 844) and desktop (1280 × 900) sizes in light and dark: 63 screens, 444 views, screenshots in
+`/tmp/claude-0/round25/before`, then looked at every screenshot as contact sheets and ran axe on the same list. Also grepped every
+`className` against the CSS each app loads. Found: the rider's Round 24 Business account and Round 11 Business deliveries screens used a
+`.seg` control styled only in the driver app, so their section switches, "who is travelling" and weekday pickers were bare grey browser
+buttons; the demo rider was a plain member, so Spend, Approvals, Invoices and Set-up had never been rendered (and the Spend tiles used
+`--paper`, white in dark mode with light text); "You are Member."; invoices and previews showed `2026-10`/`2026-11-03`; six website
+pages (Rides, Parcels, Rewards, Airport, Hospital, Invite) had navy headings on the dark top of the dawn/noon skies (axe can't measure
+gradients, so no check caught it); admin pages with 9 tabs (Pricing, Safety) hid the last tab behind a scroll; the console footer sat
+flush against the rail; headings after tables/buttons had no space (Tax NDIS, Record keeping, Privacy); "Issue invoices for 2026-10",
+"Levy payable for 2026-11"; the hire-request status select squeezed to an empty box; Users & roles and Documents to review scrolled
+sideways on a phone (screen-reader text in cells escaped the table scroller); the trip drawer showed an empty "Timeline"; the partner
+portal's tabs inherited the Sign out pill (curved underline), assumed 4 tabs (tour desks have 5) and wrapped "This month"; dark
+`dg-btn--dark` buttons (partner Check code, admin New/Search) were night-on-night in dark mode; the fare table and admin tables weren't
+keyboard-scrollable (axe `scrollable-region-focusable`); "Tax Invoice" title case on the rider receipt. No page errors, console errors,
+failed API calls or slow screens (slowest 1.7 s, median 0.9 s on the serverless build). The partner sub-screens, rider trip detail,
+driver set-up and admin trip drawer weren't in any check.
+
+Suggested:
+1. [fix] Rider business screens: shared segmented control in the rider CSS (wraps, 44 px targets), first section the person can see
+   (Spend for approvers), role as a sentence, months and dates in words, Spend tiles on `--surface`, spacing between Set-up forms.
+2. [fix] Website heroes: white text on a night scrim for the dawn and noon skies (six pages), light and dark.
+3. [fix] Admin layout: tabs wrap on desktop, footer aligned with the page, space above headings that follow content, months in words,
+   hire status select width, users search box, tables keep screen-reader text inside their scroller, trip drawer "No events recorded".
+4. [fix] Partner portal tabs: one column per tab, no pill inheritance, smaller labels on phones so "This month" stays on one line.
+5. [fix] Dark mode: `dg-btn--dark` becomes a light button in dark mode (all apps).
+6. [fix] Keyboard access to scrollable tables (website fares, admin tables without clickable rows); "Tax invoice" in sentence case.
+7. [add] `scripts/lib/screens.mjs` (one list of every screen), `scripts/ui-tour.mjs` / `npm run tour` (screenshots + checks: page and
+   console errors, failed API calls, sideways scroll on phones, unnamed controls, blank screens, slow loads; clicks tabs, opens a row,
+   grows the window to capture panes that scroll), and a test that fails when an app routes to a screen that isn't in the list.
+8. [add] `scripts/a11y-check.mjs` uses the list (65 screens, every tab — 246 checks), runs on the built apps with `--built` /
+   `npm run a11y`, and runs in CI after the smoke test (Round 15's deferred item).
+9. [add] Smoke test: rider as business manager (Spend, add a cost centre), help search, driver Help, admin every tab of Support,
+   Business, Loyalty, Tours and Fleet, partner every section. Demo rider manages the demo business account (two cost centres, two
+   purposes) so the screens have content.
+
+Screen-by-screen findings (✓ = fine as it was):
+
+| Screen | Found | Done |
+| --- | --- | --- |
+| Rider Business account (all 6 sections) | bare buttons; manager sections never seen; white tiles in dark; raw dates; "You are Member." | fixed |
+| Rider Business deliveries | bare buttons | fixed |
+| Rider ride, trips, trip detail, rewards, account pages, help, safety, privacy, organisations, clients | ✓ ("Tax Invoice" case) | fixed |
+| Driver drive, earnings, trips, charging, profile, help, set-up | ✓ | — |
+| Website Rides, Parcels, Rewards, Airport, Hospital (+ Invite) | heading/lede contrast on the sky | fixed |
+| Website home, tours, business, drive, about, help, safety, fares, legal, delete account, 404, expired track | ✓ (fare table keyboard scroll) | fixed |
+| Admin Pricing, Safety | last tab cut off | fixed |
+| Admin Tax (NDIS, Record keeping, Privacy), Reports | headings jammed, raw month | fixed |
+| Admin Business (Applications, Invoices, Billing) | raw month on the issue button | fixed |
+| Admin Support (tickets, lost property, canned, policy, hire, enquiries) | hire status select squeezed | fixed |
+| Admin Settings Users & roles, Safety Documents to review | sideways scroll on phone | fixed |
+| Admin Trips drawer | empty Timeline heading | fixed |
+| Admin Fleet (incl. Fleet programme), Loyalty, Tours, Ads, Drivers, Live, Dashboard | ✓ (Fleet charging table keyboard scroll) | fixed |
+| Every admin page | footer flush against the rail | fixed |
+| Partner Redeem, This month, Statements, Sell credit | tab layout; dark Check code button invisible | fixed |
+
+Done (all 9). No migration, no env vars, no API behaviour change (seed only: the demo rider is a manager of the demo business account).
+Tests: 243 → 244 (`screens.test.ts`: every routed screen of web, rider, driver and admin is in `scripts/lib/screens.mjs`, sign-in
+screens listed, both scripts use the list; e2e business-deliveries test sets the demo rider back to member). Final tour: 65 screens,
+496 views, 0 problems; a11y: 246 checks, 0 violations (8 before); smoke: 10 steps pass. Screenshots: `/tmp/claude-0/round25/{before,final}`.
+- Apps: rider `app.css`, `BusinessAccount.tsx`, `Trip.tsx`; web `styles.css`, `pages/Rides.tsx`; admin `admin.css`, `main.tsx`, `ui.tsx`,
+  pages `Business`, `Reports`, `Settings`, `Support`, `Trips`; partner `partner.css`; shared `brand.css`, `format.ts` (`monthName`).
+- Scripts/CI/docs: `scripts/ui-tour.mjs`, `scripts/lib/screens.mjs`, `scripts/a11y-check.mjs`, `scripts/smoke-e2e.mjs`, root `package.json`
+  (`a11y`, `tour`), `.github/workflows/ci.yml`, `services/api/scripts/seed.ts`, README, OPERATIONS 2.
+- Deploy: nothing to apply. Live data is unaffected (seed is demo-only). CI gets one more step (a11y, ~3 min).
+
+Deferred:
+- Money over $999 shows without a thousands separator (`$3000.00`) everywhere — `money()` is shared by receipts, PDFs and CSV-adjacent
+  screens; needs a decision on CSV/PDF output first.
+- Date and time inputs follow the browser's language (headless Chromium shows mm/dd/yyyy); on Australian phones they show dd/mm/yyyy.
+  Not an app bug, but the tour screenshots look American.
+- The admin Loyalty tier editor (one tier per 3 rows) and the rider business account's 6 sections on a phone (3 rows) work but could be
+  tighter: a tier table and a scrollable section bar respectively.
+- `confirm()`/`prompt()` remain in the rider business screens (approve/decline reason, stop, remove person); the admin uses a modal.
+- The Round 22 support e2e test failed once on the "Sorted" note ordering and passed on the re-run: worth a look at notification ordering
+  after `flushBackground()`.
+- Visual regression (pixel diffs against approved screenshots) — the tour gives the pictures; diffs need stable map tiles and fonts.
+
+Ideas for next rounds:
+- Visual regression on the tour screenshots (per-screen baseline, threshold, tiles stubbed) in CI.
+- Contrast check for text over illustrated backgrounds: sample the rendered pixels behind each text box in the tour.
+- Tour screens with states: empty, loading (throttled network), error (API down), long names and big numbers, simple mode, Arrernte/Kriol.
+- Replace `confirm()`/`prompt()` in the rider app with the shared modal and a decline-reason sheet.
+- Thousands separators in `money()` for screens (keeping CSV raw) and AU-format date pickers.
+- Run the tour against the Capacitor shells on an emulator (safe areas, Back button, keyboard over forms).

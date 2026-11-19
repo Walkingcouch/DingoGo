@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { dateTime, get, money, useLoad } from '@dingogo/shared';
+import { dateTime, get, money, monthName, useLoad } from '@dingogo/shared';
 import { Link } from 'react-router-dom';
 import { PAYMENT_ROW_STATUS, label } from '../labels';
 import { Page } from '../ctx';
@@ -51,7 +51,7 @@ export default function Reports() {
         <div className="kpis">
           <div className="kpi"><b>{l.passenger_trips}</b><span>Completed passenger trips</span></div>
           <div className="kpi"><b>{money(l.levy_rate_cents)}</b><span>Levy per trip</span></div>
-          <div className="kpi"><b>{money(l.levy_payable_cents)}</b><span>Levy payable for {l.month}</span></div>
+          <div className="kpi"><b>{money(l.levy_payable_cents)}</b><span>Levy payable for {monthName(l.month)}</span></div>
           <div className="kpi"><b>{money(l.levy_collected_cents)}</b><span>Collected from riders</span></div>
         </div>
         <div className="actions" style={{ marginTop: 10 }}><button className="dg-btn dg-btn--sm dg-btn--ghost" onClick={() => run(() => downloadCsv(`/admin/export/levy.csv?month=${l.month}&state=${l.state}`), 'Levy return downloaded')}>Export levy return CSV</button></div>

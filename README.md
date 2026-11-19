@@ -39,9 +39,10 @@ npm install
 npm run db:setup                                   # migrations + demo data (local databases only)
 npm run dev:api                                    # http://localhost:4000
 npm run dev:web    # and/or dev:rider, dev:driver, dev:admin, dev:partner, dev:roof
-npm test                                           # 243 API, money, tax, loyalty, tours, fleet, support, business, website, store-readiness and toolchain tests (needs a throwaway DB: they reset it, and create/drop scratch databases)
+npm test                                           # 244 API, money, tax, loyalty, tours, fleet, support, business, website, store-readiness and toolchain tests (needs a throwaway DB: they reset it, and create/drop scratch databases)
 node scripts/build-vercel.mjs && npm run db:reset -w services/api && npm run smoke   # browser smoke test: rider books, driver completes, admin approves a car (built apps + serverless API; Playwright)
-node scripts/a11y-check.mjs                        # WCAG 2.2 AA check (axe-core + Playwright) of the website and rider app; needs api, web and rider running
+npm run a11y                                       # WCAG 2.2 AA check (axe-core + Playwright) of every screen and tab, light and dark, on the built apps (same setup as smoke)
+npm run tour                                       # screen-by-screen tour: screenshots at phone and desktop sizes, light and dark, with layout/console/API checks
 ```
 
 Demo sign-ins (development only — any SMS code is shown on screen, and `000000` always works):
@@ -50,7 +51,7 @@ Demo sign-ins (development only — any SMS code is shown on screen, and `000000
 | --- | --- |
 | Admin | 0400 000 001 |
 | Dispatcher | 0400 000 002 |
-| Rider (has points, credit, business account) | 0400 000 100 |
+| Rider (has points, credit, manages the demo business account) | 0400 000 100 |
 | Drivers (approved, each with an electric demo car) | 0400 000 011, 012, 013 |
 | Driver applicant (missing documents) | 0400 000 014 |
 | Café partner | 0400 000 300 |
@@ -106,7 +107,8 @@ owner's checklist: `docs/OPERATIONS.md` section 11.
 - **Docker (everything on one server):** `npm run build`, then `cd deploy && docker compose up --build`. Postgres, API on :4000 and the six apps on :8080–8085 behind Caddy.
 - **Managed:** Postgres on Supabase (paste its connection string into `DATABASE_URL`), API on any Node host (Render, Fly, Railway, a VPS — it needs WebSockets and a long-running process for dispatch), static apps on Vercel/Netlify/Cloudflare Pages with `VITE_API_URL` set.
 - CI: `.github/workflows/ci.yml` runs typecheck, API tests, builds and the browser smoke test (`scripts/smoke-e2e.mjs`: rider books a ride, driver accepts and
-  completes it, admin approves a car, against the Vercel build with the bundled serverless API).
+  completes it, admin approves a car, plus the business account, help, partner portal and admin tabs, against the Vercel build with the bundled
+  serverless API) and the accessibility check of every screen (`npm run a11y`).
 
 ## Before going live
 

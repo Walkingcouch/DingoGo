@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { get, post, put, money, dateTime, useLoad } from '@dingogo/shared';
+import { get, post, put, money, monthName, dateTime, useLoad } from '@dingogo/shared';
 import { Page } from '../ctx';
 import { Chip, CrudSection, Drawer, ErrorMsg, Section, Table, Tabs, downloadFile, exportCsv, useAsk, useRun, useToast } from '../ui';
 
@@ -109,7 +109,7 @@ function Invoices() {
         <button className="dg-btn dg-btn--sm dg-btn--dark" onClick={async () => {
           const r = await run(() => post<any>('/admin/business/invoices/run', { month }));
           if (r) { void reload(); toast(`${r.issued.length} invoice${r.issued.length === 1 ? '' : 's'} issued${r.skipped.length ? `, ${r.skipped.length} skipped` : ''}`); }
-        }}>Issue invoices for {month}</button>
+        }}>Issue invoices for {monthName(month)}</button>
         <button className="dg-btn dg-btn--sm dg-btn--ghost" onClick={() => run(() => downloadFile(`/admin/business/invoices/export?month=${month}&format=xero`), 'Xero file downloaded')}>Xero CSV</button>
         <button className="dg-btn dg-btn--sm dg-btn--ghost" onClick={() => run(() => downloadFile(`/admin/business/invoices/export?month=${month}&format=myob`), 'MYOB file downloaded')}>MYOB CSV</button>
         <button className="dg-btn dg-btn--sm dg-btn--ghost" onClick={async () => { const r = await run(() => post<any>('/admin/business/reminders/run', {})); if (r) { void reload(); toast(`${r.sent.length} reminder${r.sent.length === 1 ? '' : 's'} sent`); } }}>Send due reminders</button>

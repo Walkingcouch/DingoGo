@@ -6,11 +6,12 @@
 .p-head h1 { font-size: var(--fs-xl); margin: 0; color: #fff; line-height: 1.15; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .p-head small { color: #AAB2C8; font-size: var(--fs-sm); display: flex; align-items: center; gap: 8px; white-space: nowrap; }
 .p-demo { background: rgba(232, 145, 45, .18); color: var(--ochre); border-radius: var(--r-pill); padding: 0 8px; font-weight: 700; font-size: var(--fs-xs); line-height: 1.6; }
-.p-head button { flex: none; display: inline-flex; align-items: center; gap: 6px; min-height: 44px; background: none; border: 1px solid #36456E; color: #D9DCE6;
+.p-head__row > button { flex: none; display: inline-flex; align-items: center; gap: 6px; min-height: 44px; background: none; border: 1px solid #36456E; color: #D9DCE6;
   border-radius: var(--r-pill); padding: 0 14px; cursor: pointer; font: inherit; font-weight: 700; font-size: var(--fs-sm); }
-.p-head button:hover { border-color: var(--ochre); color: #fff; }
-@media (max-width: 380px) { .p-head button span { display: none; } .p-head button { padding: 0 12px; } }
-.p-tabs { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; margin-top: 14px; }
+.p-head__row > button:hover { border-color: var(--ochre); color: #fff; }
+@media (max-width: 380px) { .p-head__row > button span { display: none; } .p-head__row > button { padding: 0 12px; } }
+/* Round 25: one column per tab (tour desks have five), and the Sign out button's pill style no longer leaks into the tabs. */
+.p-tabs { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 2px; margin-top: 14px; }
 .p-tabs button { display: flex; align-items: center; justify-content: center; gap: 6px; min-height: 48px; background: transparent; border: none; color: #AAB2C8;
   padding: 8px 4px 10px; font: inherit; font-weight: 700; font-size: var(--fs-sm); cursor: pointer; border-bottom: 3px solid transparent; white-space: nowrap; }
 .p-tabs button:hover { color: #fff; }
@@ -47,4 +48,4 @@
 .p-statement { align-items: center; }
 .p-dl { display: flex; gap: 6px; }
 .p-paid { color: var(--saltbush-ink); font-weight: 700; }
-@media (max-width: 440px) { .p-tabs button { flex-direction: column; gap: 2px; white-space: normal; } }
+@media (max-width: 440px) { .p-tabs button { flex-direction: column; gap: 2px; font-size: var(--fs-xs); padding: 8px 2px 10px; } }

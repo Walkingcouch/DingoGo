@@ -99,7 +99,7 @@ function Users() {
     <NewTestAccount roles={roles} partners={partners.data?.items ?? []} onCreated={() => void reload()} />
     <Section title="All users" />
     <form className="toolbar" onSubmit={(e) => { e.preventDefault(); setSearch(q); }}>
-      <input className="dg-input" placeholder="Name, phone or email" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Search users" style={{ minWidth: 260 }} />
+      <input className="dg-input" placeholder="Name, phone or email" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Search users" style={{ minWidth: 'min(260px, 100%)' }} />
       <button className="dg-btn dg-btn--sm dg-btn--dark">Search</button>
     </form>
     <Table rows={data?.users} cols={[

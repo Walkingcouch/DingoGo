@@ -163,6 +163,7 @@ function TripDrawer({ id, onClose }: { id: string; onClose: () => void }) {
         </tbody></table>
 
         <h3 style={{ marginTop: 18 }}>Timeline</h3>
+        {!data.events.length && <p className="dg-muted">No events recorded for this trip (trips from the demo data and imports have none).</p>}
         <ul className="timeline">
           {data.events.map((e: any) => <li key={e.id}><strong>{label(EVENT_TYPE, e.type)}</strong> <span className="dg-muted">{time(e.at)}</span>{e.data?.reason && <span className="sub">{e.data.reason}</span>}</li>)}
         </ul>

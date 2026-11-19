@@ -8,7 +8,7 @@ export function FareTable({ services }: { services: (FareRule | undefined)[] }) 
   const rows = services.filter(Boolean) as FareRule[];
   if (!rows.length) return <p className="dg-muted">Loading prices…</p>;
   return (
-    <div className="table-scroll">
+    <div className="table-scroll" tabIndex={0} role="region" aria-label="Fares by service">
       <table className="price-table">
         <thead><tr><th scope="col">Service</th><th scope="col">Base</th><th scope="col">Per km</th><th scope="col">Per minute</th><th scope="col">Booking fee</th><th scope="col">NT levy</th><th scope="col">Minimum</th></tr></thead>
         <tbody>

@@ -75,6 +75,16 @@ applied from somewhere other than this repo's runners; `AUTO_MIGRATE` re-applies
 against the bundled serverless API on a local demo database: driver goes online, rider books Todd Mall → Hospital, driver accepts, arrives, starts
 with the rider's PIN and completes, rider sees "Thanks for riding", admin approves the waiting car. CI runs it on every push (screenshots kept on
 failure). It needs a throwaway database (it signs in demo accounts with 000000); never point it at production.
+Since Round 25 it also checks the business account (manager), help, the partner portal and every tab of Support, Business, Loyalty, Tours and
+Fleet.
+
+### Before a release: screen-by-screen tour and accessibility check
+`npm run tour` (Round 25) opens every screen in `scripts/lib/screens.mjs` — every app, every admin tab, the partner sections — at phone and
+desktop sizes in light and dark, saves a screenshot of each (`TOUR_SHOTS=dir`) and fails on page or console errors, failed API calls,
+sideways scrolling on a phone, unnamed controls, blank screens and loads over 2.5 s. `npm run a11y` runs axe-core (WCAG 2.2 AA) on the same
+screens and tabs; CI runs it after the smoke test. Both need the Vercel build and a freshly reset demo database, like the smoke test. When an
+app gets a new screen, add it to `scripts/lib/screens.mjs` (a test fails until you do). Look at the screenshots, not just the pass/fail:
+contrast on the website's illustrated skies is something axe can't measure.
 
 ## 3. Is it healthy?
 

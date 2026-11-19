@@ -130,7 +130,10 @@ await q(`INSERT INTO rewards (title, description, points_cost, kind, credit_cent
 const corp = await one(`INSERT INTO corporate_accounts (name, kind, abn, billing_email, discount_pct, monthly_limit_cents) VALUES
   ('Desert Conference Centre (demo)', 'business', '11222333444', 'accounts@example.com', 5, 300000) RETURNING *`);
 await q(`INSERT INTO corporate_accounts (name, kind, billing_email, invoice_terms_days) VALUES ('Central Plan Managers (demo NDIS)', 'ndis_plan_manager', 'ndis@example.com', 7)`);
-await q(`INSERT INTO corporate_members (account_id, user_id, role) VALUES ($1, $2, 'member')`, [corp.id, rider.id]);
+// Round 25: the demo rider manages the demo business account, so every Business account screen (spend, approvals, invoices, set-up) has content.
+await q(`INSERT INTO corporate_members (account_id, user_id, role) VALUES ($1, $2, 'manager')`, [corp.id, rider.id]);
+await q(`INSERT INTO account_cost_centres (account_id, code, name, monthly_budget_cents) VALUES ($1, 'EVENTS', 'Events team', 150000), ($1, 'ADMIN', 'Front office', NULL)`, [corp.id]);
+await q(`INSERT INTO account_purposes (account_id, code, label) VALUES ($1, 'DELEG', 'Delegate transfer'), ($1, 'MEET', 'Client meeting')`, [corp.id]);
 
 // ── Advertising (demo)
 const adv = await one(`INSERT INTO advertisers (name, contact_name, email) VALUES ('Spinifex Café (demo)', 'Owner', 'partner@example.com') RETURNING *`);
