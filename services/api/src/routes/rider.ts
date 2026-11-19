@@ -14,6 +14,8 @@ import { send, sendSmsT } from '../services/notify.js';
 import * as pay from '../services/payments.js';
 import * as trips from '../services/trips.js';
 import { reattempt } from '../services/courier.js';
+import * as loyalty from '../services/loyalty.js';
+import { ledgerLabel } from '../lib/loyalty.js';
 
 /** Client Idempotency-Key header (a double tap or a retry after a lost reply sends the same one). */
 const idemKey = (req: FastifyRequest) => {
@@ -227,12 +229,16 @@ export default async function riderRoutes(app: FastifyInstance) {
     const mine = await q(
       `SELECT rr.*, r.title, p.name AS partner_name FROM reward_redemptions rr JOIN rewards r ON r.id = rr.reward_id
        LEFT JOIN partners p ON p.id = r.partner_id WHERE rr.user_id = $1 ORDER BY rr.issued_at DESC LIMIT 30`, [me.id]);
-    const ledger = await q('SELECT points, reason, created_at FROM loyalty_ledger WHERE user_id = $1 ORDER BY created_at DESC LIMIT 30', [me.id]);
+    const ledger = (await q('SELECT points, reason, created_at FROM loyalty_ledger WHERE user_id = $1 ORDER BY id DESC LIMIT 30', [me.id]))
+      .map((l: any) => ({ ...l, label: ledgerLabel(l.reason) }));
     const refs = await one(`SELECT count(*)::int total, count(*) FILTER (WHERE status = 'rewarded')::int rewarded FROM referrals WHERE referrer_id = $1`, [me.id]);
+    const sum = await loyalty.summary(me.id, u.loyalty_points);
+    const mult = sum.tier.multiplier;
     return {
-      points: u.loyalty_points, referral_code: u.referral_code, referral_bonus: config.loyalty.referralBonusPoints,
-      referrals: refs, rewards, redemptions: mine, ledger,
-      earn_rate: `${config.loyalty.pointsPerDollar} points per $1`, burn_rate: '100 points = $1 off a trip',
+      points: u.loyalty_points, referral_code: u.referral_code, referral_bonus: sum.referral.bonus_points,
+      referral_min_fare_cents: sum.referral.min_fare_cents,
+      referrals: refs, rewards, redemptions: mine, ledger, ...sum,
+      earn_rate: `${Math.round(config.loyalty.pointsPerDollar * mult * 100) / 100} points per $1${mult > 1 ? ` (${sum.tier.name})` : ''}`, burn_rate: '100 points = $1 off a trip',
     };
   });
 
@@ -240,7 +246,8 @@ export default async function riderRoutes(app: FastifyInstance) {
     const me = await requireUser(req);
     const id = (req.params as any).id;
     return tx(async (c) => {
-      const r = await one('SELECT * FROM rewards WHERE id = $1 AND active', [id], c);
+      // A café reward from a partner that has been switched off can't be swapped for (nobody would serve it).
+      const r = await one('SELECT r.* FROM rewards r LEFT JOIN partners p ON p.id = r.partner_id WHERE r.id = $1 AND r.active AND (p.id IS NULL OR p.active)', [id], c);
       if (!r) throw notFound('Reward');
       const u = await one('SELECT loyalty_points FROM users WHERE id = $1 FOR UPDATE', [me.id], c);
       if (u.loyalty_points < r.points_cost) throw bad('not_enough_points', `You need ${r.points_cost - u.loyalty_points} more points`);
@@ -399,6 +406,8 @@ export default async function riderRoutes(app: FastifyInstance) {
       if (!v) throw bad('voucher_invalid', 'Voucher code not found');
       if (v.redeemed_at) throw bad('voucher_used', 'This voucher has already been used');
       if (v.expires_at && new Date(v.expires_at) < new Date()) throw bad('voucher_expired', 'This voucher has expired');
+      // Cards printed for selling at a shop work only once the shop has sold them (a card taken off the counter isn't credit).
+      if (v.needs_activation && !v.sold_at) throw bad('voucher_not_sold', "This card hasn't been activated yet. Ask the shop where you bought it, or call DingoGo.");
       await c.query('UPDATE gift_vouchers SET redeemed_by = $2, redeemed_at = now() WHERE code = $1', [v.code, me.id]);
       const u = await one('UPDATE users SET wallet_cents = wallet_cents + $2 WHERE id = $1 RETURNING wallet_cents', [me.id, v.value_cents], c);
       await c.query(`INSERT INTO payments (user_id, provider, provider_ref, kind, amount_cents, status) VALUES ($1,'voucher',$2,'topup',$3,'succeeded')`, [me.id, v.code, v.value_cents]);

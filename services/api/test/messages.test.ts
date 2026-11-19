@@ -24,6 +24,8 @@ const sample: Record<string, any> = {
   finding_another_driver: { ref: 'DG-ABC123' }, driver_cancelled: { ref: 'DG-ABC123' }, trip_done: { ref: 'DG-ABC123', courier: false, cents: 2350 },
   route_check: { ref: 'DG-ABC123' }, payment_failed: { ref: 'DG-ABC123', cents: 2350, reason: null }, refund_issued: { ref: 'DG-ABC123', cents: 500, reason: 'Late' },
   ticket_received: { id: '12345678-aaaa' }, ticket_reply: { subject: 'Lost hat', resolution: 'Found it' }, referral_bonus: { points: 500 },
+  points_expiring: { points: 1250, date: '19 December 2026' }, birthday_bonus: { points: 200 }, streak_bonus: { points: 300, weeks: 4 },
+  gift_voucher: { from: 'Aunty Mary Smith', cents: 5000, code: 'DGABC234XY56', expires: '19 November 2029' },
   trip_given_away: { ref: 'DG-ABC123' }, trip_cancelled: { ref: 'DG-ABC123' }, tip_received: { ref: 'DG-ABC123', cents: 300 }, set_offline: { minutes: 30 },
   driver_approved: {}, documents_reviewed: { types: ['licence'], status: 'approved' }, car_reviewed: { approved: false, rego: 'CD12AB', note: 'Blurry photo' },
   payout_sent: { cents: 12000 }, earnings_floor_topup: { cents: 1500, week: '2026-11-09', rate_cents: 3200 }, document_expiring: { label: 'Driver licence', days_left: 14 },

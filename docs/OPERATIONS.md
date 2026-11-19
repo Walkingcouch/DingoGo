@@ -168,3 +168,23 @@ names, birth dates and addresses show as missing); lodgement records and the pri
   ticked). A deleted driver's tax details are kept apart until 30 June five years after their last payment's financial year, then removed.
 - **Privacy requests:** log requests that come by email, phone or letter in Tax → Privacy requests and close them within 30 days with the outcome;
   in-app downloads and deletions appear there automatically.
+
+## 9. Loyalty, cafés and gift vouchers (Round 17)
+
+Migration `021_loyalty.sql` (AUTO_MIGRATE applies it). Before it, points, tiers, rewards, café redeeming and plain promo codes work as before;
+points don't expire, there are no birthday/streak bonuses, gift vouchers can't be bought in the app and months can't be marked paid. Admin →
+Loyalty & vouchers.
+
+- **Before the first expiry run:** check Loyalty → Programme (12 months, 30-day warning by default) and tell riders in the app or on the website.
+  Nobody loses points without a warning sent at least 30 days earlier. The job runs every few hours from the dispatcher; "Run expiry and birthdays
+  now" runs it at once.
+- **Every month (early in the month):** Loyalty → Redemptions & settlement → pick last month → pay each café by bank transfer, then "Mark paid" with
+  the transfer reference. Cafés see the statement (PDF/CSV) and the reference in the partner portal (Statements).
+- **Shop voucher cards:** new batches are "for sale" by default: a card works only once the café records the sale (Sell credit), and carries a
+  3-year expiry (Australian Consumer Law for gift cards). Untick "for sale" only for cards given away free. Cards printed before Round 17 work as
+  before. Gift vouchers bought in the app are paid on the rider's card (mock until Stripe is on), never have GST, and show in Prepaid vouchers with
+  batch `online`.
+- **Promo codes:** set a budget for every paid campaign (Pricing → Promo codes): the code stops when the budget is used, and a cancelled trip gives
+  its discount back. Event codes: set the event's latitude/longitude and a radius. Off-peak: Darwin hours and days.
+- **Win-back:** Loyalty → Win-back. Only riders who said yes to offers get it, at most once every 90 days (setting). For a code just for them, make a
+  targeted promo code first and put it in the form.

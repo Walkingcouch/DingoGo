@@ -908,3 +908,72 @@ it now returns 200. For a driver who was ever paid, the tax identity (names, dat
 `retained_tax_identities` until 30 June five years after the financial year of their last payment, and bank, address, birth date, licence and
 authority numbers are cleared from the driver record. `GET /me/export` adds `driver { profile (bank as last 3 digits), documents, pay, trips,
 online_sessions }` for drivers.
+
+## Rider growth and loyalty (Round 17)
+
+Needs migration 021 (`lib/loyalty.ts` `loyaltyReady()`, re-checked once a minute). Before it: promo codes, rewards, café redeem/stats/statements,
+vouchers and tiers work as before (no budgets/rules/targeted codes, settlement at the café's current rate, nothing marked paid); opt-ins, gift
+vouchers bought online, win-back and marking months paid answer 503 `migration_pending`; the scheduled run does nothing.
+
+**Programme settings** (`settings.loyalty`, admin): `expiry_months` (12; 0 = never), `warn_days` (30), `tiers [{ key, name, min_trips, multiplier }]`
+(Member 0 / Silver 10 / Gold 30 trips in the last 12 months; 1, 1.25, 1.5x points), `birthday_points` (200), `streak_weeks` (4), `streak_points` (300),
+`referral_bonus_points` (500), `referral_min_fare_cents` (500), `referral_monthly_cap` (10), `winback_days` (60), `winback_every_days` (90). Every
+number is bounded on save.
+
+**Rider:**
+- `GET /loyalty` adds `tier { key, name, multiplier, trips_last_year, next { name, min_trips, multiplier, trips_to_go } }`, `tiers`, `expiry
+  { months, expires_at, rule }`, `bonuses { birthday_points, streak_weeks, streak_points, ready }`, `profile`, `streak_weeks_now`, `referral`,
+  `referral_min_fare_cents`; `ledger[].label`; `earn_rate` shows the tier rate. Rewards from switched-off partners → 404 on redeem.
+- `GET /loyalty/history?before=<id>` → `{ points, items [{ id, points, reason, label, created_at, trip_ref, balance }], next }` (50 a page, newest
+  first, `balance` after each line).
+- `PUT /loyalty/profile { birthday_md "MM-DD", birthday_opt_in, streak_opt_in }` → `{ profile }`. Opting in to the birthday bonus without a date →
+  400 `birthday_required`. Only the day and month are kept.
+- `GET /gift-vouchers` → `{ vouchers [{ code, value_cents, from_name, recipient_name, message, created_at, expires_at, used }], values_cents, ready,
+  valid_years }`. `POST /gift-vouchers { value_cents (1000|2000|2500|5000|10000), from_name?, recipient_name?, message? (140), send_to? (AU mobile) }`
+  with `Idempotency-Key` → 201 `{ voucher, replayed: false, texted }` (200 `replayed: true` for the same key). Charged on the saved card like a top-up
+  (`card_required`/`cards_not_available`/`payment_failed` as there), payments row `kind 'gift_voucher'` with no GST (GST is in the fares it pays
+  for), 3-year expiry, at most 5 a day (429). The optional text is transactional (`gift_voucher` template, skipped for numbers that replied STOP).
+- `POST /wallet/voucher`: a shop card that hasn't been sold yet → 400 `voucher_not_sold`.
+
+**Points rules:** points on completion are `pointsPerDollar × tier multiplier` on what the rider paid. Weekly streak (opt-in): a trip in each of
+`streak_weeks` Darwin weeks in a row earns `streak_points` (once per week reached, again every further `streak_weeks`). Birthday (opt-in): once a
+year on the Darwin date (29 Feb on 28 Feb in other years). Expiry: after `expiry_months` with no points activity and no completed trip, a
+`points_expiring` notice is sent; the points expire (ledger `expired`) once that time has passed **and** the warning is at least `warn_days` old.
+Referral: both get the bonus after the friend's first trip that cost at least `referral_min_fare_cents` (cheaper trips leave it pending); a blocked,
+deleted or test/real-mismatched referrer → referral `void`; the referrer's bonuses are capped per Darwin month (the friend still gets theirs). Bonus
+ledger rows carry the trip. Café reward codes past their use-by date are marked `expired`. The run (`runLoyaltyIfDue`, every 3 h from the
+dispatcher tick) does expiry, birthdays and stale codes.
+
+**Promo codes** (`/admin/promos`, validated): new fields `budget_cents` (total discount; the discount is capped at what's left, `spent_cents` kept),
+`services []`, `hour_from`/`hour_to` (Darwin, `hour_to` exclusive, 22→6 runs over midnight), `days []` (0 = Sunday), `geo_lat`/`geo_lng`/`geo_radius_m`
+(pickup or drop-off within the radius), `targeted` (only riders in `promo_grants`). Errors: `promo_time`, `promo_service`, `promo_area`,
+`promo_invalid` (targeted, not granted), `promo_exhausted` (uses or budget, including "has just run out" when another booking took the last one).
+Bad fields: `invalid_value` (percent over 100), `invalid_hours` (only one of the two), `invalid_area` (radius without a centre). The use and the
+discount are taken with a conditional update at booking (a capped code can't be overshot) under a per-rider lock, and given back on cancel / no
+drivers / card declined at release. First-ride codes are refused while the rider has another trip booked or under way. Before migration 021, rule
+fields → 503 `migration_pending`.
+- `GET /admin/promos/:code/grants`, `POST /admin/promos/:code/grants { phones [] }` → `{ granted, not_found [] }`.
+
+**Partner portal:** `GET /partner/me` uses the Darwin month and the stored rate. `GET /partner/stats` → `{ month, months [6 × { month, redeemed,
+owed_cents, customers }], by_reward, repeat_customers_6m, codes_waiting, codes_expired_6m }`. `GET /partner/statements` → `{ statements [12 ×
+{ partner, month, redeemed, total_cents, open, status open|due|paid, paid { redeemed, amount_cents, paid_at, paid_ref } }] }`.
+`GET /partner/statements/:month?format=json|csv|pdf` adds `lines [{ redeemed_at, code, title, cents }]` (400 `bad_month`). Each redemption keeps the
+café's rate when it was served (`reward_redemptions.settlement_cents`).
+
+**Admin:**
+- `GET /admin/loyalty/settings` → `{ settings, ready }`; `PUT /admin/loyalty/settings` (admin, audited) → `{ settings }`.
+- `GET /admin/loyalty/overview` → points outstanding (and `liability_cents` at 100 points = $1), earned/used/expired in 30 days, referrals rewarded,
+  riders per tier.
+- `POST /admin/loyalty/run` → `{ warned, expired, expired_points, birthdays, codes_expired, ready }` (audited).
+- `GET /admin/loyalty/winback?days=` → `{ days, every_days, count, not_consented, sample }`; `POST /admin/loyalty/winback { days?, title, body,
+  promo_code?, channel app|sms }` → `{ sent, skipped, promo_code }`. Only riders with marketing consent, a completed trip, none for `days`, no live or
+  booked trip and no win-back in `winback_every_days`; the `promo` template adds the opt-out wording; texts follow the broadcast rules (STOP numbers
+  skipped, a sender that takes replies). A promo code is granted to each rider sent to.
+- `GET /admin/partner-settlements?month=` → `{ month, open, partners [{ id, name, redeemed, owed_cents, paid_at, paid_ref, paid_cents }], months }`;
+  `POST /admin/partner-settlements { partner_id, month, paid_ref? }` → `{ settlement }` (409 `month_open` for the current month, `already_paid`;
+  400 `nothing_owed`); `GET /admin/partner-settlements/:partner/:month?format=json|csv|pdf` → the café's statement. `GET /admin/redemptions`
+  `settlement` is the Darwin month at stored rates.
+- `POST /admin/vouchers` adds `for_sale` (default true: card works only once a shop records the sale, expiry at least 3 years) and `valid_days`
+  (30–3650; default 3 years) → `{ codes, expires_at, needs_activation, valid_days }`.
+
+Data export adds `loyalty_profile` and `gift_vouchers_bought`; deleting an account removes the loyalty profile and the unused points.

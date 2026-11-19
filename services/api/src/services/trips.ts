@@ -4,7 +4,9 @@ import type pg from 'pg';
 import { config } from '../config.js';
 import { one, pool, q, tx, type Q } from '../db.js';
 import { ApiError, bad, conflict, forbidden, notFound } from '../lib/errors.js';
-import { RETURN_FEE_LABEL, ROUTE_CHANGE_LABEL, cancelFeeCharged, gstOf, pointsEarned, quoteFare, routeChangeExtra, type FareBreakdown, type FareQuote, type FareRule } from '../lib/fares.js';
+import { givePromoBack, onTripCompleted, runLoyaltyIfDue, takePromo } from './loyalty.js';
+import { promoDiscountOf, promoRuleError } from '../lib/loyalty.js';
+import { RETURN_FEE_LABEL, ROUTE_CHANGE_LABEL, cancelFeeCharged, gstOf, quoteFare, routeChangeExtra, type FareBreakdown, type FareQuote, type FareRule } from '../lib/fares.js';
 import { driverPay, loadDriverPay, longPickupCents, pickupPayCents, serviceFeeFor, type DriverPay, type DriverPaySettings } from '../lib/driverPay.js';
 import { haversine, route, withinZone, type LatLng } from '../lib/geo.js';
 import { pin4, shareToken, tripRef } from '../lib/ids.js';
@@ -55,20 +57,33 @@ async function activePlan(userId: string | null, c: Q = pool) {
      WHERE s.user_id = $1 AND s.status = 'active' AND s.period_end > now()`, [userId], c);
 }
 
-export async function validatePromo(code: string, userId: string | null, c: Q = pool) {
+/** Is the code usable for this rider and booking? Round 17 (migration 021) adds a budget, Darwin hours/days, services, an event area
+ *  and targeted codes (only riders granted the code). `ctx` is the booking; without it only the code and the rider are checked. */
+export async function validatePromo(code: string, userId: string | null, c: Q = pool,
+  ctx?: { service: string; at: Date; pickup: LatLng; dropoff: LatLng }) {
   const p = await one('SELECT * FROM promo_codes WHERE upper(code) = upper($1)', [code], c);
   const now = new Date();
   if (!p || !p.active) throw bad('promo_invalid', 'That promo code is not valid');
   if (p.valid_from && new Date(p.valid_from) > now) throw bad('promo_invalid', 'That promo code is not active yet');
   if (p.valid_to && new Date(p.valid_to) < now) throw bad('promo_expired', 'That promo code has expired');
   if (p.max_uses != null && p.uses >= p.max_uses) throw bad('promo_exhausted', 'That promo code has been fully used');
+  if (p.budget_cents != null && Number(p.spent_cents ?? 0) >= Number(p.budget_cents)) throw bad('promo_exhausted', 'That promo code has been fully used');
+  if (p.targeted) {
+    const g = userId ? await one('SELECT 1 FROM promo_grants WHERE code = $1 AND user_id = $2', [p.code, userId], c).catch(() => null) : null;
+    if (!g) throw bad('promo_invalid', 'That promo code is not valid');
+  }
+  if (ctx) {
+    const why = promoRuleError(p, ctx);
+    if (why) throw bad(why.code, why.message);
+  }
   if (userId) {
     const used = await one<{ n: number }>(
       `SELECT count(*)::int n FROM trips WHERE rider_id = $1 AND promo_code = $2 AND status NOT IN ('cancelled_rider','cancelled_driver','cancelled_admin','no_drivers')`,
       [userId, p.code], c);
     if (used!.n >= p.per_user_limit) throw bad('promo_used', 'You have already used this promo code');
     if (p.first_trip_only) {
-      const prior = await one<{ n: number }>(`SELECT count(*)::int n FROM trips WHERE rider_id = $1 AND status = 'completed'`, [userId], c);
+      // A first-ride code is for the first trip: not while another trip is booked or under way, nor after one is done.
+      const prior = await one<{ n: number }>(`SELECT count(*)::int n FROM trips WHERE rider_id = $1 AND status IN ('completed','scheduled','requested','accepted','arrived','in_progress')`, [userId], c);
       if (prior!.n > 0) throw bad('promo_first_trip', 'This code is for your first trip only');
     }
   }
@@ -99,7 +114,10 @@ export async function buildQuote(userId: string | null, input: QuoteInput, c: Q 
   const at = input.scheduled_for ? new Date(input.scheduled_for) : new Date();
   const holiday = await one('SELECT 1 FROM public_holidays WHERE day = ($1::timestamptz AT TIME ZONE $2)::date', [at, config.timezone], c);
   const plan = await activePlan(userId, c);
-  const promo = input.promo_code ? await validatePromo(input.promo_code, userId, c) : null;
+  const promo = input.promo_code ? await validatePromo(input.promo_code, userId, c, { service: input.service, at, pickup: input.pickup, dropoff: input.dropoff }) : null;
+  // A budget caps the discount at what's left of it.
+  const promoLeft = promo?.budget_cents != null ? Math.max(0, Number(promo.budget_cents) - Number(promo.spent_cents ?? 0)) : null;
+  const promoCap = promoLeft == null ? promo?.max_discount_cents ?? null : Math.min(promoLeft, promo?.max_discount_cents ?? promoLeft);
   let corporateDiscountPct = 0;
   if (input.corporate_account_id && userId) {
     // Dispatchers may bill any active account (e.g. an NDIS plan manager booking for a participant by phone).
@@ -136,7 +154,7 @@ export async function buildQuote(userId: string | null, input: QuoteInput, c: Q 
       waive_booking_fee: plan.waive_booking_fee,
       free_delivery: plan.deliveries_used < plan.free_deliveries,
     } : null,
-    promo: promo ? { code: promo.code, kind: promo.kind, value: promo.value, max_discount_cents: promo.max_discount_cents } : null,
+    promo: promo ? { code: promo.code, kind: promo.kind, value: promo.value, max_discount_cents: promoCap } : null,
     corporateDiscountPct,
     pointsToRedeem: input.redeem_points,
     availablePoints: user?.loyalty_points ?? 0,
@@ -367,6 +385,8 @@ export async function quoteRun(userId: string, base: Omit<QuoteInput, 'dropoff' 
 async function insertTrip(c: pg.PoolClient, userId: string, input: CreateTripInput, held: string[], run?: RunPlace) {
   const scheduled = input.scheduled_for ? new Date(input.scheduled_for) : null;
   {
+    // One booking with a code at a time per rider, so two taps can't both pass the per-rider limit.
+    if (input.promo_code) await c.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`promo:${String(input.promo_code).toUpperCase()}:${userId}`]);
     const { quote, route: r, zone, promo } = await buildQuote(userId, input, c, { opsBooking: !!input.booked_by, legFrom: run?.legFrom, extraStop: !!run?.legFrom });
     const user = await one('SELECT * FROM users WHERE id = $1 FOR UPDATE', [userId], c);
 
@@ -405,7 +425,7 @@ async function insertTrip(c: pg.PoolClient, userId: string, input: CreateTripInp
       await c.query(`INSERT INTO loyalty_ledger (user_id, points, reason, trip_id) VALUES ($1, $2, 'redeemed_on_trip', $3)`,
         [userId, -quote.points_redeemed, trip.id]);
     }
-    if (promo) await c.query('UPDATE promo_codes SET uses = uses + 1 WHERE code = $1', [promo.code]);
+    if (promo) await takePromo(c, promo.code, promoDiscountOf(quote, promo.code));
 
     if (input.kind === 'courier' && input.parcel) {
       const p = input.parcel as ReturnType<typeof checkParcel>;
@@ -684,7 +704,7 @@ export function searchOver(t: { requested_at: Date | string; scheduled_for?: Dat
 async function failNoDrivers(c: pg.PoolClient, t: any, why: 'search' | 'missed' = 'search') {
   await c.query(`UPDATE trips SET status = 'no_drivers', cancelled_at = now() WHERE id = $1`, [t.id]);
   await c.query(`UPDATE trip_offers SET status = 'expired' WHERE trip_id = $1 AND status = 'offered'`, [t.id]);
-  if (t.promo_code) await c.query('UPDATE promo_codes SET uses = greatest(uses - 1, 0) WHERE code = $1', [t.promo_code]);
+  await givePromoBack(c, t);
   await releaseHoldsAndPoints(c, t);
   await event(c, t.id, 'no_drivers', null, why === 'missed' ? { reason: 'Booking was not sent to drivers in time' } : undefined);
   // The rest of a multi-drop run was waiting for this drop's driver: it ends too.
@@ -771,6 +791,7 @@ export async function dispatchTick() {
     await sendDocExpiryReminders().catch((e) => logError('document reminders', e));
     await safety.runSafetyChecks().catch((e) => logError('safety checks', e));
     await (await import('./tax.js')).runRetentionIfDue().catch((e) => logError('record retention', e));
+    await runLoyaltyIfDue().catch((e) => logError('loyalty', e));
 
     const open = await q(`SELECT id FROM trips WHERE status = 'requested' ORDER BY requested_at LIMIT 50`);
     for (const t of open) await dispatchTrip(t.id).catch((e) => logError('dispatch', e));
@@ -790,7 +811,7 @@ async function releaseBooking(tripId: string) {
       if (!auth.ok) {
         await c.query(`UPDATE trips SET status = 'cancelled_admin', cancelled_at = now(), cancel_reason = $2 WHERE id = $1`,
           [t.id, 'Card declined when the booking was due']);
-        if (t.promo_code) await c.query('UPDATE promo_codes SET uses = greatest(uses - 1, 0) WHERE code = $1', [t.promo_code]);
+        await givePromoBack(c, t);
         await releaseHoldsAndPoints(c, { ...t, payment_status: 'none' });
         await event(c, t.id, 'payment_failed', null, { stage: 'release', reason: auth.code ?? null });
         return { t, failed: auth };
@@ -898,7 +919,8 @@ export async function redispatchTrip(tripId: string, actorId: string) {
       const auth = await placeHold(c, t);
       if (!auth.ok) throw payError(auth);
     }
-    if (t.promo_code) await c.query('UPDATE promo_codes SET uses = uses + 1 WHERE code = $1', [t.promo_code]);
+    // The use was given back at "no drivers": take it again (even if the code has since run out: this booking already had it).
+    if (t.promo_code) await takePromo(c, t.promo_code, promoDiscountOf(t.fare_breakdown, t.promo_code), { force: true });
     await c.query(`UPDATE trips SET status = 'requested', dispatch_attempts = 0, requested_at = now(), cancelled_at = NULL WHERE id = $1`, [tripId]);
     await event(c, tripId, 'redispatched', actorId);
   });
@@ -1328,28 +1350,13 @@ async function settle(c: pg.PoolClient, t: TripMoney & { final_cents: number; dr
       [t.driver_id, t.id, fuel, `Fuel surcharge ${t.ref}, 100% to you`]);
   }
 
-  // Loyalty points on what the rider actually paid
-  const pts = pointsEarned(amount, config.loyalty.pointsPerDollar);
-  if (pts > 0) {
-    await c.query('UPDATE users SET loyalty_points = loyalty_points + $2 WHERE id = $1', [t.rider_id, pts]);
-    await c.query(`INSERT INTO loyalty_ledger (user_id, points, reason, trip_id) VALUES ($1,$2,'trip_earned',$3)`, [t.rider_id, pts, t.id]);
-  }
-
   // Subscription: count free deliveries
   if (t.kind === 'courier' && (t.fare_breakdown.lines ?? []).some((l) => l.label.startsWith('Free delivery'))) {
     await c.query('UPDATE subscriptions SET deliveries_used = deliveries_used + 1 WHERE user_id = $1', [t.rider_id]);
   }
 
-  // Referral: both get bonus after referee's first completed trip
-  const ref = await one(`SELECT * FROM referrals WHERE referee_id = $1 AND status = 'pending'`, [t.rider_id], c);
-  if (ref) {
-    const bonus = config.loyalty.referralBonusPoints;
-    await c.query(`UPDATE referrals SET status = 'rewarded', rewarded_at = now() WHERE referee_id = $1`, [t.rider_id]);
-    await c.query('UPDATE users SET loyalty_points = loyalty_points + $2 WHERE id = ANY($1)', [[ref.referrer_id, ref.referee_id], bonus]);
-    await c.query(`INSERT INTO loyalty_ledger (user_id, points, reason) VALUES ($1,$3,'referral_bonus'), ($2,$3,'referral_bonus')`,
-      [ref.referrer_id, ref.referee_id, bonus]);
-    setImmediate(() => void send(ref.referrer_id, 'referral_bonus', { points: bonus }, { data: {} }));
-  }
+  // Dingo Points at the rider's tier on what they paid, the weekly streak bonus (opt-in) and the referral bonus (services/loyalty.ts).
+  await onTripCompleted(c, t, amount);
 }
 
 export async function addTip(riderId: string, tripId: string, cents: number) {
@@ -1423,7 +1430,7 @@ export async function cancelTrip(actor: { id: string; role: string }, tripId: st
     await c.query(`UPDATE trips SET status = $2, cancelled_at = now(), cancel_reason = $3, cancel_fee_cents = $4 WHERE id = $1`,
       [tripId, status, reason ?? null, fee]);
     await c.query(`UPDATE trip_offers SET status = 'expired' WHERE trip_id = $1 AND status = 'offered'`, [tripId]);
-    if (t.promo_code) await c.query('UPDATE promo_codes SET uses = greatest(uses - 1, 0) WHERE code = $1', [t.promo_code]);
+    await givePromoBack(c, t);
     await releaseHoldsAndPoints(c, t, fee);
     if (fee && t.driver_id) {
       // Driver keeps the same share as on fares (100% − the service fee fixed when they accepted, 25% by default).

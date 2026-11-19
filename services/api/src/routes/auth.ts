@@ -181,6 +181,9 @@ export default async function authRoutes(app: FastifyInstance) {
              accessibility = '{}'::jsonb, marketing_opt_in = false, deleted_at = now() WHERE id = $1`, [me.id]);
     if (await safetyReady()) await q(`UPDATE users SET trusted_contacts = '[]'::jsonb, auto_share = 'off' WHERE id = $1`, [me.id]);
     await q('DELETE FROM push_tokens WHERE user_id = $1', [me.id]);
+    // Round 17: the birthday and bonus opt-ins go with the account (migration 021); unused points are forfeited.
+    await q('DELETE FROM loyalty_profiles WHERE user_id = $1', [me.id]).catch((e) => { if (e?.code !== '42P01') throw e; });
+    await q('UPDATE users SET loyalty_points = 0 WHERE id = $1', [me.id]);
     await q('UPDATE drivers SET online = false WHERE user_id = $1', [me.id]);
     await withdrawOffers(me.id);
     // Two parameters: one value as both uuid (actor) and text (entity id) made Postgres refuse the insert, so every deletion
@@ -225,9 +228,13 @@ export default async function authRoutes(app: FastifyInstance) {
         online_sessions: await opt(q('SELECT started_at, ended_at, end_reason FROM driver_online_sessions WHERE driver_id = $1 ORDER BY started_at', [me.id]), []),
       };
     }
+    // Round 17: birthday and bonus opt-ins, gift vouchers I bought (migration 021).
+    const loyalty_profile = await opt(one('SELECT birthday_md, birthday_opt_in, streak_opt_in, updated_at FROM loyalty_profiles WHERE user_id = $1', [me.id]), null);
+    const gift_vouchers_bought = await opt(q(`SELECT value_cents, from_name, recipient_name, message, created_at, expires_at, redeemed_at IS NOT NULL AS used
+      FROM gift_vouchers WHERE purchased_by = $1 ORDER BY created_at`, [me.id]), []);
     await recordPrivacyRequest({ user_id: me.id, kind: 'access', channel: 'app', status: 'completed' }).catch((e) => logError('privacy request', e));
     return { exported_at: new Date().toISOString(), user: publicUser(user), trips, loyalty, messages, marketing_consents, notification_prefs, booking_consents,
-      safety_reports, check_ins, account_actions, driver };
+      safety_reports, check_ins, account_actions, driver, loyalty_profile, gift_vouchers_bought };
   });
 
   app.post('/me/push-token', async (req) => {

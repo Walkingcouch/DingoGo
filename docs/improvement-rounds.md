@@ -1087,3 +1087,91 @@ Ideas for next rounds:
 - Business account statements as PDF tax invoices (same writer), including NDIS plan-manager statements across participants.
 - Data-retention dashboard: table sizes and oldest rows per category, and an automatic run report emailed/texted to the owner.
 - Privacy impact assessment checklist in admin for new features (face match, audio recording) with the policy text they need.
+
+### Round 17 — rider growth and loyalty (points, tiers, promos, gift vouchers, partner cafés, win-back)
+Scan: read the loyalty, rewards, referral, Pass, promo and voucher code (`routes/rider.ts`, `routes/partner.ts`, `services/trips.ts` quote/booking/
+settle/cancel, `routes/admin.ts` promos/partners/vouchers), the rider Rewards screen, the partner portal and the admin Loyalty/Pricing pages.
+Found: points never expire and the history is the last 30 rows with codes like `reward:Free coffee`; one earn rate for everyone; promo codes check
+`uses < max_uses` before booking but add the use unconditionally (two riders at once overshoot a capped code), the per-rider limit has the same race,
+no spending budget, no time-of-day/day/service/area rules, "first trip" codes work again while the first trip is still booked; **a prepaid voucher
+card can be used before the shop has sold it** (a card taken off the counter is free money) and printed cards expire after 1 year (Australian
+Consumer Law: gift cards sold to consumers need at least 3 years); no way to buy a voucher online or give one to someone without a phone; café
+redemptions can be swapped for at a partner that has been switched off; the café's "this month" and settlement use the UTC month, and a change to
+the café's rate reprices redemptions already served; no statements or paid record for cafés; referral points paid for a $0 trip, to blocked or
+deleted referrers and without any cap; nothing brings back riders who stopped riding.
+
+Suggested:
+1. [add] Points expiry with warning: points stay while the rider is active; after `expiry_months` (12) with no points activity or trip they
+   expire, but only once a warning has been sent at least `warn_days` (30) before; ledger row `expired`; balance history with labels, running
+   balance, paging and "points safe until" date.
+2. [add] Tiers by trips in the last 12 months (Member / Silver after 10 / Gold after 30, admin-configurable) with a points multiplier on what the
+   rider earns; progress to the next tier in the app.
+3. [add] Opt-in birthday and streak bonuses: birthday (month and day only) bonus once a year on the Darwin date; weekly streak bonus after N weeks
+   in a row with a trip; both off until the rider turns them on.
+4. [fix] Promo engine: use and budget taken with a conditional update (caps can't be overshot), per-rider limit under a lock, spending budget
+   (discount capped at what's left), Darwin hours/days (off-peak), services, event area (pickup or drop-off within a radius), targeted codes only for
+   granted riders, first-ride codes refused while another trip is live or booked; promo spend given back on cancel/no drivers.
+5. [fix] Prepaid voucher cards: new shop batches must be sold at the counter before use (`needs_activation`); sold cards expire after at least
+   3 years; partner rewards from switched-off partners can't be swapped.
+6. [add] Gift vouchers bought online with the saved card (Stripe-ready, mock otherwise; idempotent), optional text to the recipient, printable
+   card with QR code for people without phones; admin batches print QR cards too.
+7. [add] Partner café portal: redemption stats (6 months, by reward, customers, repeat customers), monthly settlement statements (CSV/PDF) with
+   the rate fixed when served and the Darwin month; admin marks a month paid with a reference, which the café sees.
+8. [fix] Referrals: bonus only after a first trip that cost at least the minimum, not for blocked/deleted/test referrers, monthly cap per referrer;
+   ledger rows linked to the trip.
+9. [add] Win-back for lapsed riders: admin preview and send (app or text) to riders with marketing consent who haven't ridden in N days, at most
+   once per period, optional targeted promo code granted to each; Spam Act footer as for offers.
+10. [add] Admin: Loyalty → Programme settings and Win-back, settlements with "Mark paid", promo fields; rider Rewards screen; partner Stats and
+    Statements; docs, tests.
+
+Done (all 10). Migration: `services/api/migrations/021_loyalty.sql` (columns `promo_codes.budget_cents/spent_cents/services/hour_from/hour_to/days/
+geo_lat/geo_lng/geo_radius_m/targeted`, `reward_redemptions.settlement_cents`, `gift_vouchers.needs_activation/purchased_by/from_name/
+recipient_name/message/payment_ref`; tables `promo_grants`, `loyalty_profiles`, `loyalty_notices`, `partner_settlements`; additive, IF NOT EXISTS).
+Before it is applied (`lib/loyalty.ts` `loyaltyReady()`, re-checked once a minute): bookings with promo codes (the conditional use update works
+without it), tiers, referral rules, rewards, café redeem/stats/statements (current rate) and voucher batches work; promo rule fields, opt-ins, gift
+vouchers, win-back, targeted grants and "Mark paid" answer 503 `migration_pending`; the scheduled run does nothing. Tests: 154 → 168
+(`loyalty.test.ts` 6 unit tests — settings bounds, tiers and tier points, Darwin weeks/streaks across UTC midnight, birthdays incl. 29 Feb, expiry
+dates, promo rules (hours over midnight, days, services, event area), promo spend from fare lines, ledger labels, gift-card expiry; 8 e2e — a capped
+code booked by two riders at once is used once and given back on cancel, budget caps the discount and comes back; off-peak hours/days, services,
+event area, targeted grants, field validation, first-ride code refused while a booking stands; tier multiplier, history labels and running balance,
+warning before expiry and expiry only 30 days after it, birthday once, streak once and only when opted in, export; referral minimum fare, ledger
+trip link, monthly cap, blocked referrer void; gift voucher idempotent purchase, text, 3-year expiry, spent by someone else, buyer list, shop cards
+refused until sold, free cards usable at once; switched-off partner's reward refused, rate fixed when served, partner stats, statements with
+paid month and reference, PDF/CSV, month open/already paid; win-back only to consenting lapsed riders, once per period, targeted code granted and
+usable; everything with the 021 columns and tables renamed away). The existing ride test now expects points at the rider's tier.
+- API: new `src/lib/loyalty.ts` (settings, tiers, Darwin helpers, promo rules, ledger labels, gift-card rules, `loyaltyReady`), `src/services/
+  loyalty.ts` (`onTripCompleted`, `takePromo`/`givePromoBack`, summary/history, `runLoyalty`/`runLoyaltyIfDue`, win-back, partner stats and
+  statements with CSV/PDF, settlements, `markPaid`), `src/routes/loyalty.ts`; `services/trips.ts` (`validatePromo` rules + first-ride fix, budget
+  cap in `buildQuote`, per-rider lock and conditional use in `insertTrip`, promo given back via `givePromoBack`, redispatch retakes, `settle` →
+  `onTripCompleted`, tick runs loyalty), `routes/rider.ts` (`/loyalty` summary, inactive-partner rewards, `voucher_not_sold`), `routes/partner.ts`
+  (Darwin month, stored rate, stats, statements), `routes/admin.ts` (validated promo fields, vouchers `for_sale`/3 years, settlement month),
+  `routes/auth.ts` (export and deletion), `lib/messages.ts` (`points_expiring`, `birthday_bonus`, `streak_bonus`, `gift_voucher`).
+- Apps: rider Rewards — tier card with progress and "points safe until", bonus opt-ins (day/month only), gift vouchers (buy, text, list, printable
+  QR card), paged history with balance; partner — stats (6 months, by reward, returning customers, codes waiting) and a Statements tab (PDF/CSV, paid
+  reference); admin Loyalty — Programme (overview, settings, run now), Win-back, settlement by month with "Mark paid" and statement download,
+  voucher batches "for sale" with QR cards; Pricing → promo budget/hours/days/services/event area/targeted with spend and rules columns. Admin app
+  now depends on `qrcode` (already in the lockfile for the rider app).
+- Behaviour changes to note: points expire after 12 months with no activity (only after a warning at least 30 days earlier); riders with 10+/30+
+  trips in a year earn 1.25x/1.5x points; referral bonus needs a first trip of $5 or more and is capped at 10 a month per referrer (blocked/deleted
+  referrers get nothing); new shop voucher batches don't work until sold and expire after 3 years (admin default was 1 year); a first-ride code is
+  refused while another trip is booked; capped codes can no longer be overshot; café "this month" is the Darwin month; issued café codes past their
+  date are marked expired by the job; deleting an account clears unused points.
+- Deploy: apply migration 021 (AUTO_MIGRATE does it). No env vars. Check Loyalty → Programme defaults with the owner (expiry 12 months, tier
+  thresholds, bonus sizes, referral minimum/cap) before the first run, and tell riders about expiry. No data fix.
+
+Deferred:
+- Gift vouchers bought on the public website without an account (Stripe Checkout + email delivery): needs Stripe on and an email provider; in-app
+  purchase with the saved card covers it for now.
+- Points claw-back on refunds (still an owner decision, as in Rounds 8 and 15).
+- Automatic win-back on a schedule: kept manual so ops choose the timing and the offer; the once-per-period rule is in place for when it's automated.
+- Tier perks beyond points (free cancellations, priority dispatch for Gold): need an owner decision on cost and fairness to drivers.
+- Phone bookings paying with a voucher code by a dispatcher (the admin can top up credit; a "redeem voucher for this rider" action would be cleaner).
+
+Ideas for next rounds:
+- Public `/gift` page on the website with Stripe Checkout and a printable PDF card (the PDF writer would need an image/QR primitive).
+- Café partner self-service: offer their own rewards (proposed, approved by DingoGo), opening hours shown in the rider app, and a café QR poster
+  that opens `/invite/CODE` with the café's own referral code.
+- Promo analytics: uses, discount given, new riders acquired and repeat rate per code; A/B two win-back messages.
+- Pass + points: monthly Pass members earn a bonus each month they ride; Pass renewal with the saved card and a "Pass ends soon" notice.
+- Community champions: referral leaderboard (opt-in, first names only) with a quarterly prize funded from the referral budget.
+- Points as a liability in the BAS/accounts report (outstanding points, expired, used) for the accountant.

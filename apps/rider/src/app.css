@@ -330,3 +330,26 @@ li.row { padding: .8rem 0; }
 .bigstatus { display: flex; align-items: center; gap: 16px; padding: 16px; margin: 0 0 12px; border-radius: var(--r-md); background: var(--ochre-soft); }
 .bigstatus__i { width: 64px; height: 64px; flex: none; display: grid; place-items: center; border-radius: 50%; background: var(--ochre); color: var(--night); }
 .bigstatus strong { font-size: var(--fs-xl); line-height: 1.2; }
+/* Round 17: tier, bonuses, gift vouchers and the printable card */
+.tier { border: 1px solid var(--line); border-radius: var(--r-md); padding: .9rem 1rem; margin-top: 12px; }
+.section + .tier, .tier + .section { margin-top: 16px; }
+.tier__head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 6px; }
+.tier__head strong { font-family: var(--font-display); font-size: var(--fs-xl); }
+.tier__bar { height: 10px; border-radius: 99px; background: var(--line); overflow: hidden; margin: .6rem 0 .3rem; }
+.tier__bar span { display: block; height: 100%; background: var(--ochre); border-radius: 99px; }
+.tier__next { margin: .35rem 0 0; font-size: var(--fs-sm); }
+.bonus { display: grid; gap: 8px; padding: .7rem 0; border-bottom: 1px solid var(--line); }
+.bonus__row { display: flex; gap: 12px; align-items: flex-start; min-height: 48px; cursor: pointer; }
+.bonus__row input { width: 24px; height: 24px; margin-top: 2px; flex: none; }
+.bonus__date { display: flex; gap: 8px; align-items: flex-end; flex-wrap: wrap; padding-left: 36px; }
+.bonus__date .dg-field { margin: 0; min-width: 90px; }
+.gift { display: grid; gap: 4px; }
+.gift__values { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
+.ledger__end { display: grid; justify-items: end; gap: 2px; }
+.giftcard { display: grid; justify-items: center; gap: 6px; text-align: center; border: 2px dashed var(--ochre); border-radius: var(--r-md); padding: 1rem; margin-bottom: 12px; }
+.giftcard__title { font-family: var(--font-display); font-size: var(--fs-xl); }
+@media print {
+  body.print-card * { visibility: hidden; }
+  body.print-card .giftcard, body.print-card .giftcard * { visibility: visible; }
+  body.print-card .giftcard { position: absolute; left: 0; top: 0; width: 9cm; border-color: #000; }
+}

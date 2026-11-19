@@ -99,6 +99,7 @@ test('ride: quote → request → nearest driver offered → accept → PIN star
   assert.ok(q.quote.lines.some((l: any) => l.label === 'NT passenger levy'));
 
   const before = await one('SELECT loyalty_points FROM users WHERE phone = $1', ['+61400000100']);
+  const mult = (await call('GET', '/loyalty', 'rider')).tier.multiplier;   // Round 17: points at the rider's tier
   const t = await call('POST', '/trips', 'rider', { kind: 'ride', service: 'ride', pickup: TODD_MALL, dropoff: AIRPORT, payment_method: 'card', redeem_points: 300 });
   assert.equal(t.status, 201, JSON.stringify(t));
   rideId = t.trip.id;
@@ -130,7 +131,7 @@ test('ride: quote → request → nearest driver offered → accept → PIN star
   assert.equal(done.trip.payment_status, 'captured');
 
   const after = await one('SELECT loyalty_points FROM users WHERE phone = $1', ['+61400000100']);
-  assert.equal(after.loyalty_points, before.loyalty_points - 300 + Math.floor((done.trip.final_cents / 100) * 10));
+  assert.equal(after.loyalty_points, before.loyalty_points - 300 + Math.floor((done.trip.final_cents / 100) * 10 * mult));
 
   const ledger = await one(`SELECT sum(amount_cents)::int net FROM driver_ledger WHERE trip_id = $1`, [rideId]);
   const trip = done.trip;
@@ -3932,5 +3933,337 @@ test('before migration 020: tax statements, BAS, SERR (details shown as missing)
     for (const c of cols) await q(`ALTER TABLE drivers RENAME COLUMN ${c}_off TO ${c}`);
     for (const t of tables) await q(`ALTER TABLE ${t}_off RENAME TO ${t}`);
     resetTaxReady();
+  }
+});
+
+// ───────────── Round 17: rider growth and loyalty ─────────────
+const userIdOf = async (phone: string) => (await one<{ id: string }>('SELECT id FROM users WHERE phone = $1', [phone]))!.id;
+/** A completed trip for this rider at this time (a copy of an existing completed trip): for tiers, streaks and lapsed riders. */
+async function fakeCompletedTrip(riderId: string, at: Date) {
+  const r = await one<{ id: string }>(
+    `INSERT INTO trips SELECT (jsonb_populate_record(NULL::trips, to_jsonb(t) || jsonb_build_object('id', gen_random_uuid(), 'ref', 'DG-F' || substr(md5(random()::text), 1, 6),
+       'rider_id', $1::uuid, 'completed_at', $2::timestamptz, 'requested_at', $2::timestamptz, 'share_token', substr(md5(random()::text), 1, 20), 'promo_code', NULL))).*
+     FROM trips t WHERE t.status = 'completed' LIMIT 1 RETURNING id`, [riderId, at.toISOString()]);
+  return r!.id;
+}
+async function completeWith(riderId: string, paidCents: number, tripId?: string) {
+  const { onTripCompleted } = await import('../src/services/loyalty.js');
+  const id = tripId ?? await fakeCompletedTrip(riderId, new Date());
+  const c = await pool.connect();
+  try { await c.query('BEGIN'); await onTripCompleted(c, { id, rider_id: riderId, kind: 'ride' }, paidCents); await c.query('COMMIT'); }
+  catch (e) { await c.query('ROLLBACK'); throw e; } finally { c.release(); }
+  return id;
+}
+const resetLoyaltySettings = () => q(`DELETE FROM settings WHERE key = 'loyalty'`);
+
+test('promo engine: a capped code is used once by two riders at once; budget caps the discount and comes back on cancel', async () => {
+  await login('pr1', '+61400001701'); await login('pr2', '+61400001702');
+  assert.equal((await call('POST', '/admin/promos', 'admin', { code: 'ONLYONE', kind: 'fixed', value: 300, max_uses: 1, per_user_limit: 1, active: true })).status, 201);
+  const book = (who: string, code: string) => call('POST', '/trips', who, { kind: 'ride', service: 'ride', pickup: TODD_MALL, dropoff: HOSPITAL, payment_method: 'card', promo_code: code });
+  const both = await Promise.all([book('pr1', 'ONLYONE'), book('pr2', 'ONLYONE')]);
+  assert.deepEqual(both.map((r) => r.status).sort(), [201, 400], JSON.stringify(both.map((r) => r.error)));
+  assert.equal((await one('SELECT uses FROM promo_codes WHERE code = $1', ['ONLYONE'])).uses, 1);
+  for (const [i, r] of both.entries()) if (r.status === 201) await call('POST', `/trips/${r.trip.id}/cancel`, `pr${i + 1}`, {});
+  assert.equal((await one('SELECT uses FROM promo_codes WHERE code = $1', ['ONLYONE'])).uses, 0, 'cancel gives the use back');
+
+  // Budget $7 of $5-off: the first takes $5, the next is capped at the $2 left, then it has run out.
+  assert.equal((await call('POST', '/admin/promos', 'admin', { code: 'BUDGET7', kind: 'fixed', value: 500, budget_cents: 700, per_user_limit: 5, active: true })).status, 201);
+  const a = await book('pr1', 'BUDGET7');
+  assert.equal(a.status, 201, JSON.stringify(a));
+  assert.equal(a.trip.fare_breakdown.lines.find((l: any) => l.label === 'Promo BUDGET7').cents, -500);
+  const q2 = await call('POST', '/quotes', 'pr2', { service: 'ride', pickup: TODD_MALL, dropoff: HOSPITAL, promo_code: 'BUDGET7' });
+  assert.equal(q2.quote.lines.find((l: any) => l.label === 'Promo BUDGET7').cents, -200);
+  const b = await book('pr2', 'BUDGET7');
+  assert.equal(b.status, 201);
+  assert.equal((await one('SELECT spent_cents FROM promo_codes WHERE code = $1', ['BUDGET7'])).spent_cents, 700);
+  assert.equal((await call('POST', '/quotes', 'rider', { service: 'ride', pickup: TODD_MALL, dropoff: HOSPITAL, promo_code: 'BUDGET7' })).error, 'promo_exhausted');
+  await call('POST', `/trips/${a.trip.id}/cancel`, 'pr1', {});
+  assert.equal((await one('SELECT spent_cents, uses FROM promo_codes WHERE code = $1', ['BUDGET7'])).spent_cents, 200, 'the $5 comes back to the budget');
+  await call('POST', `/trips/${b.trip.id}/cancel`, 'pr2', {});
+});
+
+test('promo rules: off-peak hours and days (Darwin), services, event area, targeted codes, first ride not while another is booked', async () => {
+  const now = new Date(Date.now() + 9.5 * 3600e3);
+  const h = now.getUTCHours();
+  const quote = (who: string, code: string, extra: any = {}) => call('POST', '/quotes', who, { service: 'ride', pickup: TODD_MALL, dropoff: AIRPORT, promo_code: code, ...extra });
+  const mk = (b: any) => call('POST', '/admin/promos', 'admin', { kind: 'percent', value: 10, per_user_limit: 3, active: true, ...b });
+  assert.equal((await mk({ code: 'NOTNOW', hour_from: (h + 2) % 24, hour_to: (h + 3) % 24 || 24 })).status, 201);
+  assert.equal((await quote('pr1', 'NOTNOW')).error, 'promo_time');
+  assert.equal((await mk({ code: 'RIGHTNOW', hour_from: h, hour_to: h + 1 })).status, 201);
+  assert.equal((await quote('pr1', 'RIGHTNOW')).status, 200);
+  assert.equal((await mk({ code: 'OTHERDAY', days: [(now.getUTCDay() + 3) % 7] })).status, 201);
+  assert.equal((await quote('pr1', 'OTHERDAY')).error, 'promo_time');
+  assert.equal((await mk({ code: 'PARCELS', services: ['courier_s', 'courier_m'] })).status, 201);
+  assert.equal((await quote('pr1', 'PARCELS')).error, 'promo_service');
+  assert.equal((await mk({ code: 'AIRPORTEVENT', geo_lat: AIRPORT.lat, geo_lng: AIRPORT.lng, geo_radius_m: 800 })).status, 201);
+  assert.equal((await quote('pr1', 'AIRPORTEVENT')).status, 200, 'drop-off at the event');
+  assert.equal((await quote('pr1', 'AIRPORTEVENT', { dropoff: HOSPITAL })).error, 'promo_area');
+  assert.equal((await mk({ code: 'HALFHOUR', hour_from: 3 })).error, 'invalid_hours');
+  assert.equal((await mk({ code: 'NOCENTRE', geo_radius_m: 300 })).error, 'invalid_area');
+  assert.equal((await mk({ code: 'TOOMUCH', value: 150 })).error, 'invalid_value');
+
+  assert.equal((await mk({ code: 'JUSTYOU', targeted: true })).status, 201);
+  assert.equal((await quote('pr1', 'JUSTYOU')).error, 'promo_invalid');
+  const g = await call('POST', '/admin/promos/JUSTYOU/grants', 'admin', { phones: ['0400 001 701', '0400 999 999'] });
+  assert.deepEqual([g.granted, g.not_found], [1, ['+61400999999']]);
+  assert.equal((await quote('pr1', 'JUSTYOU')).status, 200);
+  assert.equal((await quote('pr2', 'JUSTYOU')).error, 'promo_invalid');
+  assert.equal((await call('GET', '/admin/promos/JUSTYOU/grants', 'admin')).grants.length, 1);
+
+  // First-ride codes: a new rider books a ride for tomorrow with one; another first-ride code is refused while that booking stands.
+  await login('pr3', '+61400001703');
+  for (const code of ['FIRSTA', 'FIRSTB']) assert.equal((await mk({ code, first_trip_only: true, per_user_limit: 1 })).status, 201);
+  const later = new Date(Date.now() + 26 * 3600e3).toISOString();
+  const t = await call('POST', '/trips', 'pr3', { kind: 'ride', service: 'ride', pickup: TODD_MALL, dropoff: AIRPORT, payment_method: 'card', promo_code: 'FIRSTA', scheduled_for: later });
+  assert.equal(t.status, 201, JSON.stringify(t));
+  assert.equal((await quote('pr3', 'FIRSTB')).error, 'promo_first_trip');
+  await call('POST', `/trips/${t.trip.id}/cancel`, 'pr3', {});
+  assert.equal((await quote('pr3', 'FIRSTB')).status, 200, 'cancelled: still their first trip');
+});
+
+test('points: tier multiplier, history with labels and balance, expiry only after a warning, birthday and streak bonuses once', async () => {
+  await login('px', '+61400001704');
+  const px = await userIdOf('+61400001704');
+  let l = await call('GET', '/loyalty', 'px');
+  assert.deepEqual([l.tier.key, l.tier.next.name, l.tier.next.trips_to_go], ['member', 'Silver', 10]);
+  assert.equal(l.expiry.expires_at, null, 'no points, nothing to expire');
+  await call('PATCH', `/admin/users/${px}`, 'admin', { add_points: 800 });
+  l = await call('GET', '/loyalty', 'px');
+  assert.ok(new Date(l.expiry.expires_at).getTime() > Date.now() + 360 * 86400e3);
+  assert.equal(l.ledger[0].label, 'Adjustment by DingoGo');
+
+  // Silver after 10 trips in the last year: points at 1.25x.
+  for (let i = 0; i < 10; i++) await fakeCompletedTrip(px, new Date(Date.now() - (i + 2) * 86400e3 * 20));
+  await completeWith(px, 2000);
+  const h = await call('GET', '/loyalty/history', 'px');
+  assert.deepEqual([h.items[0].reason, h.items[0].points, h.items[0].label, h.items[0].balance, h.items[1].balance], ['trip_earned', 250, 'Trip', 1050, 800]);
+  assert.equal(h.points, 1050);
+  assert.equal((await call('GET', '/loyalty', 'px')).tier.key, 'silver');
+
+  // Inactive for 13 months: a warning first (points kept), expiry only once the warning is 30 days old.
+  await q(`UPDATE loyalty_ledger SET created_at = now() - interval '13 months' WHERE user_id = $1`, [px]);
+  await q(`UPDATE trips SET completed_at = now() - interval '13 months', requested_at = now() - interval '13 months' WHERE rider_id = $1`, [px]);
+  let run = await call('POST', '/admin/loyalty/run', 'admin');
+  assert.ok(run.warned >= 1, JSON.stringify(run));
+  assert.equal((await one('SELECT loyalty_points FROM users WHERE id = $1', [px])).loyalty_points, 1050);
+  assert.ok(await one(`SELECT 1 FROM notifications WHERE user_id = $1 AND title = 'Your Dingo Points are about to expire'`, [px]));
+  run = await call('POST', '/admin/loyalty/run', 'admin');
+  assert.equal((await one('SELECT loyalty_points FROM users WHERE id = $1', [px])).loyalty_points, 1050, 'warning not 30 days old yet');
+  await q(`UPDATE loyalty_notices SET created_at = now() - interval '31 days' WHERE user_id = $1 AND kind = 'expiry_warning'`, [px]);
+  run = await call('POST', '/admin/loyalty/run', 'admin');
+  assert.ok(run.expired >= 1);
+  assert.equal((await one('SELECT loyalty_points FROM users WHERE id = $1', [px])).loyalty_points, 0);
+  const h2 = await call('GET', '/loyalty/history', 'px');
+  assert.deepEqual([h2.items[0].label, h2.items[0].points, h2.items[0].balance], ['Expired (no activity)', -1050, 0]);
+
+  // Birthday (opt-in, month and day only) once a year.
+  assert.equal((await call('PUT', '/loyalty/profile', 'px', { birthday_opt_in: true })).error, 'birthday_required');
+  assert.equal((await call('PUT', '/loyalty/profile', 'px', { birthday_md: '1990-05-31' })).status, 400);
+  const md = new Date(Date.now() + 9.5 * 3600e3).toISOString().slice(5, 10);
+  assert.deepEqual((await call('PUT', '/loyalty/profile', 'px', { birthday_md: md, birthday_opt_in: true })).profile, { birthday_md: md, birthday_opt_in: true, streak_opt_in: false });
+  run = await call('POST', '/admin/loyalty/run', 'admin');
+  assert.ok(run.birthdays >= 1);
+  await call('POST', '/admin/loyalty/run', 'admin');
+  assert.equal((await one<{ n: number }>(`SELECT count(*)::int n FROM loyalty_ledger WHERE user_id = $1 AND reason = 'birthday_bonus'`, [px]))!.n, 1);
+  assert.equal((await call('GET', '/loyalty/history', 'px')).items[0].label, 'Birthday bonus');
+
+  // Streak (opt-in): a trip in each of 4 weeks in a row earns the bonus once.
+  await login('ps', '+61400001705');
+  const ps = await userIdOf('+61400001705');
+  for (const w of [1, 2, 3]) await fakeCompletedTrip(ps, new Date(Date.now() - w * 7 * 86400e3));
+  await completeWith(ps, 1000);
+  assert.equal((await one<{ n: number }>(`SELECT count(*)::int n FROM loyalty_ledger WHERE user_id = $1 AND reason = 'streak_bonus'`, [ps]))!.n, 0, 'not opted in');
+  await call('PUT', '/loyalty/profile', 'ps', { streak_opt_in: true });
+  await completeWith(ps, 1000);
+  await completeWith(ps, 1000);
+  assert.equal((await one<{ n: number }>(`SELECT count(*)::int n FROM loyalty_ledger WHERE user_id = $1 AND reason = 'streak_bonus'`, [ps]))!.n, 1);
+  assert.equal((await call('GET', '/loyalty', 'ps')).streak_weeks_now, 4);
+  const exp = await call('GET', '/me/export', 'px');
+  assert.equal(exp.loyalty_profile.birthday_md, md);
+});
+
+test('referrals: bonus after a first trip over the minimum, not for blocked referrers, capped per month for the referrer', async () => {
+  await login('ra', '+61400001706');
+  const ra = await userIdOf('+61400001706');
+  const code = (await call('GET', '/loyalty', 'ra')).referral_code;
+  const signUp = async (who: string, phone: string) => {
+    const r = await call('POST', '/auth/otp/request', undefined, { phone }, `10.251.0.${phone.slice(-2)}`);
+    const v = await call('POST', '/auth/otp/verify', undefined, { phone, code: r.dev_code, app: 'rider', referral_code: code }, `10.251.0.${phone.slice(-2)}`);
+    tokens[who] = v.token;
+    return userIdOf(phone);
+  };
+  const rb = await signUp('rb', '+61400001707');
+  await completeWith(rb, 300);
+  assert.equal((await one('SELECT status FROM referrals WHERE referee_id = $1', [rb])).status, 'pending', '$3 trip is under the minimum');
+  const tid = await completeWith(rb, 2000);
+  assert.equal((await one('SELECT status FROM referrals WHERE referee_id = $1', [rb])).status, 'rewarded');
+  const rows = await q(`SELECT user_id, trip_id FROM loyalty_ledger WHERE reason = 'referral_bonus' AND trip_id = $1`, [tid]);
+  assert.deepEqual(rows.map((r: any) => r.user_id).sort(), [ra, rb].sort());
+
+  // Cap of 1 a month: the next friend gets theirs, the referrer doesn't.
+  await q(`INSERT INTO settings (key, value) VALUES ('loyalty', '{"referral_monthly_cap": 1}') ON CONFLICT (key) DO UPDATE SET value = excluded.value`);
+  const rc = await signUp('rc', '+61400001708');
+  const t2 = await completeWith(rc, 2000);
+  assert.deepEqual((await q(`SELECT user_id FROM loyalty_ledger WHERE reason = 'referral_bonus' AND trip_id = $1`, [t2])).map((r: any) => r.user_id), [rc]);
+  // A blocked referrer: the referral is void.
+  await resetLoyaltySettings();
+  const rd = await signUp('rd', '+61400001709');
+  await q('UPDATE users SET blocked = true WHERE id = $1', [ra]);
+  await completeWith(rd, 2000);
+  assert.equal((await one('SELECT status FROM referrals WHERE referee_id = $1', [rd])).status, 'void');
+  await q('UPDATE users SET blocked = false WHERE id = $1', [ra]);
+});
+
+test('gift vouchers: bought with the card once per Idempotency-Key, texted, 3-year expiry, spent by someone else; shop cards only once sold', async () => {
+  await login('gb', '+61400001710'); await login('gr', '+61400001711');
+  const buy = (body: any, key: string) => app.inject({ method: 'POST', url: '/gift-vouchers', payload: body, headers: { authorization: `Bearer ${tokens.gb}`, 'idempotency-key': key } })
+    .then((r) => ({ status: r.statusCode, ...JSON.parse(r.body) }));
+  assert.equal((await buy({ value_cents: 1234 }, 'gift-key-0001')).status, 400);
+  const g = await buy({ value_cents: 5000, from_name: 'Aunty May', recipient_name: 'Jo', message: 'For your trips to the clinic', send_to: '0400 001 711' }, 'gift-key-0002');
+  assert.equal(g.status, 201, JSON.stringify(g));
+  assert.equal(g.texted, true);
+  assert.ok(new Date(g.voucher.expires_at).getTime() - Date.now() > 3 * 365 * 86400e3);
+  const again = await buy({ value_cents: 5000, from_name: 'Aunty May' }, 'gift-key-0002');
+  assert.deepEqual([again.status, again.replayed, again.voucher.code], [200, true, g.voucher.code]);
+  assert.equal((await one<{ n: number }>(`SELECT count(*)::int n FROM payments WHERE user_id = (SELECT id FROM users WHERE phone = '+61400001710') AND kind = 'gift_voucher'`))!.n, 1);
+  assert.ok(await one(`SELECT 1 FROM comms_log WHERE template = 'gift_voucher'`).catch(() => true));
+  const before = (await call('GET', '/payment-methods', 'gr')).wallet_cents;
+  const red = await call('POST', '/wallet/voucher', 'gr', { code: g.voucher.code });
+  assert.deepEqual([red.status, red.added_cents, red.wallet_cents], [200, 5000, before + 5000]);
+  const mine = await call('GET', '/gift-vouchers', 'gb');
+  assert.deepEqual([mine.vouchers.length, mine.vouchers[0].used, mine.vouchers[0].recipient_name], [1, true, 'Jo']);
+
+  // Shop batch: can't be used until the café records the sale; at least 3 years.
+  const batch = await call('POST', '/admin/vouchers', 'admin', { count: 1, value_cents: 2000, batch: 'r17-shop', valid_days: 365 });
+  assert.equal(batch.needs_activation, true);
+  assert.ok(batch.valid_days >= 3 * 365);
+  assert.equal((await call('POST', '/wallet/voucher', 'gr', { code: batch.codes[0] })).error, 'voucher_not_sold');
+  assert.equal((await call('POST', '/partner/vouchers/sell', 'cafe', { code: batch.codes[0] })).status, 200);
+  assert.equal((await call('POST', '/wallet/voucher', 'gr', { code: batch.codes[0] })).status, 200);
+  // Given away free by a community programme: usable at once, shorter expiry allowed.
+  const free = await call('POST', '/admin/vouchers', 'admin', { count: 1, value_cents: 1000, batch: 'r17-free', valid_days: 90, for_sale: false });
+  assert.deepEqual([free.needs_activation, free.valid_days], [false, 90]);
+  assert.equal((await call('POST', '/wallet/voucher', 'gr', { code: free.codes[0] })).status, 200);
+});
+
+test('partner cafés: rewards from switched-off partners can not be swapped; rate fixed when served; stats; statements and paid months', async () => {
+  const me = await call('GET', '/partner/me', 'cafe');
+  const pid = me.partner.id;
+  await login('pc', '+61400001712');
+  const pc = await userIdOf('+61400001712');
+  await call('PATCH', `/admin/users/${pc}`, 'admin', { add_points: 5000 });
+  const reward = me.rewards[0];
+  // Another café, switched off: its reward can't be swapped for.
+  const other = (await call('GET', '/admin/partners', 'admin')).items.find((p: any) => p.id !== pid);
+  const otherReward = (await call('GET', '/admin/rewards', 'admin')).items.find((r: any) => r.partner_id === other.id);
+  await call('PATCH', `/admin/partners/${other.id}`, 'admin', { active: false });
+  assert.equal((await call('POST', `/loyalty/rewards/${otherReward.id}/redeem`, 'pc')).status, 404);
+  await call('PATCH', `/admin/partners/${other.id}`, 'admin', { active: true });
+
+  const codes: string[] = [];
+  for (let i = 0; i < 3; i++) codes.push((await call('POST', `/loyalty/rewards/${reward.id}/redeem`, 'pc')).redemption.code);
+  const statsBefore = await call('GET', '/partner/stats', 'cafe');
+  for (const c of codes.slice(0, 2)) assert.equal((await call('POST', '/partner/redeem', 'cafe', { code: c })).status, 200);
+  const rate = me.partner.settlement_cents_per_redemption;
+  await call('PATCH', `/admin/partners/${pid}`, 'admin', { settlement_cents_per_redemption: rate + 100 });
+  const st = await call('GET', `/partner/statements/${statsBefore.month}`, 'cafe');
+  const mine = st.statement.lines.filter((l: any) => codes.includes(l.code));
+  assert.deepEqual(mine.map((l: any) => l.cents), [rate, rate], 'served at the old rate');
+  const stats = await call('GET', '/partner/stats', 'cafe');
+  assert.equal(stats.months[0].redeemed, statsBefore.months[0].redeemed + 2);
+  assert.ok(stats.by_reward.some((r: any) => r.title === reward.title));
+  assert.ok(stats.repeat_customers_6m >= 1);
+  assert.ok(stats.codes_waiting >= 1);
+  await call('PATCH', `/admin/partners/${pid}`, 'admin', { settlement_cents_per_redemption: rate });
+
+  // Pay last month: this month is still open; a month can be paid once; the café sees it paid with the reference.
+  await q(`UPDATE reward_redemptions SET redeemed_at = date_trunc('month', now() AT TIME ZONE 'Australia/Darwin') AT TIME ZONE 'Australia/Darwin' - interval '3 days' WHERE code = $1`, [codes[0]]);
+  const months = (await call('GET', '/partner/statements', 'cafe')).statements;
+  const last = months[1].month;
+  assert.equal(months[1].status, 'due');
+  assert.equal((await call('POST', '/admin/partner-settlements', 'admin', { partner_id: pid, month: months[0].month })).error, 'month_open');
+  const paid = await call('POST', '/admin/partner-settlements', 'admin', { partner_id: pid, month: last, paid_ref: 'EFT 20261201' });
+  assert.equal(paid.status, 200, JSON.stringify(paid));
+  assert.equal((await call('POST', '/admin/partner-settlements', 'admin', { partner_id: pid, month: last })).error, 'already_paid');
+  const after = (await call('GET', '/partner/statements', 'cafe')).statements[1];
+  assert.deepEqual([after.status, after.paid.paid_ref], ['paid', 'EFT 20261201']);
+  const pdf = await app.inject({ method: 'GET', url: `/partner/statements/${last}?format=pdf`, headers: { authorization: `Bearer ${tokens.cafe}` } });
+  assert.equal(pdf.statusCode, 200);
+  assert.equal(pdf.body.slice(0, 5), '%PDF-');
+  const csv = await app.inject({ method: 'GET', url: `/partner/statements/${last}?format=csv`, headers: { authorization: `Bearer ${tokens.cafe}` } });
+  assert.match(csv.body, new RegExp(codes[0]));
+  const adm = await call('GET', `/admin/partner-settlements?month=${last}`, 'admin');
+  assert.equal(adm.partners.find((p: any) => p.id === pid).paid_ref, 'EFT 20261201');
+  assert.equal((await call('GET', '/partner/statements/2026-13', 'cafe')).error, 'bad_month');
+});
+
+test('win-back: only riders who said yes to offers and stopped riding; once per period; targeted code granted', async () => {
+  await login('wl', '+61400001713'); await login('wn', '+61400001714');
+  const wl = await userIdOf('+61400001713'), wn = await userIdOf('+61400001714');
+  await fakeCompletedTrip(wl, new Date(Date.now() - 100 * 86400e3));
+  await fakeCompletedTrip(wn, new Date(Date.now() - 100 * 86400e3));
+  await q('UPDATE users SET marketing_opt_in = true WHERE id = $1', [wl]);
+  const pre = await call('GET', '/admin/loyalty/winback?days=60', 'admin');
+  assert.ok(pre.count >= 1);
+  assert.equal((await call('POST', '/admin/promos', 'admin', { code: 'COMEBACK', kind: 'fixed', value: 500, per_user_limit: 1, targeted: true, active: true })).status, 201);
+  const sent = await call('POST', '/admin/loyalty/winback', 'admin', { days: 60, title: 'We miss you', body: '$5 off your next ride this week.', promo_code: 'comeback' });
+  assert.ok(sent.sent >= 1, JSON.stringify(sent));
+  assert.equal(sent.promo_code, 'COMEBACK');
+  const n = await one(`SELECT body, category FROM notifications WHERE user_id = $1 AND title = 'We miss you'`, [wl]);
+  assert.equal(n.category, 'promo');
+  assert.match(n.body, /COMEBACK/);
+  assert.match(n.body, /Turn off offers/);
+  assert.equal(await one(`SELECT 1 FROM notifications WHERE user_id = $1 AND title = 'We miss you'`, [wn]), null, 'no consent, no message');
+  assert.ok(await one('SELECT 1 FROM promo_grants WHERE code = $1 AND user_id = $2', ['COMEBACK', wl]));
+  assert.equal((await call('POST', '/quotes', 'wl', { service: 'ride', pickup: TODD_MALL, dropoff: HOSPITAL, promo_code: 'COMEBACK' })).status, 200);
+  const again = await call('POST', '/admin/loyalty/winback', 'admin', { days: 60, title: 'We miss you', body: 'Again' });
+  assert.equal(await one(`SELECT 1 FROM notifications WHERE user_id = $1 AND body LIKE 'Again%'`, [wl]), null, 'once per period');
+  assert.ok(again.sent >= 0);
+  const ov = await call('GET', '/admin/loyalty/overview', 'admin');
+  assert.ok(ov.points_outstanding > 0 && ov.tiers.length === 3);
+  const set = await call('PUT', '/admin/loyalty/settings', 'admin', { expiry_months: 18, tiers: [{ key: 'member', name: 'Member', min_trips: 0, multiplier: 1 }] });
+  assert.deepEqual([set.settings.expiry_months, set.settings.tiers.length], [18, 1]);
+  await resetLoyaltySettings();
+});
+
+test('before migration 021: bookings with promo codes, rewards, café redeem and statements work; gift vouchers and opt-ins say migration_pending', async () => {
+  const { resetLoyaltyReady } = await import('../src/lib/loyalty.js');
+  const cols: [string, string][] = [['promo_codes', 'budget_cents'], ['promo_codes', 'spent_cents'], ['promo_codes', 'targeted'], ['reward_redemptions', 'settlement_cents'],
+    ['gift_vouchers', 'needs_activation'], ['gift_vouchers', 'purchased_by']];
+  const tables = ['promo_grants', 'loyalty_profiles', 'loyalty_notices', 'partner_settlements'];
+  for (const [t, c] of cols) await q(`ALTER TABLE ${t} RENAME COLUMN ${c} TO ${c}_off`);
+  for (const t of tables) await q(`ALTER TABLE ${t} RENAME TO ${t}_off`);
+  resetLoyaltyReady();
+  try {
+    assert.equal((await call('POST', '/admin/promos', 'admin', { code: 'OLDSTYLE', kind: 'fixed', value: 200, max_uses: 5, active: true })).status, 201);
+    assert.equal((await call('POST', '/admin/promos', 'admin', { code: 'NEWSTYLE', kind: 'fixed', value: 200, budget_cents: 1000, active: true })).error, 'migration_pending');
+    await login('old1', '+61400001715');
+    const t = await call('POST', '/trips', 'old1', { kind: 'ride', service: 'ride', pickup: TODD_MALL, dropoff: HOSPITAL, payment_method: 'card', promo_code: 'OLDSTYLE' });
+    assert.equal(t.status, 201, JSON.stringify(t));
+    assert.equal((await one('SELECT uses FROM promo_codes WHERE code = $1', ['OLDSTYLE'])).uses, 1);
+    await call('POST', `/trips/${t.trip.id}/cancel`, 'old1', {});
+    assert.equal((await one('SELECT uses FROM promo_codes WHERE code = $1', ['OLDSTYLE'])).uses, 0);
+    const l = await call('GET', '/loyalty', 'old1');
+    assert.deepEqual([l.status, l.profile], [200, null]);
+    assert.equal((await call('PUT', '/loyalty/profile', 'old1', { streak_opt_in: true })).error, 'migration_pending');
+    assert.equal((await call('POST', '/gift-vouchers', 'old1', { value_cents: 2000 })).error, 'migration_pending');
+    assert.equal((await call('GET', '/gift-vouchers', 'old1')).ready, false);
+    assert.equal((await call('GET', '/partner/me', 'cafe')).status, 200);
+    assert.equal((await call('GET', '/partner/statements', 'cafe')).status, 200);
+    assert.equal((await call('GET', '/partner/stats', 'cafe')).status, 200);
+    assert.equal((await call('GET', '/admin/redemptions', 'admin')).status, 200);
+    assert.equal((await call('POST', '/admin/vouchers', 'admin', { count: 1, value_cents: 1000, batch: 'r17-old' })).status, 200);
+    assert.equal((await call('POST', '/admin/loyalty/run', 'admin')).ready, false);
+    assert.equal((await call('GET', '/admin/loyalty/winback', 'admin')).error, 'migration_pending');
+    await login('old2', '+61400001716');
+    await call('PATCH', `/admin/users/${await userIdOf('+61400001716')}`, 'admin', { add_points: 900 });
+    const rw = (await call('GET', '/partner/me', 'cafe')).rewards[0];
+    const code = (await call('POST', `/loyalty/rewards/${rw.id}/redeem`, 'old2')).redemption.code;
+    assert.equal((await call('POST', '/partner/redeem', 'cafe', { code })).status, 200);
+    assert.equal((await call('GET', '/me/export', 'old2')).status, 200);
+  } finally {
+    for (const [t, c] of cols) await q(`ALTER TABLE ${t} RENAME COLUMN ${c}_off TO ${c}`);
+    for (const t of tables) await q(`ALTER TABLE ${t}_off RENAME TO ${t}`);
+    resetLoyaltyReady();
   }
 });

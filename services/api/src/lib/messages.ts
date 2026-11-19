@@ -161,6 +161,15 @@ export const templates = {
     render: (v) => ({ title: `Re: ${v.subject}`, body: v.resolution }) }),
   referral_bonus: t<{ points: number }>({ category: 'account',
     render: (v) => ({ title: 'Referral bonus', body: `Your friend took their first DingoGo trip — ${v.points} Dingo Points added.` }) }),
+  // Round 17: loyalty. Points expiring (service notice about the rider's own balance), opt-in bonuses, a gift voucher texted to someone.
+  points_expiring: t<{ points: number; date: string }>({ category: 'account',
+    render: (v) => ({ title: 'Your Dingo Points are about to expire', body: `Your ${v.points} Dingo Points expire on ${v.date}. Take a trip or swap them for a reward before then to keep them.` }) }),
+  birthday_bonus: t<{ points: number }>({ category: 'account',
+    render: (v) => ({ title: 'Happy birthday from DingoGo', body: `We've added ${v.points} Dingo Points to your account. Have a great day.` }) }),
+  streak_bonus: t<{ points: number; weeks: number }>({ category: 'account',
+    render: (v) => ({ title: `${v.weeks} weeks in a row`, body: `You've ridden with DingoGo ${v.weeks} weeks in a row. ${v.points} bonus Dingo Points added.` }) }),
+  gift_voucher: t<{ from: string; cents: number; code: string; expires: string }>({ category: 'account', smsKind: 'transactional',
+    render: (v) => ({ sms: `DingoGo: ${v.from} sent you ${money(v.cents)} of DingoGo credit. Code ${v.code}, use by ${v.expires}. Add it in the app (Wallet) or quote it when you call to book.` }) }),
 
   // ── Driver ──
   trip_given_away: t<{ ref: string }>({ category: 'trip',

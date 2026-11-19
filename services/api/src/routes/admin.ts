@@ -4,6 +4,8 @@ import { requireUser } from '../auth.js';
 import { ApiError, bad, conflict, notFound } from '../lib/errors.js';
 import { APPLICATION_STAGES, STAGE_KEYS, applicationsPending, applicationsReady } from '../lib/growth.js';
 import { displayKey, referralCode, voucherCode } from '../lib/ids.js';
+import { GIFT_CARD_MIN_DAYS, darwin, loyaltyReady } from '../lib/loyalty.js';
+import { giftCardExpiry, settlementsFor } from '../services/loyalty.js';
 import { parse, phone, z } from '../lib/validate.js';
 import { VERIFIED_SOURCES, greenSql, normaliseRego, vehicleAgeRule, vehicleOut } from '../lib/vehicles.js';
 import { STATES, ageRule, getJurisdiction, listJurisdictions } from '../lib/jurisdictions.js';
@@ -59,6 +61,23 @@ const admin = (req: FastifyRequest) => requireUser(req, 'admin');
 const audit = (actorId: string, action: string, entity: string, entityId: string, data?: unknown) => writeAudit(actorId, action, entity, entityId, data);
 
 /** Minimal CRUD for config-style tables. Only whitelisted columns are writable. */
+/** Promo code fields (Round 17). Hours are Darwin time, `hour_to` exclusive (22 to 6 runs over midnight); days 0 = Sunday. */
+const promoFields = z.object({
+  code: z.string().trim().regex(/^[A-Za-z0-9_-]{3,30}$/, 'Code is 3 to 30 letters or numbers').optional(),
+  kind: z.enum(['percent', 'fixed']).optional(), value: z.number().int().min(0).max(100000).optional(),
+  max_discount_cents: z.number().int().min(0).max(100000).nullable().optional(), max_uses: z.number().int().min(1).nullable().optional(),
+  per_user_limit: z.number().int().min(1).max(100).optional(), first_trip_only: z.boolean().optional(),
+  valid_from: z.string().datetime({ offset: true }).nullable().optional().or(z.string().regex(/^\d{4}-\d{2}-\d{2}/).nullable().optional()),
+  valid_to: z.string().datetime({ offset: true }).nullable().optional().or(z.string().regex(/^\d{4}-\d{2}-\d{2}/).nullable().optional()),
+  active: z.boolean().optional(), description: z.string().max(300).nullable().optional(),
+  budget_cents: z.number().int().min(0).max(10_000_000).nullable().optional(),
+  services: z.array(z.string().max(40)).max(20).nullable().optional().transform((v) => (v && v.length ? v : v === undefined ? undefined : null)),
+  hour_from: z.number().int().min(0).max(23).nullable().optional(), hour_to: z.number().int().min(1).max(24).nullable().optional(),
+  days: z.array(z.coerce.number().int().min(0).max(6)).max(7).nullable().optional().transform((v) => (v && v.length ? [...new Set(v)].sort() : v === undefined ? undefined : null)),
+  geo_lat: z.number().min(-45).max(-9).nullable().optional(), geo_lng: z.number().min(110).max(155).nullable().optional(),
+  geo_radius_m: z.number().int().min(50).max(20000).nullable().optional(), targeted: z.boolean().optional(),
+});
+
 function crud(app: FastifyInstance, path: string, table: string, cols: string[],
   opts: { pk?: string; order?: string; idType?: 'uuid' | 'text'; list?: boolean; out?: (row: any) => any;
     /** Validate / derive fields before writing. `id` is set on update. */
@@ -739,9 +758,22 @@ export default async function adminRoutes(app: FastifyInstance) {
       'wait_per_min_cents', 'night_pct', 'holiday_pct', 'levy_cents', 'active', 'description'],
     { pk: 'service', order: 'service' });
   crud(app, 'zones', 'zones', ['id', 'name', 'centre_lat', 'centre_lng', 'radius_km', 'active', 'demand_multiplier', 'launch_note', 'state', 'timezone'], { order: 'state, name' });
+  // Round 17 (migration 021): budget, Darwin hours/days, services, event area and targeted codes; checked before they're written.
   crud(app, 'promos', 'promo_codes',
-    ['code', 'kind', 'value', 'max_discount_cents', 'max_uses', 'per_user_limit', 'first_trip_only', 'valid_from', 'valid_to', 'active', 'description'],
-    { pk: 'code', order: 'code' });
+    ['code', 'kind', 'value', 'max_discount_cents', 'max_uses', 'per_user_limit', 'first_trip_only', 'valid_from', 'valid_to', 'active', 'description',
+      'budget_cents', 'services', 'hour_from', 'hour_to', 'days', 'geo_lat', 'geo_lng', 'geo_radius_m', 'targeted'],
+    { pk: 'code', order: 'code', prepare: async (d) => {
+      const v = parse(promoFields, d);
+      if (v.kind === 'percent' && v.value != null && v.value > 100) throw bad('invalid_value', 'A percentage is 0 to 100');
+      const rules = ['budget_cents', 'services', 'hour_from', 'hour_to', 'days', 'geo_lat', 'geo_lng', 'geo_radius_m', 'targeted'];
+      if (!(await loyaltyReady()) && rules.some((k) => (v as any)[k] != null && (v as any)[k] !== false)) {
+        throw new ApiError(503, 'migration_pending', 'Budgets, times, services, event areas and targeted codes need database migration 021');
+      }
+      if ((v.hour_from == null) !== (v.hour_to == null) && ('hour_from' in v || 'hour_to' in v)) throw bad('invalid_hours', 'Set both the start and end hour, or neither');
+      if (v.geo_radius_m != null && (v.geo_lat == null || v.geo_lng == null)) throw bad('invalid_area', 'An event area needs a centre (latitude and longitude) and a radius');
+      // Before 021 the new columns don't exist: leave them out of the write.
+      return (await loyaltyReady()) ? v : Object.fromEntries(Object.entries(v).filter(([k]) => !rules.includes(k)));
+    } });
   crud(app, 'holidays', 'public_holidays', ['day', 'name'], { pk: 'day', order: 'day' });
   crud(app, 'plans', 'plans', ['code', 'name', 'price_cents', 'ride_discount_pct', 'free_deliveries', 'waive_booking_fee', 'perks', 'active'], { pk: 'code', order: 'price_cents' });
   crud(app, 'tours', 'tour_packages',
@@ -757,10 +789,8 @@ export default async function adminRoutes(app: FastifyInstance) {
       `SELECT rr.*, r.title, p.name AS partner_name, p.settlement_cents_per_redemption, u.name AS user_name
        FROM reward_redemptions rr JOIN rewards r ON r.id = rr.reward_id LEFT JOIN partners p ON p.id = r.partner_id JOIN users u ON u.id = rr.user_id
        ORDER BY rr.issued_at DESC LIMIT 300`),
-      settlement: await q(
-        `SELECT p.id, p.name, count(*)::int redeemed, (count(*) * p.settlement_cents_per_redemption)::int owed_cents
-         FROM reward_redemptions rr JOIN rewards r ON r.id = rr.reward_id JOIN partners p ON p.id = r.partner_id
-         WHERE rr.status = 'redeemed' AND rr.redeemed_at > date_trunc('month', now()) GROUP BY p.id ORDER BY owed_cents DESC`) };
+      // This Darwin month, each reward at the rate fixed when it was served (Round 17).
+      settlement: await settlementsFor(darwin().month) };
   });
 
   // ───────────── Vouchers (cash customers) ─────────────
@@ -770,16 +800,23 @@ export default async function adminRoutes(app: FastifyInstance) {
   });
   app.post('/admin/vouchers', async (req) => {
     const me = await admin(req);
-    const b = parse(z.object({ count: z.number().int().min(1).max(500), value_cents: z.number().int().min(500).max(20000), batch: z.string().max(40), partner_id: z.string().uuid().optional(), valid_days: z.number().int().default(365) }), req.body);
+    // `for_sale`: cards for selling at a shop work only once the shop records the sale, and (Australian Consumer Law) carry at least a
+    // 3-year expiry. Cards given away free (community programmes) can be used straight away and may have a shorter expiry.
+    const b = parse(z.object({ count: z.number().int().min(1).max(500), value_cents: z.number().int().min(500).max(20000), batch: z.string().max(40),
+      partner_id: z.string().uuid().optional(), valid_days: z.number().int().min(30).max(3650).optional(), for_sale: z.boolean().default(true) }), req.body);
+    const ready = await loyaltyReady();
+    const days = giftCardExpiry(b.valid_days ?? GIFT_CARD_MIN_DAYS, b.for_sale);
     const codes: string[] = [];
     for (let i = 0; i < b.count; i++) {
       const code = voucherCode() + voucherCode().slice(2, 6);
       codes.push(code);
-      await q(`INSERT INTO gift_vouchers (code, value_cents, batch, sold_by_partner, expires_at) VALUES ($1,$2,$3,$4, now() + ($5 || ' days')::interval)`,
-        [code, b.value_cents, b.batch, b.partner_id ?? null, String(b.valid_days)]);
+      await q(`INSERT INTO gift_vouchers (code, value_cents, batch, sold_by_partner, expires_at${ready ? ', needs_activation' : ''})
+               VALUES ($1,$2,$3,$4, now() + ($5 || ' days')::interval${ready ? ', $6' : ''})`,
+        [code, b.value_cents, b.batch, b.partner_id ?? null, String(days), ...(ready ? [b.for_sale] : [])]);
     }
-    await audit(me.id, 'vouchers_created', 'gift_vouchers', b.batch, { count: b.count, value_cents: b.value_cents });
-    return { codes };
+    const expires = (await one('SELECT expires_at FROM gift_vouchers WHERE code = $1', [codes[0]]))?.expires_at;
+    await audit(me.id, 'vouchers_created', 'gift_vouchers', b.batch, { count: b.count, value_cents: b.value_cents, for_sale: b.for_sale, days });
+    return { codes, expires_at: expires, needs_activation: ready && b.for_sale, valid_days: days };
   });
 
   // ───────────── Advertising ─────────────

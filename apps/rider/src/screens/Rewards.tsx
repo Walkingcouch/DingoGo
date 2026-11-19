@@ -3,8 +3,7 @@ import QRCode from 'qrcode';
 import { ApiError, Icon, date, del, get, money, post, useLoad } from '@dingogo/shared';
 import { Dialog, Page, Spinner, shareOrCopy, useCopy } from '../components/ui';
 import { WEB_URL, useMe } from '../ctx';
-
-const REASON: Record<string, string> = { trip_earned: 'Trip', redeemed_on_trip: 'Used on a trip', referral_bonus: 'Friend referral', refund_cancelled_trip: 'Cancelled trip refund', admin_adjustment: 'Adjustment' };
+import { Bonuses, GiftVouchers, History, TierCard } from './RewardsExtras';
 
 export function RewardsScreen() {
   const { data, error, loading, reload } = useLoad(() => get('/loyalty'));
@@ -51,6 +50,7 @@ export function RewardsScreen() {
         </div>
         <p>{data.earn_rate}. {data.burn_rate}, or swap them for a free coffee at a partner café.</p>
       </div>
+      <TierCard data={data} />
       {err && <p className="dg-error" role="alert">{err}</p>}
 
       {vouchers.length > 0 && (
@@ -96,7 +96,7 @@ export function RewardsScreen() {
 
       <section className="section refer">
         <h2 className="section__title">Bring a friend</h2>
-        <p>When a friend signs up with your code and takes their first trip, you both get {data.referral_bonus} points.</p>
+        <p>When a friend signs up with your code and takes their first trip{data.referral_min_fare_cents ? ` of ${money(data.referral_min_fare_cents)} or more` : ''}, you both get {data.referral_bonus} points.</p>
         <div className="refer__code"><span>{data.referral_code}</span>
           <button className="dg-btn dg-btn--sm" onClick={() => shareOrCopy({ title: 'DingoGo', text: `Try DingoGo, Alice Springs' Aboriginal-owned rideshare. Use my code ${data.referral_code} when you sign up and we both get ${data.referral_bonus} points.`, url: `${WEB_URL}/invite/${encodeURIComponent(data.referral_code)}` }, copy)}>
             {copied ? 'Copied' : 'Share code'}
@@ -126,15 +126,9 @@ export function RewardsScreen() {
         )}
       </section>
 
-      <section className="section">
-        <h2 className="section__title">Points history</h2>
-        <ul className="ledger">
-          {(data.ledger as any[]).map((l, i) => (
-            <li key={i}><span>{REASON[l.reason] ?? l.reason.replace(/^reward:/, '')}<small className="dg-muted"> {date(l.created_at)}</small></span>
-              <span className={`dg-money ${l.points > 0 ? 'is-plus' : ''}`}>{l.points > 0 ? '+' : ''}{l.points}</span></li>
-          ))}
-        </ul>
-      </section>
+      <Bonuses data={data} onSaved={reload} />
+      <GiftVouchers />
+      <History key={pts} />
       <VoucherDialog v={voucher} onClose={() => setVoucher(null)} />
     </Page>
   );

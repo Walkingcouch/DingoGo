@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import ReactDOM from 'react-dom/client';
 import '@dingogo/shared/brand.css';
 import './partner.css';
-import { ApiError, Icon, Login, Ranges, ServiceNotice, get, getToken, initAuth, money, post, setToken, dateTime, time, useLoad } from '@dingogo/shared';
+import { ApiError, Icon, Login, Ranges, ServiceNotice, date, downloadFile, get, getToken, initAuth, money, post, setToken, dateTime, time, useLoad } from '@dingogo/shared';
 import mascot from '@dingogo/shared/assets/mascot.png';
 
 initAuth('partner');
@@ -99,8 +99,58 @@ function Vouchers() {
   );
 }
 
+const monthName = (m: string) => new Date(`${m}-15T00:00:00Z`).toLocaleDateString('en-AU', { month: 'long', year: 'numeric', timeZone: 'UTC' });
+
+/** Round 17: redemption stats for the last 6 months. */
+function Stats() {
+  const { data, error } = useLoad(() => get('/partner/stats'));
+  if (error) return <p className="dg-error">{error}</p>;
+  if (!data) return null;
+  const max = Math.max(1, ...data.months.map((m: any) => m.redeemed));
+  return (<>
+    <h2 className="p-h2">Last 6 months</h2>
+    <ul className="p-list p-bars">
+      {data.months.map((m: any) => (
+        <li key={m.month}><span>{monthName(m.month)}<br /><small className="dg-muted">{m.customers} {m.customers === 1 ? 'customer' : 'customers'}, {money(m.owed_cents)}</small></span>
+          <span className="p-bar" aria-label={`${m.redeemed} served`}><span style={{ width: `${Math.round((m.redeemed / max) * 100)}%` }} /><b>{m.redeemed}</b></span></li>
+      ))}
+    </ul>
+    <div className="p-stats">
+      <div><b>{data.repeat_customers_6m}</b><span>Customers who came back (6 months)</span></div>
+      <div><b>{data.codes_waiting}</b><span>Codes issued, not yet used</span></div>
+    </div>
+    {data.by_reward.length > 0 && (<>
+      <h2 className="p-h2">This month by reward</h2>
+      <ul className="p-list">{data.by_reward.map((r: any) => <li key={r.title}><span>{r.title}</span><span className="dg-muted">{r.redeemed}</span></li>)}</ul>
+    </>)}
+  </>);
+}
+
+/** Round 17: monthly settlement statements (served, owed, paid with the reference), CSV and PDF. */
+function Statements() {
+  const { data, error } = useLoad(() => get('/partner/statements'));
+  if (error) return <p className="dg-error">{error}</p>;
+  if (!data) return null;
+  const rows = data.statements.filter((s: any) => s.redeemed > 0 || s.open);
+  return (<>
+    <p className="dg-muted" style={{ marginTop: 0 }}>Each reward is paid at the rate agreed when you served it. We pay after the end of each month.</p>
+    <ul className="p-list">
+      {rows.map((s: any) => (
+        <li key={s.month} className="p-statement">
+          <span><strong>{monthName(s.month)}</strong><br /><small className="dg-muted">{s.redeemed} served, {money(s.total_cents)}</small><br />
+            <small className={s.status === 'paid' ? 'p-paid' : 'dg-muted'}>{s.status === 'paid' ? `Paid ${date(s.paid.paid_at)}${s.paid.paid_ref ? `, ref ${s.paid.paid_ref}` : ''}` : s.open ? 'Month still open' : 'To be paid'}</small></span>
+          {s.redeemed > 0 && <span className="p-dl">
+            <button className="dg-btn dg-btn--sm dg-btn--ghost" onClick={() => downloadFile(`/partner/statements/${s.month}?format=pdf`, `statement-${s.month}.pdf`)}>PDF</button>
+            <button className="dg-btn dg-btn--sm dg-btn--ghost" onClick={() => downloadFile(`/partner/statements/${s.month}?format=csv`, `statement-${s.month}.csv`)}>CSV</button>
+          </span>}
+        </li>
+      ))}
+    </ul>
+  </>);
+}
+
 function Home({ onSignOut }: { onSignOut: () => void }) {
-  const [tab, setTab] = useState<'redeem' | 'history' | 'vouchers'>('redeem');
+  const [tab, setTab] = useState<'redeem' | 'history' | 'statements' | 'vouchers'>('redeem');
   const me = useLoad(() => get('/partner/me'));
   const hist = useLoad(() => get('/partner/redemptions'));
   const p = me.data?.partner;
@@ -115,7 +165,7 @@ function Home({ onSignOut }: { onSignOut: () => void }) {
           <button onClick={onSignOut} aria-label="Sign out"><Icon name="logout" size={18} /><span>Sign out</span></button>
         </div>
         <nav className="p-tabs" aria-label="Sections">
-          {([['redeem', 'Redeem', 'qr'], ['history', 'This month', 'chart'], ['vouchers', 'Sell credit', 'ticket']] as const).map(([k, l, ic]) => (
+          {([['redeem', 'Redeem', 'qr'], ['history', 'This month', 'chart'], ['statements', 'Statements', 'receipt'], ['vouchers', 'Sell credit', 'ticket']] as const).map(([k, l, ic]) => (
             <button key={k} className={tab === k ? 'on' : ''} onClick={() => setTab(k)} aria-current={tab === k ? 'page' : undefined}><Icon name={ic} size={18} />{l}</button>
           ))}
         </nav>
@@ -135,11 +185,13 @@ function Home({ onSignOut }: { onSignOut: () => void }) {
             {!hist.data?.items.length && <li className="dg-muted">Nothing redeemed yet.</li>}
             {hist.data?.items.slice(0, 30).map((r: any) => <li key={r.code}><span>{r.title}<br /><small className="dg-muted">{r.code}</small></span><span className="dg-muted" style={{ textAlign: 'right' }}>{dateTime(r.redeemed_at)}</span></li>)}
           </ul>
+          <Stats />
           {me.data.rewards.length > 0 && (<>
             <h2 className="p-h2">Your rewards in the app</h2>
             <ul className="p-list">{me.data.rewards.map((r: any) => <li key={r.id}><span>{r.title}</span><span className="dg-muted">{r.points_cost} points</span></li>)}</ul>
           </>)}
         </>)}
+        {tab === 'statements' && <Statements />}
         {tab === 'vouchers' && <Vouchers />}
       </main>
       <Ranges height={36} fill="var(--night)" />
