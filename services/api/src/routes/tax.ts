@@ -9,7 +9,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { one, q } from '../db.js';
 import { requireUser } from '../auth.js';
 import { bad, notFound } from '../lib/errors.js';
-import { parse, z } from '../lib/validate.js';
+import { isoDay, parse, z } from '../lib/validate.js';
 import { audit } from '../lib/audit.js';
 import { toCsv } from '../lib/csv.js';
 import { notify } from '../services/notify.js';
@@ -37,7 +37,7 @@ function sendFile(reply: FastifyReply, kind: 'csv' | 'pdf', filename: string, bo
 const DETAILS = z.object({
   seller_type: z.enum(SELLER_TYPES).optional(),
   given_name: z.string().trim().max(80).nullable().optional(), family_name: z.string().trim().max(80).nullable().optional(),
-  date_of_birth: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Date of birth looks like 1990-05-31').nullable().optional(),
+  date_of_birth: isoDay('Date of birth looks like 1990-05-31').nullable().optional(),
   business_name: z.string().trim().max(120).nullable().optional(),
   address_line: z.string().trim().max(120).nullable().optional(), suburb: z.string().trim().max(60).nullable().optional(),
   postcode: z.string().regex(/^\d{4}$/, 'Postcode is 4 digits').nullable().optional(), address_state: z.enum(AU_STATES).nullable().optional(),

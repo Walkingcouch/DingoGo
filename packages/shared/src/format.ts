@@ -1,5 +1,7 @@
+/** Money for screens: `$1,234.50` (Round 30: thousands separators; CSV exports use raw cents or their own `csv` formatter). */
 export const money = (cents?: number | null, opts: { free?: boolean } = {}) =>
-  cents == null ? '—' : cents === 0 && opts.free ? 'Free' : (cents < 0 ? '−' : '') + '$' + (Math.abs(cents) / 100).toFixed(2);
+  cents == null ? '—' : cents === 0 && opts.free ? 'Free'
+    : (cents < 0 ? '−' : '') + '$' + (Math.abs(cents) / 100).toFixed(2).replace(/\B(?=(\d{3})+\.)/g, ',');
 
 const TZ = 'Australia/Darwin';
 export const time = (d?: string | Date | null) => (d ? new Date(d).toLocaleTimeString('en-AU', { hour: 'numeric', minute: '2-digit', timeZone: TZ }) : '—');

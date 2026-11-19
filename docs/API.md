@@ -1555,3 +1555,22 @@ Needs migration 028 for shuttles, long-trip drivers and store top-ups (`regional
   refuses to start without a `JWT_SECRET` or with a placeholder (`change-me-to-a-long-random-string`, `dev-only-change-me`, …).
 - **New database:** the base data stores `regional_policy` with every community route closed (`active: false`); demo data opens them. Code defaults
   (used only when the setting is missing) are unchanged.
+
+## Final consolidation (Round 30)
+
+- **Dates and months are checked as real calendar values** everywhere a report, list or form takes one (`isIsoDay` / `isIsoMonth` in
+  `src/lib/validate.ts`). An impossible date such as `2026-02-31` in a report filter (`/admin/trips`, `/admin/reports/*`, `/admin/summary/daily`,
+  `/admin/audit`, `/admin/insights/*`) now falls back to the default period like any other unreadable value; where a date is required
+  (`/admin/fleet/profitability`, `/admin/regional/topups`, `/partner/topups`, month and week fields in bodies, date of birth) it is a 400. These
+  used to reach Postgres and answer 500. `GET /admin/trips?limit=` is kept between 1 and 500; `rider_id`/`driver_id` filters must be real UUIDs.
+- **Plain settings are checked** (`PUT /admin/settings/:key`, 400 `invalid_setting` with the reason and `details.key`):
+  `nt_levy_cents` 0–1000 whole cents; `home_tariff_cents_per_kwh` 0–200; `vehicle_max_age_years` 1–30; `support` `{ phone?, email?, hours? }`;
+  `roof_display` `{ mode: 'ads' | 'off', note? }`; `cash_payments` `{ ride: boolean, courier: boolean, note? }`; `cancellation_policy`
+  `{ free_window_s 0–1800, scheduled_free_hours: { tour 0–336, hourly 0–336 }, scheduled_late_pct 0–100 }`. Cash and cancellation saves are merged
+  onto what is saved now, so a partial save keeps the rest. Both now have a form: admin → Settings → Cash and cancellations.
+- **Roof screens:** `GET /display/playlist` treats a missing `roof_display` setting as `off` (was `ads`).
+- **Texts logged before Twilio is set up:** in production (no dev codes) the `[sms:dev]` log line masks every run of 4–8 digits (sign-in codes,
+  delivery PINs, collection codes) except an admin's or dispatcher's own sign-in code, which is how staff sign in before SMS (Round 29).
+- **Apps:** money on screens has thousands separators (`$1,234.50`; CSV exports keep plain numbers); the rider business account asks in the
+  app's own dialog before declining a trip (with an optional reason), stopping regular trips or removing a person (Cancel on the old browser
+  prompt still declined the trip).

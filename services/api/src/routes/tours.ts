@@ -10,7 +10,7 @@ import { ApiError, bad, forbidden, notFound } from '../lib/errors.js';
 import { limit } from '../lib/rateLimit.js';
 import { audit } from '../lib/audit.js';
 import { toCsv, dollars } from '../lib/csv.js';
-import { latLng, parse, phone, z } from '../lib/validate.js';
+import { isIsoDay, isoMonth, latLng, parse, phone, z } from '../lib/validate.js';
 import { referralCode } from '../lib/ids.js';
 import { invalidateConfig, settingValue } from '../lib/cache.js';
 import {
@@ -81,7 +81,7 @@ export default async function tourRoutes(app: FastifyInstance) {
     const p = await tours.loadTour((req.params as any).slug);
     if (!p || !p.active) throw notFound('Tour');
     const qs = req.query as any;
-    const from = /^\d{4}-\d{2}-\d{2}$/.test(String(qs.from ?? '')) ? String(qs.from) : darwinParts(new Date()).date;
+    const from = isIsoDay(qs.from) ? String(qs.from) : darwinParts(new Date()).date;
     const days = Math.min(Math.max(Number(qs.days ?? 14) || 14, 1), 62);
     return { tour_id: p.id, from, days: availability(p, await tours.loadAdvisories(), from, days) };
   });
@@ -348,7 +348,7 @@ export default async function tourRoutes(app: FastifyInstance) {
   app.post('/admin/tour-commissions/pay', async (req) => {
     const me = await admin(req);
     if (!(await tours.toursReady())) throw tours.migrationPending();
-    const b = parse(z.object({ partner_id: z.string().uuid(), month: z.string().regex(/^\d{4}-\d{2}$/), paid_ref: z.string().min(2).max(80) }), req.body);
+    const b = parse(z.object({ partner_id: z.string().uuid(), month: isoMonth(), paid_ref: z.string().min(2).max(80) }), req.body);
     if (b.month >= darwinParts(new Date()).date.slice(0, 7)) throw bad('month_open', 'That month is not over yet');
     const rows = await tx(async (c) => q(
       `UPDATE tour_commissions SET status = 'paid', paid_at = now(), paid_ref = $3 WHERE partner_id = $1 AND status = 'earned'

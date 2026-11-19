@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { ApiError, STATUS_LABEL, dateTime, dayName, del, monthName, downloadFile, get, money, patch, post, put, useLoad } from '@dingogo/shared';
-import { Page, Spinner } from '../components/ui';
+import { Dialog, Page, Spinner } from '../components/ui';
 import { PlaceField, type Place } from '../components/PlaceField';
 import { AccountFields, EMPTY_ACCOUNT_VALUES, accountBody, accountMissing, useAccountSetup, type AccountValues } from '../components/AccountFields';
 import { CLIENT_KINDS, useMe } from '../ctx';
@@ -13,6 +13,24 @@ const ROLE_LINE: Record<string, string> = { member: 'You can book trips on this 
 const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 const darwinToday = () => new Date(Date.now() + 9.5 * 3600e3).toISOString().slice(0, 10);
 const errText = (e: unknown, fallback: string) => (e instanceof ApiError ? e.message : fallback);
+
+/** Round 30: asks before something that can't be undone, in the app's own dialog (was the browser's confirm()/prompt(), and
+ *  pressing Cancel on the decline prompt still declined the trip). With `reason`, a text box goes to `onYes`. */
+type Ask = { title: string; body?: string; yes: string; reason?: string; onYes: (reason: string) => void };
+function AskDialog({ ask, onClose }: { ask: Ask | null; onClose: () => void }) {
+  const [reason, setReason] = useState('');
+  return (
+    <Dialog open={!!ask} onClose={() => { setReason(''); onClose(); }} title={ask?.title ?? ''}>
+      {ask?.body && <p>{ask.body}</p>}
+      {ask?.reason !== undefined && <label className="dg-field"><span>{ask.reason}</span>
+        <textarea className="dg-input" rows={2} maxLength={300} value={reason} onChange={(e) => setReason(e.target.value)} /></label>}
+      <div className="grid2">
+        <button type="button" className="dg-btn dg-btn--ghost" onClick={() => { setReason(''); onClose(); }}>Go back</button>
+        <button type="button" className="dg-btn" onClick={() => { const r = reason.trim(); setReason(''); onClose(); ask?.onYes(r); }}>{ask?.yes}</button>
+      </div>
+    </Dialog>
+  );
+}
 
 /** Round 24: a business, government or health account — spend, booking for others, regular trips, approvals, invoices and set-up. */
 export function BusinessAccountScreen() {
@@ -221,13 +239,15 @@ function Regular({ account }: { account: any }) {
 }
 function SeriesActions({ onSkip, onStop }: { onSkip: (date: string) => void; onStop: (cancel: boolean) => void }) {
   const [day, setDay] = useState('');
+  const [ask, setAsk] = useState<Ask | null>(null);
   return (
     <span style={{ display: 'grid', gap: 6, justifyItems: 'end' }}>
+      <AskDialog ask={ask} onClose={() => setAsk(null)} />
       <span style={{ display: 'flex', gap: 6 }}>
         <input className="dg-input" type="date" aria-label="Date to skip" value={day} min={darwinToday()} onChange={(e) => setDay(e.target.value)} style={{ width: 'auto' }} />
         <button className="dg-btn dg-btn--sm dg-btn--ghost" disabled={!day} onClick={() => onSkip(day)}>Skip day</button>
       </span>
-      <button className="dg-btn dg-btn--sm dg-btn--ghost" onClick={() => { if (confirm('Stop these regular trips and cancel the ones already booked?')) onStop(true); }}>Stop</button>
+      <button className="dg-btn dg-btn--sm dg-btn--ghost" onClick={() => setAsk({ title: 'Stop these regular trips?', body: 'The trips already booked from them are cancelled too. There is no charge.', yes: 'Stop them', onYes: () => onStop(true) })}>Stop</button>
     </span>
   );
 }
@@ -291,15 +311,16 @@ function NewSeries({ account, onDone, onCancel }: { account: any; onDone: () => 
 function Approvals({ accountId }: { accountId: string }) {
   const list = useLoad(() => get<any>(`/business/approvals?account_id=${accountId}`), [accountId]);
   const [err, setErr] = useState<string | null>(null);
-  async function decide(id: string, approve: boolean) {
+  const [ask, setAsk] = useState<Ask | null>(null);
+  async function decide(id: string, approve: boolean, note: string | null = null) {
     setErr(null);
-    const note = approve ? null : prompt('Reason (optional, the traveller sees it)') ?? null;
     try { await post(`/business/approvals/${id}`, { approve, note }); await list.reload(); } catch (e) { setErr(errText(e, 'Could not save')); }
   }
   return (
     <section aria-label="Approvals">
       <p className="dg-muted" style={{ marginTop: 0 }}>Trips over the account's approval amount wait here. A trip still waiting when it is due is not sent, and there is no charge.</p>
       {err && <p className="dg-error" role="alert">{err}</p>}
+      <AskDialog ask={ask} onClose={() => setAsk(null)} />
       {list.loading && !list.data ? <Spinner /> : !list.data?.approvals.length ? <p className="dg-muted">Nothing waiting.</p> : (
         <ul className="list">
           {list.data.approvals.map((t: any) => (
@@ -307,7 +328,8 @@ function Approvals({ accountId }: { accountId: string }) {
               <span className="dg-muted">{t.ref}, {dateTime(t.scheduled_for)}, {money(t.quote_cents)}{t.cost_centre_code ? `, ${t.cost_centre_code}` : ''}{t.purpose_code ? `, ${t.purpose_code}` : ''}{t.booked_by_name ? `. Booked by ${t.booked_by_name}` : ''}</span></span>
               <span style={{ display: 'flex', gap: 6 }}>
                 <button className="dg-btn dg-btn--sm" onClick={() => decide(t.id, true)}>Approve</button>
-                <button className="dg-btn dg-btn--sm dg-btn--ghost" onClick={() => decide(t.id, false)}>Decline</button>
+                <button className="dg-btn dg-btn--sm dg-btn--ghost" onClick={() => setAsk({ title: `Decline ${t.ref}?`, body: 'The trip is not sent and there is no charge.', yes: 'Decline trip',
+                  reason: 'Reason (optional, the traveller sees it)', onYes: (r) => void decide(t.id, false, r || null) })}>Decline</button>
               </span></li>
           ))}
         </ul>
@@ -347,6 +369,7 @@ function Setup({ accountId }: { accountId: string }) {
   const [m, setM] = useState({ name: '', phone: '', role: 'member' });
   const [cc, setCc] = useState({ code: '', name: '', approver_id: '', budget: '' });
   const [p, setP] = useState({ code: '', label: '' });
+  const [ask, setAsk] = useState<Ask | null>(null);
   if (s.loading && !s.data) return <Spinner />;
   if (!s.data) return <p className="dg-error" role="alert">{s.error}</p>;
   const d = s.data; const r = d.rules;
@@ -370,11 +393,12 @@ function Setup({ accountId }: { accountId: string }) {
           </select></label>
       </div>
 
+      <AskDialog ask={ask} onClose={() => setAsk(null)} />
       <h2 className="section__title">People</h2>
       <ul className="list">
         {d.members.map((x: any) => (
           <li key={x.id} className="row"><span className="row__main"><strong>{x.name}</strong><span className="dg-muted">{ROLE[x.role] ?? x.role}, mobile …{String(x.phone).slice(-3)}</span></span>
-            <button className="dg-btn dg-btn--sm dg-btn--ghost" onClick={() => { if (confirm(`Take ${x.name} off the account?`)) void run(() => del(`/business/accounts/${accountId}/members/${x.id}`), 'Removed'); }}>Remove</button></li>
+            <button className="dg-btn dg-btn--sm dg-btn--ghost" onClick={() => setAsk({ title: `Take ${x.name} off the account?`, body: 'They can no longer book on it. Regular trips they set up stop.', yes: 'Remove', onYes: () => void run(() => del(`/business/accounts/${accountId}/members/${x.id}`), 'Removed') })}>Remove</button></li>
         ))}
       </ul>
       <form className="block" onSubmit={async (e) => { e.preventDefault(); if (await run(() => post(`/business/accounts/${accountId}/members`, m), 'Added. We texted them.')) setM({ name: '', phone: '', role: 'member' }); }}>

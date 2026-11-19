@@ -65,10 +65,11 @@ export default async function authRoutes(app: FastifyInstance) {
        ON CONFLICT (phone) DO UPDATE SET code_hash = $2, expires_at = now() + interval '10 minutes', attempts = 0`,
       [body.phone, sha256(code)]);
     const demo = await isDemoPhone(body.phone);
-    const sent = await sendSmsT(body.phone, 'otp', { code });
+    const staff = await isStaffPhone(body.phone);
+    const sent = await sendSmsT(body.phone, 'otp', { code }, { logCodes: staff });
     // Round 29: before Twilio is set up (a brand-new deploy), staff can still sign in: the code is written to the server log
     // (`[sms:dev]`), which only people with access to the hosting account can read. Everyone else waits for SMS.
-    const staffFromLog = !sent.sent && sent.status === 'dev_log' && process.env.LOG_SMS !== 'false' && await isStaffPhone(body.phone);
+    const staffFromLog = !sent.sent && sent.status === 'dev_log' && process.env.LOG_SMS !== 'false' && staff;
     if (!sent.sent && !config.otpDevMode && !demo && !staffFromLog) {
       throw new ApiError(503, 'sms_unavailable', 'Sign-in by text message isn’t switched on yet. Please try again later.');
     }

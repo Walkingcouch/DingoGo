@@ -11,7 +11,7 @@ import { ApiError, bad, conflict, forbidden, notFound } from '../lib/errors.js';
 import { referralCode } from '../lib/ids.js';
 import { record, tooMany } from '../lib/rateLimit.js';
 import { litePage, parseSms } from '../lib/regional.js';
-import { parse, phone, z } from '../lib/validate.js';
+import { isoMonth, parse, phone, z } from '../lib/validate.js';
 import { toOps } from '../realtime.js';
 import * as reg from '../services/regional.js';
 import { smsConfigured } from '../services/sms.js';
@@ -248,7 +248,7 @@ export default async function regionalRoutes(app: FastifyInstance) {
   });
   app.post('/admin/regional/topups/settle', async (req) => {
     const me = await admin(req);
-    const b = parse(z.object({ partner_id: UUID, month: z.string().regex(/^\d{4}-\d{2}$/), ref: z.string().trim().min(2).max(60) }), req.body);
+    const b = parse(z.object({ partner_id: UUID, month: isoMonth(), ref: z.string().trim().min(2).max(60) }), req.body);
     return reg.settleTopups(me.id, b);
   });
 }

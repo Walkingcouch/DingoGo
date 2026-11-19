@@ -10,7 +10,7 @@ import { toCsv, dollars } from '../lib/csv.js';
 import { bad } from '../lib/errors.js';
 import { checkPolicy, INSIGHTS_DEFAULTS } from '../lib/insights.js';
 import { emailConfigured } from '../lib/email.js';
-import { parse, z } from '../lib/validate.js';
+import { isoDay, parse, z } from '../lib/validate.js';
 import {
   cohorts, demandForecast, healthReport, loadPolicy, sendWeekly, simulatePricing, supplyDemand, tripEconomics, weekOf, weeklyEmail, weeklyPdf, weeklySummary,
 } from '../services/insights.js';
@@ -75,7 +75,7 @@ export default async function insightsRoutes(app: FastifyInstance) {
 
   app.post('/admin/insights/weekly/send', async (req) => {
     const me = await admin(req);
-    const b = parse(z.object({ week: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(), to: z.array(z.string().trim().email().max(120)).max(10).optional() }), req.body ?? {});
+    const b = parse(z.object({ week: isoDay().optional(), to: z.array(z.string().trim().email().max(120)).max(10).optional() }), req.body ?? {});
     return sendWeekly(weekOf(b), { actorId: me.id, to: b.to });
   });
 

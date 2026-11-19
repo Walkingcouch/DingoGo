@@ -4,6 +4,7 @@
  * investor revenue-share report. Everything new needs migration 024 (`fleetReady()`); before it the old weekly lease run keeps
  * working (now capped at the driver's balance) and the rest answers 503 `migration_pending`.
  */
+import { isIsoDay } from '../lib/validate.js';
 import { one, pool, q, tx, type Q } from '../db.js';
 import { ApiError, bad, conflict, notFound } from '../lib/errors.js';
 import { settingValue, invalidateConfig } from '../lib/cache.js';
@@ -227,7 +228,7 @@ export async function endContract(actorId: string, id: string, b: { reason: stri
 export async function runWeek(week?: string | null, actorId: string | null = null) {
   await needReady();
   const w = week || weekStartOf(new Date());
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(w) || new Date(w + 'T00:00:00Z').getUTCDay() !== 1) throw bad('week', 'Week must be a Monday (YYYY-MM-DD)');
+  if (!isIsoDay(w) || new Date(w + 'T00:00:00Z').getUTCDay() !== 1) throw bad('week', 'Week must be a Monday (YYYY-MM-DD)');
   const policy = await loadFleetPolicy();
   const live = await q(`SELECT id FROM fleet_contracts WHERE status = 'active' AND starts_on <= $1::date + 6 AND (ends_on IS NULL OR ends_on >= $1::date) ORDER BY created_at`, [w]);
   const rows: any[] = [];
@@ -550,7 +551,7 @@ export interface CarProfit {
 /** Per DingoGo car for [from, to] (Darwin dates): what it earned DingoGo, what it cost, profit and how busy it was. */
 export async function profitability(from: string, to: string): Promise<{ from: string; to: string; cars: CarProfit[]; totals: any }> {
   await needReady();
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to) || to < from) throw bad('range', 'Give from and to as dates (YYYY-MM-DD), from first');
+  if (!isIsoDay(from) || !isIsoDay(to) || to < from) throw bad('range', 'Give from and to as dates (YYYY-MM-DD), from first');
   if (daysIn(from, to) > 400) throw bad('range', 'Choose a range of up to 400 days');
   const policy = await loadFleetPolicy();
   const B = `WITH b AS (SELECT ($1::date)::timestamp AT TIME ZONE '${TZ}' AS f, ($2::date + 1)::timestamp AT TIME ZONE '${TZ}' AS t)`;

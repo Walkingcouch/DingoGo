@@ -97,7 +97,7 @@ otherwise. Placeholders that would cost money or put people at risk start **off*
 | Setting | Default | Where |
 |---------|---------|-------|
 | Passenger levy amount and the monthly due day | $1 a trip; due the 21st | Pricing & tours → States; Tax & compliance → Levy returns |
-| Cash for rides (draft terms say in-app only) | off for rides, on for parcels | No admin screen yet: the `cash_payments` setting (ask the developer) |
+| Cash for rides (draft terms say in-app only) | off for rides, on for parcels | Settings → Cash and cancellations (Round 30) |
 | Roof screens | off | Settings → Roof screens |
 | Fatigue limits against NT/SA point-to-point guidance | 12 h online then 6 h rest; 20 min break after 5 h | Safety & compliance → Policy |
 | Oldest car allowed | NT 13 years, SA 8 | Pricing & tours → States |
@@ -112,7 +112,7 @@ otherwise. Placeholders that would cost money or put people at risk start **off*
 | Fares | $3 + $1.60/km + $0.25/min + $1 booking, min $10, 20% 10pm–5am, 15% holidays | Pricing & tours → Fares |
 | Service fee by car (owner direction: own car 20%, electric/hybrid 15%) | 25% / 25% until saved | Pricing & tours → Driver pay |
 | Pickup pay, fuel surcharge, weekly earnings floor ($32/h on trips) | off | Pricing & tours → Driver pay |
-| Cancellation fee and free window | free 2 min, then $3 | No admin screen yet: the `cancellation_policy` setting / fare rules |
+| Cancellation fee and free window | free 2 min, then $3; tours free to 48 h, hire to 24 h, then 50% | Settings → Cash and cancellations (window, tour/hire hours and %); the $3 fee per service under Pricing & tours → Fares |
 | Rider no-show fee and driver waiting pay | not built (decision needed) | — |
 | Who funds pickup pay on late-cancelled trips | not built (decision needed) | — |
 | Driver ledger on refunds (driver at fault) and on refunded tips; points claw-back on refunds | not reversed; DingoGo funds tip refunds | — (decision needed) |
@@ -147,9 +147,8 @@ otherwise. Placeholders that would cost money or put people at risk start **off*
 - Nightly off-site backup job and a quarterly restore drill.
 - Content-Security-Policy in report-only mode for the apps.
 - Shorter sessions with refresh tokens and "sign out everywhere" (tokens last 30 days today).
-- Thousands separators in money on screens (`$3000.00`), Australian date pickers.
+- Australian date pickers (phones already show dd/mm/yyyy; desktop browsers follow their language).
 - Native background location in the driver app, then silent-driver auto-reassign.
-- Admin screens for the cash and cancellation policy settings.
 - Card and business-account payment for shuttle seats and parcels.
 - Apple Pay / Google Pay (domain verification) once Stripe is live.
 

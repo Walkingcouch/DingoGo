@@ -8,10 +8,11 @@
  * Money in cents. Days are Darwin calendar days 'YYYY-MM-DD'; weekdays 0 = Monday … 6 = Sunday; hours 0–23 Darwin time.
  */
 import { z } from 'zod';
+import { isoDay } from './validate.js';
 import { bad } from './errors.js';
 import { quoteFare, localHour, type FareRule } from './fares.js';
 
-const day = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Use YYYY-MM-DD');
+const day = isoDay('Use a real date as YYYY-MM-DD');
 const factor = z.number().min(0.2).max(3);
 const cents = (max: number) => z.number().int().min(0).max(max);
 

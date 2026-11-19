@@ -19,6 +19,8 @@ export default function Settings() {
   );
 }
 
+const CANCEL_DEFAULTS = { free_window_s: 120, scheduled_free_hours: { tour: 48, hourly: 24 }, scheduled_late_pct: 50 };
+
 function SettingsForm() {
   const { data, error, reload } = useLoad(() => get('/admin/settings'));
   const [v, setV] = useState<any>(null);
@@ -26,13 +28,15 @@ function SettingsForm() {
   useEffect(() => {
     if (!data) return;
     const m = Object.fromEntries(data.items.map((s: any) => [s.key, s.value]));
-    setV({ business: m.business ?? {}, support: m.support ?? {}, nt_levy_cents: m.nt_levy_cents ?? 100, home_tariff_cents_per_kwh: m.home_tariff_cents_per_kwh ?? 30, vehicle_max_age_years: m.vehicle_max_age_years ?? 13, roof_display: m.roof_display ?? { mode: 'off' } });
+    setV({ business: m.business ?? {}, support: m.support ?? {}, nt_levy_cents: m.nt_levy_cents ?? 100, home_tariff_cents_per_kwh: m.home_tariff_cents_per_kwh ?? 30, vehicle_max_age_years: m.vehicle_max_age_years ?? 13, roof_display: m.roof_display ?? { mode: 'off' },
+      cash_payments: { ride: false, courier: true, ...(m.cash_payments ?? {}) },
+      cancellation_policy: { ...CANCEL_DEFAULTS, ...(m.cancellation_policy ?? {}), scheduled_free_hours: { ...CANCEL_DEFAULTS.scheduled_free_hours, ...(m.cancellation_policy?.scheduled_free_hours ?? {}) } } });
   }, [data]);
   if (!v) return <ErrorMsg error={error} />;
   const setIn = (k: string, f: string, x: any) => setV({ ...v, [k]: { ...v[k], [f]: x } });
   async function save(e: React.FormEvent) {
     e.preventDefault();
-    for (const k of ['business', 'support', 'nt_levy_cents', 'home_tariff_cents_per_kwh', 'vehicle_max_age_years', 'roof_display']) {
+    for (const k of ['business', 'support', 'nt_levy_cents', 'home_tariff_cents_per_kwh', 'vehicle_max_age_years', 'roof_display', 'cash_payments', 'cancellation_policy']) {
       const r = await run(() => put(`/admin/settings/${k}`, { value: v[k] }));
       if (!r) return;
     }
@@ -50,6 +54,16 @@ function SettingsForm() {
         <label className="dg-field"><span>Default passenger levy per trip ($)</span><input className="dg-input" type="number" step="0.01" value={(Number(v.nt_levy_cents) / 100).toFixed(2)} onChange={(e) => setV({ ...v, nt_levy_cents: Math.round(Number(e.target.value) * 100) })} /><small className="dg-muted">Each state’s levy is set under Pricing &amp; tours, States.</small></label>
         <label className="dg-field"><span>Home charging tariff (cents per kWh)</span><input className="dg-input" type="number" value={v.home_tariff_cents_per_kwh} onChange={(e) => setV({ ...v, home_tariff_cents_per_kwh: Number(e.target.value) })} /><small className="dg-muted">Used to reimburse drivers for charging at home.</small></label>
         <label className="dg-field"><span>Oldest car allowed (years)</span><input className="dg-input" type="number" min={1} max={13} value={v.vehicle_max_age_years} onChange={(e) => setV({ ...v, vehicle_max_age_years: Number(e.target.value) })} /><small className="dg-muted">Fallback only. Each state’s limit (NT 13, SA 8) is set under Pricing &amp; tours, States.</small></label>
+      </div>
+      <Section title="Cash and cancellations" />
+      <div className="form-grid">
+        <label className="dg-check"><input type="checkbox" checked={!!v.cash_payments.ride} onChange={(e) => setIn('cash_payments', 'ride', e.target.checked)} /><span>Riders can pay cash for rides</span></label>
+        <label className="dg-check"><input type="checkbox" checked={!!v.cash_payments.courier} onChange={(e) => setIn('cash_payments', 'courier', e.target.checked)} /><span>Senders can pay cash for parcels</span></label>
+        <p className="dg-muted full" style={{ margin: 0 }}>The draft rider terms say rides are paid in the app. Only allow cash for rides once the NT Government has said yes in writing.</p>
+        <label className="dg-field"><span>Free to cancel for (minutes after a driver accepts)</span><input className="dg-input" type="number" min={0} max={30} value={Math.round(Number(v.cancellation_policy.free_window_s) / 60)} onChange={(e) => setIn('cancellation_policy', 'free_window_s', Math.round(Number(e.target.value) * 60))} /><small className="dg-muted">After that the late fee applies. The fee is set for each service under Pricing &amp; tours, Fares.</small></label>
+        <label className="dg-field"><span>Late fee on tours and hire (% of the booking)</span><input className="dg-input" type="number" min={0} max={100} value={v.cancellation_policy.scheduled_late_pct} onChange={(e) => setIn('cancellation_policy', 'scheduled_late_pct', Number(e.target.value))} /></label>
+        <label className="dg-field"><span>Tours: free to cancel until (hours before)</span><input className="dg-input" type="number" min={0} max={336} value={v.cancellation_policy.scheduled_free_hours.tour} onChange={(e) => setIn('cancellation_policy', 'scheduled_free_hours', { ...v.cancellation_policy.scheduled_free_hours, tour: Number(e.target.value) })} /></label>
+        <label className="dg-field"><span>Hire: free to cancel until (hours before)</span><input className="dg-input" type="number" min={0} max={336} value={v.cancellation_policy.scheduled_free_hours.hourly} onChange={(e) => setIn('cancellation_policy', 'scheduled_free_hours', { ...v.cancellation_policy.scheduled_free_hours, hourly: Number(e.target.value) })} /></label>
       </div>
       <Section title="Roof screens" />
       <div className="form-grid">

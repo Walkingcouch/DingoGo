@@ -3,6 +3,7 @@
  * driver plan, the pricing simulator and the weekly owner summary (JSON, PDF, email). Reads existing tables only (no migration);
  * the policy lives in the `insights_policy` setting. Test accounts (users.test_account) are left out unless asked for.
  */
+import { isIsoDay } from '../lib/validate.js';
 import { one, q } from '../db.js';
 import { settingValue } from '../lib/cache.js';
 import { bad, notFound } from '../lib/errors.js';
@@ -22,7 +23,7 @@ const TZ = `'Australia/Darwin'`;
 const startOf = (n: string) => `((${n}::date)::timestamp AT TIME ZONE ${TZ})`;
 const endOf = (n: string) => `(((${n}::date) + 1)::timestamp AT TIME ZONE ${TZ})`;
 const KIND_SQL = `CASE WHEN t.kind = 'courier' THEN 'courier' WHEN t.service IN ('tour','hourly') THEN 'tours' ELSE 'rides' END`;
-const DAY = /^\d{4}-\d{2}-\d{2}$/;
+const DAY = { test: (s: string) => isIsoDay(s) };
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export async function loadPolicy(): Promise<InsightsPolicy> {

@@ -7,7 +7,7 @@ import { APPLICATION_STAGES, STAGE_KEYS, applicationsPending, applicationsReady 
 import { displayKey, referralCode, voucherCode } from '../lib/ids.js';
 import { GIFT_CARD_MIN_DAYS, darwin, loyaltyReady } from '../lib/loyalty.js';
 import { giftCardExpiry, settlementsFor } from '../services/loyalty.js';
-import { parse, phone, z } from '../lib/validate.js';
+import { isIsoMonth, parse, phone, z } from '../lib/validate.js';
 import { VERIFIED_SOURCES, greenSql, normaliseRego, vehicleAgeRule, vehicleOut } from '../lib/vehicles.js';
 import { STATES, ageRule, getJurisdiction, listJurisdictions } from '../lib/jurisdictions.js';
 import { decodeVin, normaliseVin } from '../lib/vin.js';
@@ -85,6 +85,44 @@ export function checkBusinessDetails(v: unknown) {
   const abn = p.data.abn.replace(/\s+/g, '');
   if (abn && abn.toUpperCase() !== 'TBC' && !abnValid(abn)) throw bad('invalid_abn', 'That ABN fails the ATO check. Look it up on abr.business.gov.au', { field: 'abn' });
   return { ...p.data, abn: !abn || abn.toUpperCase() === 'TBC' ? 'TBC' : abn };
+}
+
+/** Round 30: the cancellation policy defaults (as migration 003). The late fee itself is the fare rule's `cancel_fee_cents`. */
+export const CANCELLATION_DEFAULTS = { free_window_s: 120, scheduled_free_hours: { tour: 48, hourly: 24 }, scheduled_late_pct: 50 };
+
+/** Round 30: every plain setting the Settings page writes is checked before it is saved (a levy of "abc", a roof screen mode of
+ *  "on" or a free window of -5 used to be stored as given and then read by pricing, the roof screens and cancellations).
+ *  `cur` is what is saved now: partial policies are merged onto it. Unknown keys pass through (business details are checked above). */
+export function checkPlainSetting(key: string, v: unknown, cur?: any): unknown {
+  const fail = (p: { success: false; error: z.ZodError }) => { throw bad('invalid_setting', p.error.issues.map((i) => `${i.path.join('.') || key}: ${i.message}`).join('; '), { key }); };
+  const int = (min: number, max: number, what: string) => z.coerce.number({ error: `${what} must be a number` }).int(`${what} must be a whole number`).min(min, `${what} is at least ${min}`).max(max, `${what} is at most ${max}`);
+  const text = (max: number) => z.string().trim().max(max).optional();
+  let p: any;
+  switch (key) {
+    case 'nt_levy_cents': p = int(0, 1000, 'Levy (cents)').safeParse(v); break;
+    case 'home_tariff_cents_per_kwh': p = int(0, 200, 'Home charging tariff (cents per kWh)').safeParse(v); break;
+    case 'vehicle_max_age_years': p = int(1, 30, 'Oldest car (years)').safeParse(v); break;
+    case 'support': p = z.object({
+      phone: z.string().trim().max(40).regex(/^[+\d\s()-]*$/, 'Phone has only digits, spaces and +').optional(),
+      email: z.union([z.literal(''), z.string().trim().email('Email doesn’t look right').max(200)]).optional(), hours: text(80),
+    }).passthrough().safeParse(v); break;
+    case 'roof_display': p = z.object({ mode: z.enum(['ads', 'off'], { error: 'Mode is "ads" or "off"' }), note: text(500) }).passthrough().safeParse(v); break;
+    case 'cash_payments': p = z.object({ ride: z.boolean(), courier: z.boolean(), note: text(500) }).passthrough()
+      .safeParse({ ride: false, courier: true, ...(cur ?? {}), ...(v && typeof v === 'object' ? v : { ride: 'x' }) }); break;
+    case 'cancellation_policy': {
+      const base = { ...CANCELLATION_DEFAULTS, ...(cur ?? {}) };
+      const x: any = v && typeof v === 'object' ? v : { free_window_s: 'x' };
+      p = z.object({
+        free_window_s: int(0, 1800, 'Free window (seconds)'),
+        scheduled_free_hours: z.object({ tour: int(0, 336, 'Tours: free until (hours before)'), hourly: int(0, 336, 'Hire: free until (hours before)') }).passthrough(),
+        scheduled_late_pct: int(0, 100, 'Late cancellation (% of the booking)'),
+      }).passthrough().safeParse({ ...base, ...x, scheduled_free_hours: { ...base.scheduled_free_hours, ...(x.scheduled_free_hours ?? {}) } });
+      break;
+    }
+    default: return v;
+  }
+  if (!p.success) fail(p);
+  return p.data;
 }
 
 /** Minimal CRUD for config-style tables. Only whitelisted columns are writable. */
@@ -298,7 +336,7 @@ export default async function adminRoutes(app: FastifyInstance) {
   app.get('/admin/trips', async (req) => {
     await ops(req);
     const { where, vals } = tripFilters(req.query as Record<string, string>);
-    vals.push(Math.min(Number((req.query as any).limit) || 100, 500));
+    vals.push(Math.min(Math.max(Number((req.query as any).limit) || 100, 1), 500));
     return { trips: await q(
       `SELECT t.id, t.ref, t.kind, t.service, t.status, t.channel, t.pickup_address, t.dropoff_address, t.requested_at, t.scheduled_for, t.completed_at,
               t.quote_cents, t.final_cents, t.tip_cents, t.payment_method, t.payment_status, t.rider_rating, ru.name AS rider_name, du.name AS driver_name, v.rego
@@ -872,7 +910,7 @@ export default async function adminRoutes(app: FastifyInstance) {
   app.get('/admin/charging', async (req) => {
     await ops(req);
     const { month } = req.query as { month?: string };
-    const m = month && /^\d{4}-\d{2}$/.test(month) ? month : trips.localMonth();
+    const m = isIsoMonth(month) ? month : trips.localMonth();
     const fleetOn = await fleet.fleetReady();
     const owed = fleetOn ? 'coalesce(s.reimburse_cents, s.cost_cents)' : 's.cost_cents';
     const by = await q(
@@ -1004,7 +1042,7 @@ export default async function adminRoutes(app: FastifyInstance) {
   app.get('/admin/corporate/:id/statement', async (req) => {
     await ops(req);
     const { month } = req.query as { month?: string };
-    const m = month && /^\d{4}-\d{2}$/.test(month) ? month : trips.localMonth();
+    const m = isIsoMonth(month) ? month : trips.localMonth();
     const acct = await one('SELECT * FROM corporate_accounts WHERE id = $1', [(req.params as any).id]);
     if (!acct) throw notFound('Account');
     const lines = await q(
@@ -1107,6 +1145,8 @@ export default async function adminRoutes(app: FastifyInstance) {
     }
     // Round 29: business details are printed on every tax invoice and the SERR report, so check them (the ABN with the ATO check digits).
     if ((req.params as any).key === 'business') b.value = checkBusinessDetails(b.value);
+    else b.value = checkPlainSetting((req.params as any).key, b.value,
+      (await one(`SELECT value FROM settings WHERE key = $1`, [(req.params as any).key]))?.value);
     const row = await one(`INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2 RETURNING *`, [(req.params as any).key, JSON.stringify(b.value)]);
     // Legacy setting: the NT max age now lives on the NT jurisdiction — keep them in step.
     if (row.key === 'vehicle_max_age_years' && Number(b.value) >= 1 && Number(b.value) <= 50) {

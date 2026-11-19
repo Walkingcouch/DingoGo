@@ -100,6 +100,22 @@ screens and tabs; CI runs it after the smoke test. Both need the Vercel build an
 app gets a new screen, add it to `scripts/lib/screens.mjs` (a test fails until you do). Look at the screenshots, not just the pass/fail:
 contrast on the website's illustrated skies is something axe can't measure.
 
+### Full verification before a release (Round 30)
+The checks every round ran before committing, in order (all on a throwaway local database, never production):
+
+```bash
+for w in services/api apps/web apps/rider apps/driver apps/admin apps/partner apps/roof-display; do npx tsc --noEmit -p $w; done
+export DATABASE_URL=postgres://dingogo:dingogo@localhost:5432/dingogo_test
+npm run db:reset -w services/api && npm test -w services/api          # 283 tests (they reset the database: run db:reset again after)
+node scripts/build-vercel.mjs                                          # the Vercel build output
+npm run db:reset -w services/api && npm run smoke                      # browser smoke test
+npm run db:reset -w services/api && npm run a11y                       # accessibility, every screen and tab
+dropdb --if-exists dingogo_firstday; createdb dingogo_firstday
+DATABASE_URL=postgres://dingogo:dingogo@localhost:5432/dingogo_firstday node scripts/first-day.mjs   # first day on an empty database
+```
+
+CI (`.github/workflows/ci.yml`) runs the same on every push. `npm run tour` (screenshots of every screen) is the slow optional extra.
+
 ## 3. Is it healthy?
 
 - `GET /api/health` — the API and database answer (`{ ok: true }`).
@@ -116,6 +132,8 @@ contrast on the website's illustrated skies is something axe can't measure.
 - The API writes one JSON line per request to stdout (Vercel → Project → Logs, or `docker compose logs api`): `request_id`, `method`, `route`
   (pattern only — no tokens, share links or query strings), `status`, `ms`, `user_id`. Errors carry `err` with the stack and `where`
   (`request`, `dispatch tick`, `background`, `auto-migrate`, …). `LOG_LEVEL=debug|info|warn|error` (default `info` in production).
+- Before Twilio is connected, texts are written to the log instead (`[sms:dev] → +61…: …`). In production every run of 4–8 digits in them
+  is masked (`••••••`) except an admin's or dispatcher's own sign-in code (Round 30), so the log never holds riders' codes or parcel PINs.
 - Every response has `X-Request-Id`; 500s show "(ref 1a2b3c4d)" in the apps. Search the logs for that id.
 - **Sentry (optional):** create a Node project, copy its DSN into `SENTRY_DSN`. Unhandled errors, database outages, failed migrations and dispatch
   errors arrive with the release (Git commit), route and request id. No request bodies, phone numbers or names are sent.

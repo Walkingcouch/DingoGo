@@ -9,7 +9,15 @@ import { config } from '../config.js';
 import { one, q } from '../db.js';
 import { gsmFriendly, type SmsKind } from '../lib/messages.js';
 
-export interface SmsMeta { template?: string; kind?: SmsKind; userId?: string | null; tripId?: string | null; from?: string }
+export interface SmsMeta { template?: string; kind?: SmsKind; userId?: string | null; tripId?: string | null; from?: string;
+  /** Round 30: before Twilio is set up in production, codes in a logged text are masked unless this is set (staff sign-in codes). */
+  logCodes?: boolean }
+
+/** Round 30: what the server log shows of a text that couldn't be sent. In production (no dev codes) every run of 4–8 digits
+ *  (sign-in codes, delivery PINs, collection codes) is masked, except where the caller asks for it (staff sign-in before SMS). */
+export function devLogBody(body: string, meta: SmsMeta = {}, production = config.production && !config.otpDevMode) {
+  return production && !meta.logCodes ? body.replace(/\b\d{4,8}\b/g, (d) => '•'.repeat(d.length)) : body;
+}
 export interface SmsResult { sent: boolean; provider: string; status: string; ref?: string; error?: string }
 
 const missing = (e: any) => e?.code === '42P01' || e?.code === '42703';
@@ -71,7 +79,7 @@ export async function sendSmsNow(toRaw: string, bodyRaw: string, meta: SmsMeta =
 
   const t = config.twilio;
   if (!(t.sid && t.token) || !(t.from || t.messagingServiceSid || meta.from)) {
-    if (process.env.LOG_SMS !== 'false') console.log(`[sms:dev] → ${to}: ${body}`);
+    if (process.env.LOG_SMS !== 'false') console.log(`[sms:dev] → ${to}: ${devLogBody(body, meta)}`);
     return log({ sent: false, provider: 'dev-log', status: 'dev_log' });
   }
   const params = new URLSearchParams({ To: to, Body: body });

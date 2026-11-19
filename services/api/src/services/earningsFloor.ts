@@ -6,6 +6,7 @@
  * Counted earnings: fares less the service fee, pickup pay, fuel surcharge and cancellation fees. Tips never count.
  * Top-up = floor × engaged hours − counted earnings (never negative), paid into the driver ledger once per driver per week.
  */
+import { isIsoDay } from '../lib/validate.js';
 import { engagedFromSql } from './courier.js';
 import { logError } from '../lib/log.js';
 import type pg from 'pg';
@@ -22,7 +23,7 @@ export interface FloorRow {
   paid_cents?: number | null; paid_at?: string | null;
 }
 
-const isMonday = (d: string) => /^\d{4}-\d{2}-\d{2}$/.test(d) && new Date(d + 'T00:00:00Z').getUTCDay() === 1;
+const isMonday = (d: string) => isIsoDay(d) && new Date(d + 'T00:00:00Z').getUTCDay() === 1;
 const addDays = (d: string, n: number) => new Date(new Date(d + 'T00:00:00Z').getTime() + n * 864e5).toISOString().slice(0, 10);
 
 export function parseWeek(week?: string | null) {

@@ -22,7 +22,8 @@ export default async function displayRoutes(app: FastifyInstance) {
 
   app.get('/display/playlist', async (req) => {
     const v = await vehicleFor(req);
-    const setting = (await one(`SELECT value FROM settings WHERE key = 'roof_display'`))?.value ?? { mode: 'ads' };
+    // Round 30: a missing setting means off (as the Settings form and launch checks read it), never ads.
+    const setting = (await one(`SELECT value FROM settings WHERE key = 'roof_display'`))?.value ?? { mode: 'off' };
     if (setting.mode === 'off') return { vehicle: v.rego, mode: 'off', items: [] };
     const { lat, lng } = req.query as { lat?: string; lng?: string };
     const pos = lat && lng ? { lat: Number(lat), lng: Number(lng) } : null;

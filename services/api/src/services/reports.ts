@@ -1,10 +1,11 @@
 import { one, q } from '../db.js';
+import { isIsoDay } from '../lib/validate.js';
 import { getJurisdiction } from '../lib/jurisdictions.js';
 import { bad } from '../lib/errors.js';
 
 const TZ = `'Australia/Darwin'`;
 const isMonth = (s?: string) => !!s && /^\d{4}-(0[1-9]|1[0-2])$/.test(s);
-const isDate = (s?: string) => !!s && /^\d{4}-\d{2}-\d{2}$/.test(s) && !Number.isNaN(Date.parse(s));
+const isDate = (s?: string) => isIsoDay(s);
 
 /** Today's date in Darwin (YYYY-MM-DD). */
 export const darwinToday = () => new Date(Date.now() + 9.5 * 3600e3).toISOString().slice(0, 10);
@@ -76,7 +77,7 @@ export function tripFilters(p: Record<string, string | undefined>) {
   }
   if (p.from && isDate(p.from)) add((n) => `t.requested_at >= (${n}::date)::timestamp AT TIME ZONE ${TZ}`, p.from);
   if (p.to && isDate(p.to)) add((n) => `t.requested_at < ((${n}::date + 1)::timestamp AT TIME ZONE ${TZ})`, p.to);
-  const uuid = /^[0-9a-f-]{36}$/i;
+  const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   if (p.rider_id && uuid.test(p.rider_id)) add((n) => `t.rider_id = ${n}`, p.rider_id);
   if (p.driver_id && uuid.test(p.driver_id)) add((n) => `t.driver_id = ${n}`, p.driver_id);
   return { where, vals };

@@ -7,6 +7,7 @@
  * Seats and parcels are paid with DingoGo credit (wallet), taken when the booking is confirmed and given back when it is cancelled
  * before the cut-off or the run is cancelled.
  */
+import { isIsoMonth } from '../lib/validate.js';
 import { config } from '../config.js';
 import { one, pool, q, tx, type Q } from '../db.js';
 import { audit } from '../lib/audit.js';
@@ -727,7 +728,7 @@ export async function voidTopup(partnerId: string, actorId: string, id: string) 
 }
 
 const monthRange = (month: string) => {
-  if (!/^\d{4}-\d{2}$/.test(month)) throw bad('month', 'Month is YYYY-MM');
+  if (!isIsoMonth(month)) throw bad('month', 'Month is YYYY-MM');
   const [y, m] = month.split('-').map(Number);
   const next = m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, '0')}`;
   return [new Date(`${month}-01T00:00:00+09:30`), new Date(`${next}-01T00:00:00+09:30`)];
