@@ -1536,3 +1536,22 @@ Needs migration 028 for shuttles, long-trip drivers and store top-ups (`regional
   coverage warning, the next two weeks of shuttles with seats left and a form. `POST /lite/book` (form-encoded; 10 an hour per IP, 3 an hour per number)
   holds the seat and texts the number to reply YES (the same page whether or not the number has an account or credit; the text says what's missing).
   Needs Twilio; without it the page says to call.
+
+## Go-live hardening (Round 29)
+
+- **Staff sign-in before SMS is set up:** `POST /auth/otp/request` for an admin or dispatcher account in good standing (not blocked or deleted)
+  answers 200 `{ ok, phone, code_in_log: true }` when Twilio isn't configured: the code is written to the server log (`[sms:dev]`, only with
+  `LOG_SMS` not `false`). Everyone else still gets 503 `sms_unavailable`. No code is ever returned in the response outside `OTP_DEV_MODE`.
+- **Business details** (`PUT /admin/settings/business`): `{ name (2–120, required), legal_name?, abn?, address?, email?, owners?, …other fields kept }`.
+  `abn` may stay `TBC` (or empty → `TBC`); otherwise spaces are removed and it must pass the ATO check digits (400 `invalid_abn`, `details.field: 'abn'`);
+  400 `invalid_business` for a missing name or bad email.
+- **Launch checks:** `GET /health/deep` details (admin, dispatcher or `X-Health-Token`) add `launch: { ready, production, to_do: { must, keys, confirm },
+  items: [{ id, group: must|keys|confirm, ok, title, where }] }` — JWT secret strength, dev sign-in codes and demo sign-in off, no demo accounts, mock
+  cards not open to everyone, `PUBLIC_WEB_URL` https, `CORS_ORIGINS` not `*`, `HEALTH_TOKEN`, Twilio, DingoGo's ABN and legal name, roof screens
+  off; Stripe, routing, reply number, push, Sentry, `AUTO_MIGRATE`; community routes open but unchecked, driver service fees never saved, business
+  billing "how to pay". Names and yes/no only. They never change `status` (an uptime monitor keeps alerting only on real faults). The admin
+  Dashboard and Reports → Go-live checks show them. The full list with what the system can't check: `docs/GO-LIVE-CHECKLIST.md`.
+- **Production defaults on Vercel:** with `VERCEL` set, `OTP_DEV_MODE` defaults to off and `MOCK_CARDS` to `test` whatever `NODE_ENV` says, and the API
+  refuses to start without a `JWT_SECRET` or with a placeholder (`change-me-to-a-long-random-string`, `dev-only-change-me`, …).
+- **New database:** the base data stores `regional_policy` with every community route closed (`active: false`); demo data opens them. Code defaults
+  (used only when the setting is missing) are unchanged.

@@ -2240,3 +2240,43 @@ Ideas for next rounds:
 - Regional demand view: unfilled long-trip requests and text-booking attempts per community, to decide shuttle days and new routes (Titjikala,
   Amoonguna, Ti Tree, Yuendumu) with each community.
 - Community-language versions of the booking texts and the low-data page (Arrernte, Luritja, Warlpiri) once reviewed by speakers.
+
+### Round 29 — integration hardening before go-live (first day on an empty database, AUTO_MIGRATE, go-live checklist, safe defaults)
+Scan: bootstrapped a brand-new empty database (`db:bootstrap`, no demo data) and walked the owners' first day against it — first at API
+level, then in a browser against the built apps and the bundled Vercel function in production mode (no dev codes): first admin sign-in,
+business details and ABN, fares and zones, a first driver's papers, car and approval, a first rider's card (mock), booking, trip, receipt,
+payout and levy report. Ran the Round 25 smoke test, a11y check and screen tour on a demo database (rounds 26–28 had skipped the browser
+checks) and the tour again on the freshly bootstrapped database to see the empty screens; checked AUTO_MIGRATE from an empty database
+through the built function; read every "decision needed / check with the owner / accountant / placeholder" note in rounds 1–28.
+Found: (1) **on a new deploy without Twilio nobody could sign in, not even the bootstrap admin** — `/auth/otp/request` answered 503 although
+OPERATIONS.md said the code goes to the function log; (2) on Vercel, production behaviour hung on `NODE_ENV`: without it the API would fall back
+to dev sign-in codes (000000 for any number, including the admin), mock cards for everyone and the guessable `dev-only-change-me` token
+secret, and the `.env.example` placeholder secret was accepted; (3) the business details setting (ABN printed on every tax invoice and the
+SERR report) was saved unchecked: any text, spaces kept; (4) a new database opened both community routes with Round 28's placeholder
+prices, distances and permit notes; (5) the admin Settings form would have switched roof screens to "ads" if the setting was ever missing;
+(6) on an empty database the rider Community trips screen showed nothing to explain why and still advertised `BUS NTARIA`; the admin
+Shuttles tab showed an empty Route select and "Add the timetable" with no routes open; (7) with every paper approved the driver drawer said
+"Documents still needed" when the only step left was the owner setting Status to Approved; (8) nothing told the owners what still stood
+between the deploy and real riders, and the decisions were spread over 28 log entries. Smoke (10 steps), a11y and tour (548 views) on demo
+data: all clean; AUTO_MIGRATE through the built function on an empty database: 28 migrations, RLS on 93 tables, base data and admin in one
+request, `/health/deep` ok.
+
+Suggested:
+1. [fix] Staff sign-in before SMS: admin and dispatcher accounts in good standing get `code_in_log` and the code in the server log when Twilio
+   isn't set up; the sign-in screen says where to find it; riders and drivers still get "isn't switched on yet".
+2. [fix] Production-safe config on Vercel whatever `NODE_ENV` says (no dev codes, mock cards for test accounts only); a missing or placeholder
+   `JWT_SECRET` stops the API starting in production.
+3. [fix] Business details checked: trading name required, ABN `TBC` or ATO-valid (stored as 11 digits), email format.
+4. [fix] Safe defaults for placeholders: community routes start closed on a new database (demo opens them); the Settings form falls back to roof
+   screens off.
+5. [add] Launch checks (`src/lib/readiness.ts`): must-do server settings, accounts and keys, and placeholders to confirm, in `/health/deep`
+   details, admin Reports → Go-live checks and a "Not ready for real riders yet" note on the Dashboard.
+6. [fix] Empty-database screens: rider Community trips says routes aren't running yet (no text-booking hint); admin Shuttles explains routes are
+   closed and hides the form; driver drawer says the application needs approving and how.
+7. [add] `scripts/first-day.mjs`: the owners' first day in a browser on an empty database against the built Vercel function in production mode
+   (AUTO_MIGRATE, texted codes through a local Twilio stand-in, wrong ABN refused, driver approved, ride, receipt with ABN, payout, levy, go-live
+   checks); the tour runs on a fresh database (`ADMIN_PHONE`/`RIDER_PHONE`/`DRIVER_PHONE`, `SKIP_ROLES`, skips record views when there are none).
+8. [add] `docs/GO-LIVE-CHECKLIST.md`: every decision and placeholder from rounds 1–28 in one place — must-do (deploy day and before the first
+   rider), accounts and keys, settings to confirm with the accountant, NT Government/lawyer, owners and communities, nice-to-have — with where
+   each lives in admin; OPERATIONS, README and API.md point to it.
+9. [add] Tests: `test/golive.test.ts` on its own bootstrapped scratch database.

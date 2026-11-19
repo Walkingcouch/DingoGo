@@ -26,7 +26,7 @@ function SettingsForm() {
   useEffect(() => {
     if (!data) return;
     const m = Object.fromEntries(data.items.map((s: any) => [s.key, s.value]));
-    setV({ business: m.business ?? {}, support: m.support ?? {}, nt_levy_cents: m.nt_levy_cents ?? 100, home_tariff_cents_per_kwh: m.home_tariff_cents_per_kwh ?? 30, vehicle_max_age_years: m.vehicle_max_age_years ?? 13, roof_display: m.roof_display ?? { mode: 'ads' } });
+    setV({ business: m.business ?? {}, support: m.support ?? {}, nt_levy_cents: m.nt_levy_cents ?? 100, home_tariff_cents_per_kwh: m.home_tariff_cents_per_kwh ?? 30, vehicle_max_age_years: m.vehicle_max_age_years ?? 13, roof_display: m.roof_display ?? { mode: 'off' } });
   }, [data]);
   if (!v) return <ErrorMsg error={error} />;
   const setIn = (k: string, f: string, x: any) => setV({ ...v, [k]: { ...v[k], [f]: x } });

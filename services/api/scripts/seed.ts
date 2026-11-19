@@ -6,6 +6,7 @@ import { pool, q, one } from '../src/db.js';
 import { quoteFare } from '../src/lib/fares.js';
 import { displayKey, pin4, referralCode, shareToken, tripRef } from '../src/lib/ids.js';
 import { seedBase } from '../src/lib/baseSeed.js';
+import { DEFAULT_REGIONAL_POLICY } from '../src/lib/regional.js';
 import { isLocalDatabase } from '../src/lib/migrator.js';
 import { config } from '../src/config.js';
 
@@ -31,6 +32,8 @@ await seedBase(pool);
 // Demo only: roof screens on so the roof player shows something (production starts with them off).
 await q(`UPDATE settings SET value = $1 WHERE key = 'roof_display'`,
   [JSON.stringify({ mode: 'ads', note: 'Confirm in writing with NT Passenger Transport Division that roof screens are permitted before switching on in service.' })]);
+// Demo only: community routes open with the default (placeholder) prices; production starts with them closed (Round 29).
+await q(`UPDATE settings SET value = $1 WHERE key = 'regional_policy'`, [JSON.stringify(DEFAULT_REGIONAL_POLICY)]);
 await q(`INSERT INTO promo_codes (code, kind, value, max_discount_cents, max_uses, per_user_limit, first_trip_only, description) VALUES
   ('WELCOME', 'percent', 50, 1000, NULL, 1, true, '50% off your first trip (up to $10)'),
   ('DELIVER5', 'fixed', 500, NULL, 500, 1, false, '$5 off a delivery')`);

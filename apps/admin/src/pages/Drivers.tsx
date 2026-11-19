@@ -125,7 +125,8 @@ function DriverDrawer({ id, onClose }: { id: string; onClose: () => void }) {
           <dt>Languages</dt><dd>{d.languages?.length ? d.languages.map((l: string) => label({ en: 'English' }, l)).join(', ') : '—'}</dd><dt>Rating</dt><dd>{d.rating_count ? `${Number(d.rating_avg).toFixed(1)} from ${d.rating_count} ${d.rating_count === 1 ? 'rating' : 'ratings'}` : 'No ratings yet'}</dd>
         </dl>
         {data.compliance_issues.length > 0 ? (
-          <div className="dg-error" style={{ marginTop: 14, fontWeight: 400 }}><strong>Cannot go online:</strong><ul style={{ margin: '4px 0 0', paddingLeft: 18 }}>{data.compliance_issues.map((i: string) => <li key={i}>{complianceText(i)}</li>)}</ul></div>
+          <div className="dg-error" style={{ marginTop: 14, fontWeight: 400 }}><strong>Cannot go online:</strong><ul style={{ margin: '4px 0 0', paddingLeft: 18 }}>{data.compliance_issues.map((i: string) => <li key={i}>{complianceText(i)}</li>)}</ul>
+            {['applied', 'pending_documents'].includes(d.status) && <p style={{ margin: '6px 0 0' }}>When the papers and car are checked, set Status to Approved below and save.</p>}</div>
         ) : <p className="dg-note" style={{ background: 'var(--saltbush-soft)' }}>All credentials current. This driver can go online.</p>}
 
         <h3 style={{ marginTop: 18 }}>Documents</h3>

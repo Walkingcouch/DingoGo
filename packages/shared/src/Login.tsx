@@ -17,6 +17,7 @@ export function Login({ title, subtitle, onDone, askName = false, askReferral = 
   const [name, setName] = useState('');
   const [referral, setReferral] = useState(initialReferral);
   const [devCode, setDevCode] = useState<string | undefined>();
+  const [codeInLog, setCodeInLog] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // Suspended or banned: the reason, and a way to ask us to look again (Round 14).
@@ -24,7 +25,7 @@ export function Login({ title, subtitle, onDone, askName = false, askReferral = 
 
   async function send(e: React.FormEvent) {
     e.preventDefault(); setBusy(true); setError(null);
-    try { const r: any = await requestOtp(phone); setDevCode(r.dev_code ?? (r.demo ? '000000' : undefined)); setStep('code'); }
+    try { const r: any = await requestOtp(phone); setDevCode(r.dev_code ?? (r.demo ? '000000' : undefined)); setCodeInLog(!!r.code_in_log); setStep('code'); }
     catch (err) { setError(err instanceof ApiError ? err.message : 'Could not send code'); }
     finally { setBusy(false); }
   }
@@ -64,6 +65,7 @@ export function Login({ title, subtitle, onDone, askName = false, askReferral = 
                 style={{ fontSize: 'var(--fs-xl)', letterSpacing: '.3em' }} />
             </label>
             {devCode && <p className="dg-note" style={{ fontSize: 'var(--fs-sm)' }}>Demo account: your code is <strong>{devCode}</strong></p>}
+            {codeInLog && !devCode && <p className="dg-note" style={{ fontSize: 'var(--fs-sm)' }}>Text messages aren’t set up yet, so your code was written to the server log (search the hosting logs for “sms:dev”).</p>}
             {askName && <label className="dg-field"><span>Your name (if you're new)</span><input className="dg-input" autoComplete="name" value={name} onChange={(e) => setName(e.target.value)} /></label>}
             {askReferral && <label className="dg-field"><span>Friend's referral code (optional)</span><input className="dg-input" value={referral} onChange={(e) => setReferral(e.target.value.toUpperCase())} /></label>}
             {error && <p className="dg-error" role="alert" id="login-err">{error}</p>}

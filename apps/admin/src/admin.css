@@ -316,3 +316,10 @@ ul.plain { margin: 0; padding-left: 1.1rem; display: grid; gap: 4px; }
 .range-rows > .dg-btn { justify-self: start; }
 @media (max-width: 760px) { .range-row { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } .grid-2 { grid-template-columns: 1fr; } }
 @media (max-width: 600px) { .kpis, .kpis:has(> :nth-child(6)) { grid-template-columns: repeat(2, minmax(0, 1fr)); } .kpi b { overflow-wrap: anywhere; font-size: var(--fs-xl); } }
+
+/* Round 29: go-live checks (Reports) */
+.golive { list-style: none; padding: 0; margin: 0; display: grid; gap: 6px; max-width: 900px; }
+.golive li { padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--surface); overflow-wrap: anywhere; }
+.golive__mark { display: inline-block; min-width: 3.6em; font-weight: 700; font-size: var(--fs-xs); padding: 2px 8px; border-radius: var(--r-pill); margin-right: 6px; }
+.golive__ok .golive__mark { background: var(--saltbush-soft); color: var(--saltbush-ink); }
+.golive__todo .golive__mark { background: var(--earth-soft); color: var(--earth-ink); }

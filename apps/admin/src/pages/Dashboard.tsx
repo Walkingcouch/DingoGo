@@ -28,6 +28,9 @@ function Kpi({ value, title, note, tone, to }: { value: ReactNode; title: string
 export default function Dashboard() {
   const { data: d, error } = useLoad(() => get('/admin/dashboard'));
   const { counts } = useOps();
+  // Round 29: until the launch checks pass, say so at the top (details in Reports → Go-live checks).
+  const health = useLoad(() => get('/health/deep').catch(() => null), []);
+  const launch = health.data?.launch;
   if (error) return <Page title="Dashboard"><ErrorMsg error={error} /></Page>;
   if (!d) return <Page title="Dashboard"><Loading /></Page>;
   const mixTotal = d.mix.reduce((s: number, m: any) => s + m.n, 0);
@@ -53,6 +56,7 @@ export default function Dashboard() {
 
   return (
     <Page title="Dashboard">
+      {launch && launch.ready === false && <p className="dg-note" role="status">Not ready for real riders yet: {launch.to_do.must} must-do {launch.to_do.must === 1 ? 'item' : 'items'} left. <Link to="/reports#go-live">See the go-live checks</Link>.</p>}
       <h2 className="sr-only">Today</h2>
       <div className="kpis" aria-label="Today">
         <Kpi title="Taken today" value={money(d.today.revenue_cents)} note={vsYesterday(d.today.revenue_cents, y?.revenue_cents, (n) => money(n))} />

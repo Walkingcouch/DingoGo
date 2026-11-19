@@ -30,6 +30,7 @@ import { gstReport, levyReport, tripFilters } from '../services/reports.js';
 import { audit as writeAudit } from '../lib/audit.js';
 import { saveCommunityPricing } from './community.js';
 import { checkSafetyPolicy, safetyReady } from '../lib/safety.js';
+import { abnValid } from '../lib/tax.js';
 import { ACCOUNT_KINDS } from '../lib/community.js';
 import { sessionOnline } from '../services/safety.js';
 
@@ -68,6 +69,23 @@ const ops = (req: FastifyRequest) => requireUser(req, 'admin', 'dispatcher');
 const admin = (req: FastifyRequest) => requireUser(req, 'admin');
 
 const audit = (actorId: string, action: string, entity: string, entityId: string, data?: unknown) => writeAudit(actorId, action, entity, entityId, data);
+
+/** Round 29: DingoGo's own business details (Settings → Business details). The ABN may stay "TBC" until it is known (invoices then
+ *  say "draft"); otherwise it must pass the ATO check and is stored as 11 digits. */
+export function checkBusinessDetails(v: unknown) {
+  const p = z.object({
+    name: z.string({ error: 'Trading name is needed' }).trim().min(2, 'Trading name is needed').max(120),
+    legal_name: z.string().trim().max(160).optional().default(''),
+    abn: z.string().trim().max(20).optional().default('TBC'),
+    address: z.string().trim().max(200).optional().default(''),
+    email: z.union([z.literal(''), z.string().trim().email('Email doesn’t look right').max(200)]).optional().default(''),
+    owners: z.string().trim().max(200).optional().default(''),
+  }).passthrough().safeParse(v);
+  if (!p.success) throw bad('invalid_business', p.error.issues.map((i) => i.message).join('; '));
+  const abn = p.data.abn.replace(/\s+/g, '');
+  if (abn && abn.toUpperCase() !== 'TBC' && !abnValid(abn)) throw bad('invalid_abn', 'That ABN fails the ATO check. Look it up on abr.business.gov.au', { field: 'abn' });
+  return { ...p.data, abn: !abn || abn.toUpperCase() === 'TBC' ? 'TBC' : abn };
+}
 
 /** Minimal CRUD for config-style tables. Only whitelisted columns are writable. */
 /** Promo code fields (Round 17). Hours are Darwin time, `hour_to` exclusive (22 to 6 runs over midnight); days 0 = Sunday. */
@@ -1087,6 +1105,8 @@ export default async function adminRoutes(app: FastifyInstance) {
       await audit(me.id, 'safety_policy_updated', 'settings', 'safety_policy', value);
       return { item: { key: 'safety_policy', value } };
     }
+    // Round 29: business details are printed on every tax invoice and the SERR report, so check them (the ABN with the ATO check digits).
+    if ((req.params as any).key === 'business') b.value = checkBusinessDetails(b.value);
     const row = await one(`INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2 RETURNING *`, [(req.params as any).key, JSON.stringify(b.value)]);
     // Legacy setting: the NT max age now lives on the NT jurisdiction — keep them in step.
     if (row.key === 'vehicle_max_age_years' && Number(b.value) >= 1 && Number(b.value) <= 50) {

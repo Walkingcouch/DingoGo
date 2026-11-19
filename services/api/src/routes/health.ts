@@ -18,6 +18,7 @@ import { environment, release, sentryConfigured } from '../lib/log.js';
 import { plateLookupConfigured } from '../lib/plateLookup.js';
 import { replyableSender } from '../services/sms.js';
 import { pushProviders } from '../services/push.js';
+import { launchReadiness } from '../lib/readiness.js';
 
 const on = (x: boolean) => (x ? 'configured' : 'not_configured');
 /** Which outside services are set up (shared with GET /admin/integrations). */
@@ -82,6 +83,8 @@ export async function deepHealth(full: boolean) {
     base_data: base?.ok ? base.value : base ? { error: base.error } : null,
     security: sec?.ok ? sec.value : sec ? { error: sec.error } : null,
     integrations: integrationStatus(),
+    // Round 29: what still stands between this deploy and real riders (docs/GO-LIVE-CHECKLIST.md).
+    launch: db.ok ? await launchReadiness().catch((e) => ({ error: String(e?.message ?? e).slice(0, 200) })) : null,
     // Round 18: connections in use on this instance and the in-memory config cache.
     performance: {
       pool: poolStats(), query_timeout_ms: config.perf.dbQueryTimeoutMs, statement_timeout_ms: config.perf.dbStatementTimeoutMs,

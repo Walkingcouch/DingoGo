@@ -4,17 +4,21 @@
  *
  * Every insert is "only if missing" (ON CONFLICT DO NOTHING): re-running never overwrites what admins have edited since.
  * No demo people, drivers, cars, cafés, promo codes or trips — those live in scripts/seed.ts (DEMO_DATA=true).
- * Roof screens start OFF (they need written NT approval).
+ * Roof screens start OFF (they need written NT approval); community routes start closed (placeholder prices and notes, Round 29).
  * Fares are set just under the NT-regulated Alice Springs taxi tariff ($5.50 flagfall + $2.45/km day, gazette S53 from 1 July 2026).
  */
 import type pg from 'pg';
 import { phone as phoneSchema } from './validate.js';
 import { referralCode } from './ids.js';
+import { DEFAULT_REGIONAL_POLICY } from './regional.js';
 
 type Queryable = Pick<pg.PoolClient, 'query'>;
 
 export const BUSINESS = { name: 'DingoGo Rideshare & Courier', legal_name: 'DingoGo Pty Ltd (TBC)', abn: 'TBC', address: 'Alice Springs NT 0870', email: 'contact@aperrke.com.au', owners: 'Johnathan Ah Chee & Micah Bartlett', aboriginal_owned: true };
 export const SUPPORT = { phone: '0432 101 175', email: 'contact@aperrke.com.au', hours: '6am – midnight, 7 days', emergency: '000' };
+/** Round 29: community routes start closed in production. Prices, distances, coverage gaps and permit notes are placeholders until the
+ *  owners and the communities confirm them (admin → Community trips → Routes, then tick "Open for bookings"). Demo data opens them. */
+export const REGIONAL_POLICY_CLOSED = { ...DEFAULT_REGIONAL_POLICY, corridors: DEFAULT_REGIONAL_POLICY.corridors.map((c) => ({ ...c, active: false })) };
 export const ROOF_DISPLAY_OFF = { mode: 'off', note: 'Confirm in writing with NT Passenger Transport Division that roof screens are permitted before switching on in service.' };
 
 export interface BaseSeedOptions {
@@ -70,8 +74,8 @@ export async function seedBase(c: Queryable, opts: BaseSeedOptions = {}): Promis
 
   // Migrations 003 and 009 add cash_payments, cancellation_policy and vehicle_max_age_years.
   await run('settings', `INSERT INTO settings (key, value) VALUES
-    ('business', $1), ('support', $2), ('nt_levy_cents', '100'), ('home_tariff_cents_per_kwh', '30'), ('roof_display', $3)
-    ON CONFLICT (key) DO NOTHING`, [JSON.stringify(BUSINESS), JSON.stringify(SUPPORT), JSON.stringify(ROOF_DISPLAY_OFF)]);
+    ('business', $1), ('support', $2), ('nt_levy_cents', '100'), ('home_tariff_cents_per_kwh', '30'), ('roof_display', $3), ('regional_policy', $4)
+    ON CONFLICT (key) DO NOTHING`, [JSON.stringify(BUSINESS), JSON.stringify(SUPPORT), JSON.stringify(ROOF_DISPLAY_OFF), JSON.stringify(REGIONAL_POLICY_CLOSED)]);
 
   await run('tour_packages', `INSERT INTO tour_packages (slug, name, summary, description, duration_min, price_cents, stops, cultural_note, requires_permit) VALUES
     ('town-heritage', 'Mparntwe Town & Telegraph Station', 'Two hours around town: Anzac Hill, the Telegraph Station and the Royal Flying Doctor base.',

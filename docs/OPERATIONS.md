@@ -36,10 +36,16 @@ bookings — **no demo data** (no fictional drivers, cafés, promo codes or demo
    | `HEALTH_TOKEN` | a long random string for your uptime monitor |
    | `JWT_SECRET`, `OTP_DEV_MODE=false`, … | as before (`services/api/.env.example`) |
    | `SENTRY_DSN` | optional, see section 4 |
-5. **Sign in** to `/admin` with the admin mobile. Without Twilio the sign-in code goes to the Vercel function log (search for `[sms:dev]`); set up
-   Twilio before real riders sign in.
+5. **Sign in** to `/admin` with the admin mobile. Without Twilio the sign-in code goes to the Vercel function log (search for `sms:dev`): since
+   Round 29 this works for admin and dispatcher accounts only (the sign-in screen says where the code is); riders and drivers are told sign-in
+   isn't switched on yet. Set up Twilio before real riders sign in. Then work through **`docs/GO-LIVE-CHECKLIST.md`** and admin → Reports →
+   Go-live checks (the Dashboard says "Not ready for real riders yet" until the must-do items pass).
 6. **Re-enter what lived only in the old database**: admin-edited prices or driver pay rates, promo codes, business/NDIS accounts, partner cafés,
    driver applications and uploaded documents (uploads were stored in Postgres, so they went with it — drivers must upload their papers again).
+
+On Vercel the API uses production defaults whatever `NODE_ENV` says (Round 29): no on-screen codes, mock card payments for test accounts
+only, and it won't start without a real `JWT_SECRET` (missing or the `.env.example` placeholder). Community routes start **closed** on a new
+database (their prices and notes are placeholders): open them in Community trips → Routes after checking them with the community.
 
 **No computer with database access?** Set `DATABASE_URL` to the new database and `AUTO_MIGRATE=true` (plus `BOOTSTRAP_ADMIN_PHONE`) in Vercel and
 redeploy. The first request after the deploy finds the database empty and does steps 3's work itself (migrations, RLS, base data, admin). Check with
@@ -77,6 +83,14 @@ with the rider's PIN and completes, rider sees "Thanks for riding", admin approv
 failure). It needs a throwaway database (it signs in demo accounts with 000000); never point it at production.
 Since Round 25 it also checks the business account (manager), help, the partner portal and every tab of Support, Business, Loyalty, Tours and
 Fleet.
+
+### Before go-live: the first day on an empty database (Round 29)
+`createdb dingogo_firstday && DATABASE_URL=…/dingogo_firstday node scripts/first-day.mjs` (after `node scripts/build-vercel.mjs`) walks the first
+day in a browser against the built apps and the bundled function in production mode: the first request auto-migrates the empty database, the
+admin signs in with a texted code (a local Twilio stand-in), enters the ABN (a wrong one is refused), sets a fare, a driver signs up and is
+approved (papers, car, driver), a rider adds a card (mock), books and completes a ride, gets a tax invoice with DingoGo's ABN, the driver is
+paid out and the trip is in the levy report. It refuses a database that already has tables. `npm run tour` can also run on a freshly
+bootstrapped database to see the empty screens: `ADMIN_PHONE=<bootstrap admin> RIDER_PHONE=… DRIVER_PHONE=… SKIP_ROLES=partner`.
 
 ### Before a release: screen-by-screen tour and accessibility check
 `npm run tour` (Round 25) opens every screen in `scripts/lib/screens.mjs` — every app, every admin tab, the partner sections — at phone and

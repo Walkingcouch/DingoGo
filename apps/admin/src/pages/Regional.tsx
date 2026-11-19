@@ -36,7 +36,7 @@ function Runs({ data, reload }: { data: any; reload: () => void }) {
   async function create(e: React.FormEvent) {
     e.preventDefault();
     if (!form.departs_at) return;
-    if (await run(() => post('/admin/regional/runs', { ...form, departs_at: new Date(form.departs_at + ':00+09:30').toISOString() }), 'Shuttle added')) void reload();
+    if (await run(() => post('/admin/regional/runs', { ...form, corridor: form.corridor || corridors[0]?.id, departs_at: new Date(form.departs_at + ':00+09:30').toISOString() }), 'Shuttle added')) void reload();
   }
   async function cancel(r: any) {
     const note = await ask({ title: `Cancel shuttle ${r.ref}?`, label: 'Note for the record (optional)', help: 'Everyone booked gets their credit back and a text.', required: false, ok: 'Cancel shuttle', danger: true });
@@ -46,7 +46,8 @@ function Runs({ data, reload }: { data: any; reload: () => void }) {
     if (await run(() => patch(`/admin/regional/runs/${r.id}`, { driver_id: driver_id || null }), 'Driver saved')) void reload();
   }
   return (<>
-    <Section title="Shuttles, next four weeks" right={<button className="dg-btn dg-btn--sm" onClick={schedule} disabled={!data.ready}>Add the timetable</button>} />
+    <Section title="Shuttles, next four weeks" right={<button className="dg-btn dg-btn--sm" onClick={schedule} disabled={!data.ready || !corridors.length}>Add the timetable</button>} />
+    {!corridors.length && <p className="dg-note" role="status">No route is taking bookings yet. New databases start with every route closed: check the distances, coverage, permit notes and prices with the community, then tick "Taking bookings" on the Routes tab.</p>}
     <p className="dg-muted" style={{ marginTop: 0 }}>"Add the timetable" adds each route's shuttle days for four weeks (ones already there are kept). Drivers must say yes to long trips in the driver app.</p>
     <Table rows={data.runs} rowKey={(r: any) => r.id} onRow={setOpen} empty="No shuttles yet." cols={[
       { key: 'when', label: 'Leaves', nowrap: true }, { key: 'label', label: 'Route' },
@@ -55,14 +56,14 @@ function Runs({ data, reload }: { data: any; reload: () => void }) {
       { key: 'driver_name', label: 'Driver', render: (r: any) => r.driver_name ?? <Chip tone="amber">None yet</Chip> },
       { key: 'status', label: 'Status', render: (r: any) => STATUS[r.status] ?? r.status },
     ]} />
-    <form onSubmit={create} className="form-grid" style={{ maxWidth: 820, marginTop: 16 }}>
+    {corridors.length > 0 && <form onSubmit={create} className="form-grid" style={{ maxWidth: 820, marginTop: 16 }}>
       <label className="dg-field"><span>Route</span><select className="dg-input" value={form.corridor} onChange={(e) => setForm({ ...form, corridor: e.target.value })}>
         {corridors.map((c: any) => <option key={c.id} value={c.id}>{c.place.name}</option>)}</select></label>
       <label className="dg-field"><span>Direction</span><select className="dg-input" value={form.direction} onChange={(e) => setForm({ ...form, direction: e.target.value })}>
         <option value="out">From Alice Springs</option><option value="back">To Alice Springs</option></select></label>
       <label className="dg-field"><span>Leaves (Alice Springs time)</span><input className="dg-input" type="datetime-local" value={form.departs_at} onChange={(e) => setForm({ ...form, departs_at: e.target.value })} required /></label>
       <div><button className="dg-btn" disabled={!data.ready}>Add a shuttle</button></div>
-    </form>
+    </form>}
     {open && <RunDrawer run={open} drivers={data.drivers} onClose={() => setOpen(null)} onCancel={() => cancel(open)} onAssign={(d) => assign(open, d)} />}
   </>);
 }

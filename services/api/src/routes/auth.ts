@@ -44,6 +44,11 @@ async function isDemoPhone(p: string) {
   return !!u;
 }
 
+/** Admin or dispatcher account in good standing (Round 29: may sign in with the code from the server log before SMS is set up). */
+async function isStaffPhone(p: string) {
+  return !!(await one(`SELECT 1 FROM users WHERE phone = $1 AND role IN ('admin','dispatcher') AND deleted_at IS NULL AND NOT blocked`, [p]));
+}
+
 export default async function authRoutes(app: FastifyInstance) {
   app.post('/auth/otp/request', async (req) => {
     const body = parse(z.object({ phone }), req.body);
@@ -61,10 +66,13 @@ export default async function authRoutes(app: FastifyInstance) {
       [body.phone, sha256(code)]);
     const demo = await isDemoPhone(body.phone);
     const sent = await sendSmsT(body.phone, 'otp', { code });
-    if (!sent.sent && !config.otpDevMode && !demo) {
+    // Round 29: before Twilio is set up (a brand-new deploy), staff can still sign in: the code is written to the server log
+    // (`[sms:dev]`), which only people with access to the hosting account can read. Everyone else waits for SMS.
+    const staffFromLog = !sent.sent && sent.status === 'dev_log' && process.env.LOG_SMS !== 'false' && await isStaffPhone(body.phone);
+    if (!sent.sent && !config.otpDevMode && !demo && !staffFromLog) {
       throw new ApiError(503, 'sms_unavailable', 'Sign-in by text message isn’t switched on yet. Please try again later.');
     }
-    return { ok: true, phone: body.phone, ...(config.otpDevMode ? { dev_code: code } : {}), ...(demo ? { demo: true } : {}) };
+    return { ok: true, phone: body.phone, ...(config.otpDevMode ? { dev_code: code } : {}), ...(demo ? { demo: true } : {}), ...(staffFromLog && !config.otpDevMode ? { code_in_log: true } : {}) };
   });
 
   app.post('/auth/otp/verify', async (req) => {

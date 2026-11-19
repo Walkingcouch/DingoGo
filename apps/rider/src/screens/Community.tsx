@@ -14,10 +14,11 @@ export function CommunityScreen() {
       {loading && !data && <Spinner />}
       {data && (<>
         {data.bookings.length > 0 && <MyBookings rows={data.bookings} onChange={reload} />}
+        {data.corridors.length === 0 && <p className="dg-note" role="status">Community trips aren’t running yet. We’re setting them up with each community. For a trip out of town now, call DingoGo.</p>}
         {data.corridors.map((c: any) => <Route key={c.id} c={c} runs={data.runs.filter((r: any) => r.corridor === c.id)} ready={data.ready} wallet={data.wallet_cents} onBooked={reload}
           notice={data.min_notice_hours} maxSeats={data.max_seats} />)}
         <p className="dg-muted">Your DingoGo credit: <strong>{money(data.wallet_cents)}</strong>. Top up with cash at a DingoGo community store, or with a voucher in Account.</p>
-        <p className="dg-muted">No smartphone? Text BUS and the place to the DingoGo number, e.g. BUS NTARIA FRI 2.</p>
+        {data.corridors.length > 0 && <p className="dg-muted">No smartphone? Text BUS and the place to the DingoGo number, e.g. BUS NTARIA FRI 2.</p>}
       </>)}
     </Page>
   );

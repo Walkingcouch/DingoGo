@@ -1,18 +1,29 @@
 // Central configuration — every value can be overridden by environment variables.
 const env = process.env;
+/** Round 29: production-safe defaults also apply on Vercel (production and preview), whatever NODE_ENV says, so a deploy that
+ *  forgets NODE_ENV never gets dev sign-in codes, mock cards for everyone or a guessable token secret. */
+const production = env.NODE_ENV === 'production' || !!env.VERCEL;
+/** Placeholder secrets from .env.example and the dev default: refused in production. */
+export const PLACEHOLDER_SECRETS = ['change-me-to-a-long-random-string', 'dev-only-change-me', 'change-me', 'secret'];
 
 export const config = {
   port: Number(env.PORT ?? 4000),
   host: env.HOST ?? '0.0.0.0',
   databaseUrl: env.DATABASE_URL ?? 'postgres://dingogo:dingogo@localhost:5432/dingogo',
-  jwtSecret: env.JWT_SECRET ?? (env.NODE_ENV === 'production' ? (() => { throw new Error('JWT_SECRET must be set in production'); })() : 'dev-only-change-me'),
+  jwtSecret: (() => {
+    const v = env.JWT_SECRET;
+    if (production && (!v || PLACEHOLDER_SECRETS.includes(v))) throw new Error('JWT_SECRET must be set to a long random string in production');
+    return v || 'dev-only-change-me';
+  })(),
   /** In dev, OTP codes are returned in the API response and "000000" always works. NEVER enable in production. */
-  otpDevMode: (env.OTP_DEV_MODE ?? (env.NODE_ENV === 'production' ? 'false' : 'true')) === 'true',
+  otpDevMode: (env.OTP_DEV_MODE ?? (production ? 'false' : 'true')) === 'true',
   /** Phone-number prefixes that always accept the demo code 000000 (seeded demo accounts), even in production. */
   /** Exact demo phone numbers that accept 000000 (seeded demo accounts). OTP_DEMO_PREFIXES is kept for back-compat
    *  but is narrowed to the seeded demo list, so real numbers can never use the demo code. */
   otpDemoPrefixes: (env.OTP_DEMO_PREFIXES ?? '').split(',').filter(Boolean),
   otpDemoNumbers: (env.OTP_DEMO_NUMBERS ?? '+61400000001,+61400000002,+61400000011,+61400000012,+61400000013,+61400000014,+61400000100,+61400000200,+61400000201,+61400000300').split(',').filter(Boolean),
+  /** Production (NODE_ENV=production or on Vercel): safe defaults above, and the launch checks in /health/deep. */
+  production,
   /** True on Vercel/serverless: no long-running timers or WebSockets, dispatch runs on incoming requests. */
   serverless: !!env.VERCEL || env.SERVERLESS === 'true',
   corsOrigins: (env.CORS_ORIGINS ?? '*').split(','),
@@ -59,7 +70,7 @@ export const config = {
   },
   /** Without Stripe, who may "pay" by card with the mock provider: all (development), test (seeded demo numbers and admin-made test
    *  accounts; everyone else sees "card payments coming soon") or off. Default: all in dev mode, test otherwise. */
-  mockCards: ((env.MOCK_CARDS ?? '') || ((env.OTP_DEV_MODE ?? (env.NODE_ENV === 'production' ? 'false' : 'true')) === 'true' ? 'all' : 'test')) as 'all' | 'test' | 'off',
+  mockCards: ((env.MOCK_CARDS ?? '') || ((env.OTP_DEV_MODE ?? (production ? 'false' : 'true')) === 'true' ? 'all' : 'test')) as 'all' | 'test' | 'off',
   /** SMS, masked calls and texts (Twilio). Without a SID and token, texts are written to the log instead (development). */
   twilio: {
     sid: env.TWILIO_ACCOUNT_SID ?? '',

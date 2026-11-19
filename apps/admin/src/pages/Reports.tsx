@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { dateTime, get, money, monthName, useLoad } from '@dingogo/shared';
 import { Link } from 'react-router-dom';
 import { PAYMENT_ROW_STATUS, label } from '../labels';
@@ -25,7 +25,7 @@ export default function Reports() {
       <p className="dg-muted" style={{ marginTop: 0, maxWidth: 780 }}>Card payments that didn't go through (the rider is asked to pay in the app; open the trip to retry) and disputes (chargebacks) still open in Stripe. Reply to disputes in the Stripe dashboard before the due date.</p>
       {integ.data && <p className="dg-muted" role="status">Card payments: {on('payments') ? 'Stripe connected' : 'test payments only (Stripe not set up)'}
         {on('payments') && `, webhook ${on('payments_webhook') ? 'set up' : 'not set up (hold lapses, dashboard refunds and disputes are not seen)'}, card form in the app ${on('card_elements') ? 'on' : 'off (needs the publishable key)'}`}.</p>}
-      {integ.data && <p className="dg-muted">Texts: {on('sms') ? 'Twilio connected' : 'off (sign-in codes only in demo mode)'}{on('sms') && `, replies and STOP ${on('sms_replies') ? 'handled' : 'not handled (no reply number)'}, masked calls ${on('sms_relay') ? 'on' : 'off (in-app messages only)'}`}.
+      {integ.data && <p className="dg-muted">Texts: {on('sms') ? 'Twilio connected' : 'off (only staff can sign in, with the code from the server log)'}{on('sms') && `, replies and STOP ${on('sms_replies') ? 'handled' : 'not handled (no reply number)'}, masked calls ${on('sms_relay') ? 'on' : 'off (in-app messages only)'}`}.
         {' '}Push: {[on('push_fcm') && 'Android', on('push_web') && 'web app', on('push_expo') && 'Expo'].filter(Boolean).join(', ') || 'off (in-app inbox only)'}.</p>}
       <ErrorMsg error={issues.error} />
       {issues.data && (<>
@@ -76,9 +76,32 @@ export default function Reports() {
         <div className="actions" style={{ marginTop: 10 }}><button className="dg-btn dg-btn--sm dg-btn--ghost" onClick={() => run(() => downloadCsv(`/admin/export/gst.csv?from=${g.from}&to=${g.to}`), 'GST summary downloaded')}>Export GST CSV</button></div>
       </>)}
 
+      <GoLive />
       <SystemHealth />
     </Page>
   );
+}
+
+const GROUPS: [string, string][] = [['must', 'Must do before real riders'], ['keys', 'Accounts and keys'], ['confirm', 'Settings to confirm']];
+/** Round 29: launch checks from /health/deep (docs/GO-LIVE-CHECKLIST.md has the full list, with who to ask). */
+function GoLive() {
+  const h = useLoad(() => get('/health/deep'), []);
+  const l = h.data?.launch;
+  useEffect(() => { if (l && window.location.hash === '#go-live') document.getElementById('go-live')?.scrollIntoView(); }, [!!l]);
+  if (!l || !Array.isArray(l.items)) return null;
+  return (<div id="go-live">
+    <Section title="Go-live checks" right={<button className="dg-btn dg-btn--sm dg-btn--ghost" onClick={() => void h.reload()}>Check again</button>} />
+    <p role="status" style={{ marginTop: 0 }}><strong>{l.ready ? 'Ready for real riders.' : `${l.to_do.must} must-do ${l.to_do.must === 1 ? 'item' : 'items'} left before real riders.`}</strong>
+      {' '}{l.to_do.keys ? `${l.to_do.keys} ${l.to_do.keys === 1 ? 'account or key' : 'accounts or keys'} not set up. ` : ''}{l.to_do.confirm ? `${l.to_do.confirm} ${l.to_do.confirm === 1 ? 'setting' : 'settings'} to confirm.` : ''}</p>
+    {GROUPS.map(([g, title]) => {
+      const rows = l.items.filter((x: any) => x.group === g);
+      return (<div key={g} style={{ marginBottom: 12 }}>
+        <h3>{title}</h3>
+        <ul className="golive">{rows.map((x: any) => (
+          <li key={x.id} className={x.ok ? 'golive__ok' : 'golive__todo'}><span className="golive__mark">{x.ok ? 'Done' : 'To do'}</span> {x.title} <small className="dg-muted">({x.where})</small></li>))}</ul>
+      </div>);
+    })}
+  </div>);
 }
 
 /** Round 10: GET /health/deep for staff — schema version, pending migrations, last auto-migrate, base data, RLS, integrations. */

@@ -80,8 +80,8 @@ export function complianceText(issue: string): string {
     const st = m[1];
     if (st === 'suspended') return 'Account suspended';
     if (st === 'rejected') return 'Application rejected';
-    if (st === 'pending_documents') return 'Documents still needed';
-    return 'Application not yet approved';
+    // Round 29: drivers stay "applied"/"documents pending" until an admin approves them, even with every paper approved.
+    return 'Application not approved yet';
   }
   const wait = issue.match(/^Your car (\S+) is waiting for DingoGo to check it/);
   if (wait) return `Car ${wait[1]} waiting for check`;

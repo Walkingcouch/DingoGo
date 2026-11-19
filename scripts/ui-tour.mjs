@@ -10,6 +10,7 @@
  *   DATABASE_URL=postgres://… node scripts/ui-tour.mjs rider admin:/support   # one app, or single screens
  *
  * Env: DATABASE_URL (required), TOUR_SHOTS (screenshots + report.json; default a scratch dir), TOUR_PORT (4319),
+ *      RIDER_PHONE / DRIVER_PHONE / ADMIN_PHONE / PARTNER_PHONE and SKIP_ROLES (a fresh database without demo data, Round 29),
  *      TOUR_SIZES (phone,desktop), TOUR_SCHEMES (light,dark), SLOW_MS (2500), PLAYWRIGHT_PATH.
  * Runs against the built apps and the bundled serverless API (scripts/lib/vercel-harness.mjs). Exits 1 if any screen has a problem.
  */
@@ -26,16 +27,23 @@ const SCHEMES = (process.env.TOUR_SCHEMES ?? 'light,dark').split(',');
 const SLOW_MS = Number(process.env.SLOW_MS ?? 2500);
 const VIEWPORTS = { phone: { width: 390, height: 844 }, desktop: { width: 1280, height: 900 } };
 const args = process.argv.slice(2);
-const wanted = SCREENS.filter((s) => !args.length || args.some((a) => a === s.app || a === `${s.app}:${s.path}`));
+// Round 29: RIDER_PHONE, DRIVER_PHONE, ADMIN_PHONE, PARTNER_PHONE override the demo numbers (as in a11y-check.mjs), so the tour can run
+// on a freshly bootstrapped database with no demo data (empty screens); SKIP_ROLES=partner leaves out an app nobody can sign in to yet,
+// and screens that show one record (`:trip`) are skipped when there is none.
+const phones = { rider: process.env.RIDER_PHONE ?? PHONES.rider, driver: process.env.DRIVER_PHONE ?? PHONES.driver, admin: process.env.ADMIN_PHONE ?? PHONES.admin,
+  partner: process.env.PARTNER_PHONE ?? PHONES.partner };
+const skipRoles = (process.env.SKIP_ROLES ?? '').split(',').filter(Boolean);
+const wanted = SCREENS.filter((s) => (!args.length || args.some((a) => a === s.app || a === `${s.app}:${s.path}`))
+  && !skipRoles.includes(s.app.replace(/-signed-out$/, '')));
 
 const chromium = loadChromium();
 const { BASE, close } = await startHarness({ port: Number(process.env.TOUR_PORT ?? 4319) });
 const post = (p, b) => fetch(`${BASE}/api${p}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(b) }).then((r) => r.json());
 const tokens = {};
 for (const role of new Set(wanted.map((s) => s.app.replace(/-signed-out$/, '')))) {
-  if (!PHONES[role]) continue;
-  await post('/auth/otp/request', { phone: PHONES[role] });
-  const v = await post('/auth/otp/verify', { phone: PHONES[role], code: '000000', app: role });
+  if (!phones[role]) continue;
+  await post('/auth/otp/request', { phone: phones[role] });
+  const v = await post('/auth/otp/verify', { phone: phones[role], code: '000000', app: role });
   if (!v.token) { console.error(`Could not sign in ${role}: ${JSON.stringify(v)}`); process.exit(2); }
   tokens[role] = v.token;
 }
@@ -68,6 +76,7 @@ const inspect = () => {
 
 for (const scheme of SCHEMES) for (const size of SIZES) for (const s of wanted) {
   if (s.only && s.only !== size) continue;
+  if (s.path.includes(':trip') && !latestTrip) continue;
   const role = s.app.replace(/-signed-out$/, '');
   const ctx = await browser.newContext({ viewport: VIEWPORTS[size], colorScheme: scheme, locale: 'en-AU', timezoneId: 'Australia/Darwin',
     geolocation: { latitude: -23.699, longitude: 133.8815 }, permissions: ['geolocation'] });
@@ -98,7 +107,8 @@ for (const scheme of SCHEMES) for (const size of SIZES) for (const s of wanted) 
     const tabs = (await page.locator(tabSel).allTextContents()).map((t) => t.trim());
     for (const t of tabs.slice(1)) views.push([`${name}~${slug(t)}`, t]);
   }
-  if (s.open) views.push([`${name}~open`, { open: s.open }]);
+  // Nothing to open on an empty database (fresh bootstrap): skip that view rather than fail.
+  if (s.open && await page.locator(s.open).count()) views.push([`${name}~open`, { open: s.open }]);
   for (const [file, tab] of views) {
     if (tab) {
       const target = typeof tab === 'string' ? page.locator(tabSel, { hasText: tab }).first() : page.locator(tab.open).first();
