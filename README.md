@@ -39,7 +39,7 @@ npm install
 npm run db:setup                                   # migrations + demo data (local databases only)
 npm run dev:api                                    # http://localhost:4000
 npm run dev:web    # and/or dev:rider, dev:driver, dev:admin, dev:partner, dev:roof
-npm test                                           # 255 API, authorisation matrix, money, tax, loyalty, tours, fleet, support, business, website, store-readiness and toolchain tests (needs a throwaway DB: they reset it, and create/drop scratch databases)
+npm test                                           # 264 API, authorisation matrix, insights, money, tax, loyalty, tours, fleet, support, business, website, store-readiness and toolchain tests (needs a throwaway DB: they reset it, and create/drop scratch databases)
 node scripts/build-vercel.mjs && npm run db:reset -w services/api && npm run smoke   # browser smoke test: rider books, driver completes, admin approves a car (built apps + serverless API; Playwright)
 npm run a11y                                       # WCAG 2.2 AA check (axe-core + Playwright) of every screen and tab, light and dark, on the built apps (same setup as smoke)
 npm run tour                                       # screen-by-screen tour: screenshots at phone and desktop sizes, light and dark, with layout/console/API checks
@@ -75,7 +75,7 @@ All partner businesses, advertisers and people in the demo data are fictional.
 
 | Rule | Default | Source |
 | --- | --- | --- |
-| Ride fare | $3.00 + $1.60/km + $0.25/min + $1 booking + $1 NT levy; min $10; 20% 10pm–5am | set under taxi day tariff ($5.30 + $2.45/km) |
+| Ride fare | $3.00 + $1.60/km + $0.25/min + $1 booking + $1 NT levy; min $10; 20% 10pm–5am | set under taxi day tariff ($5.50 + $2.45/km, gazette S53 from 1 July 2026) |
 | Platform fee | 25% of trip fare (driver keeps 75%; 100% of tips). Admin → Pricing → Driver pay can set a lower rate for own cars and for electric/hybrid cars (both 25% until changed) | March 2026 business plan |
 | Driver pay extras | Off until switched on: pickup pay after the first 2 km (funded by a rider "Long pickup" charge), fuel surcharge (all to the driver), weekly earnings floor ($32 per hour on trips) | Nov 2026 owner direction |
 | Cancellation | free within 2 min, then $3; tours free until 48 h before (and 10 min after booking, and on advisory days), then 50%, 20% card deposit counted first; hire 24 h | March 2026 draft rider terms |

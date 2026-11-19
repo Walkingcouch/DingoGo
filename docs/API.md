@@ -1428,3 +1428,58 @@ Business routes check the sign-in before the form (`GET /business/trips`, `GET /
   safety tickets are left out, and the driver is named by first name and initial (the receipt, the rider's own tax invoice, is unchanged).
 - Twilio relay texts (`POST /comms/twilio/sms`) are stored once per `MessageSid`, so a replayed request doesn't post the message again.
 - Support desk replies that also resolve a ticket send the reply and then "Sorted" in that order.
+
+## Owner insights (Round 27)
+
+Admin only (whole-business money and numbers; dispatchers get 403). Darwin days; riders and drivers marked `test_account` are left out
+unless `include_test=true`. No new tables: everything is read from trips, the driver ledger, payments, loyalty points and driver online
+sessions; the settings live in the `insights_policy` setting (defaults in code, `services/api/src/lib/insights.ts`).
+
+- `GET /admin/insights/health?days=28|from=&to=&include_test=&format=csv` — business health for the period and the same-length period
+  before: `trips` (requests by when they were wanted, completed, `unfilled` = no driver found + rider gave up before a driver accepted,
+  cancellations by who and when, fees charged, average wait to accept, average and 90th-percentile pickup), `money` (riders paid incl.
+  levy, levy, guide fees, tips, driver pay, service fees, booking fees, cancellation fees kept, DingoGo-funded discounts by kind —
+  promo, points, Pass, business, concession — `kept_cents` = paid − levy − guide fees − driver pay, GST estimated as 1/11 of kept, card
+  fees from the policy rate, refunds, `net_cents`, take rate and net margin on paid ex levy, points issued, per-trip averages), `drivers`
+  (active, online, online and engaged hours, utilisation, earnings incl. tips, running costs per km by fuel for trip + pickup km, after
+  costs per online and per engaged hour), `riders` (active, repeat, returning, new), `mix` (rides, courier, tours and hire), `green`
+  (km in electric/hybrid cars), `daily` series, `previous`, `changes`, `assumptions`. `format=csv` is the daily series (audited).
+- `GET /admin/trips/:id/economics` — one trip: rider paid, levy, guide fee, driver pay (fare, fee, pickup pay, fuel surcharge, cancel fee
+  share), DingoGo kept with service fee, booking fee, discounts and `other_cents` (long-pickup charge less pickup pay, 5c rounding), GST,
+  card fees, refunds, net, points issued, take rate, and the driver's km, running cost and pay per engaged hour after costs.
+- `GET /admin/insights/supply-demand?weeks=8` — 7 × 24 `cells` (weekday 0 = Monday, hour) averaged per week over the last whole weeks:
+  requests, completed, unfilled, drivers online (from `driver_online_sessions`, split into the hours each session covers), requests per
+  driver online; `busiest` and `shortest` five.
+- `GET /admin/insights/cohorts?months=6` — riders by the month of their first completed trip, `retained[k]` = % who rode in month k after
+  (null for months still to come).
+- `GET /admin/insights/forecast?days=14&start=&weeks=8` — per day and hour: expected trips (recency-weighted hour-of-week baseline with
+  each past day's seasonality divided out, trend capped at ±5% a week, future seasonality multiplied in: tourist season months, school
+  holiday ranges, public holidays, events with optional hours), `drivers_needed` (trips × minutes per trip ÷ 60 ÷ target utilisation,
+  at least the minimum during service hours), `usual_online` (last 4 weeks) and `gap`, bookings already made (`booked`); per day
+  trips, busiest hour, most drivers needed, hours short and the reasons; `unconfirmed` dates.
+- `POST /admin/insights/simulate` `{ service?, days? (7–180), elasticity? (−2–0), fee_pct?, proposed: { base_cents, per_km_cents,
+  per_min_cents, booking_fee_cents, min_fare_cents, night_pct } }` — replays completed trips of the service over the period at today's
+  and the proposed rates (list prices: no promos, Pass, points, demand multiplier or long-pickup charge): totals and averages of fare,
+  driver pay (fare less service fee), DingoGo take, share under the taxi fare, driver pay per engaged hour; `estimate` with the volume
+  response `(new avg / old avg) ^ elasticity`; eight standard trips (3, 5, 8, 15 km at weekday midday and Friday 11pm) against the taxi
+  tariff. Nothing is changed (400 `not_metered` for tours and hourly hire).
+- `GET /admin/insights/weekly?week=&format=json|pdf|html` — a finished Darwin week (any day of it; default last week; 400
+  `week_not_finished`): health for the week against the week before, busiest day, the week ahead (forecast trips, peak drivers, events,
+  the five hours most short of drivers), `watch` notes, and whether email is set up. PDF audited.
+- `POST /admin/insights/weekly/send` `{ week?, to? }` — emails the summary (HTML, text and the PDF attached) to `to` or the policy's
+  recipients (400 `no_recipients`); `{ sent, provider, id?, error? }` (`email_not_configured` without `RESEND_API_KEY`/`EMAIL_FROM`).
+  Audited `owner_weekly_email`. The dispatcher tick sends last week's summary once (claimed in the internal `_owner_weekly` setting)
+  when the policy's weekly email is on, from the policy hour on Monday (Darwin), and email is set up.
+- `GET /admin/insights/policy` / `PUT /admin/insights/policy` — the insights policy and its defaults: running cost cents per km by fuel,
+  card fee (% + cents), target utilisation, minimum drivers online, service hours, default pickup km, seasonality (tourist season months
+  and factor, school holiday ranges and factor, public holiday factor, events with dates, factor, optional hours and `confirmed`), taxi
+  tariff (source, day and night flagfall and per km, day hours), weekly email (on, recipients, hour). Checked (400
+  `invalid_insights_policy` with the field); audited.
+
+**Changes.**
+- `POST /public/estimate` returns `taxi: { cents, tariff: 'day'|'night', source }` for rides (null for parcels): the metered fare for the
+  distance now at the policy's tariff (default NT Government Gazette S53 from 1 July 2026: $5.50 + $2.45/km on weekdays 6am–6pm,
+  $6.80 + $2.89/km otherwise and on public holidays), to the 10c.
+- `GET /admin/dashboard`: `today.completed` and `today.revenue_cents` count trips completed today (as the 14-day `daily` chart does),
+  `today.cancelled` trips cancelled today; requests, courier and no-driver counts are by request time.
+- `GET /admin/integrations` and `/health/deep` list `email`.

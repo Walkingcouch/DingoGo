@@ -316,6 +316,26 @@ live statement work as before; the application form, set-up, approvals, invoices
 - **NDIS plan managers:** set the provider registration number, support item and GST code (Tax → NDIS) before the first invoice:
   plan-manager invoices group trips per participant with those details.
 
+## 9f. Owner insights and the weekly summary (Round 27)
+- Admin → **Insights** (admins only): Business health (trips, money kept, net contribution, driver pay per online hour after running costs,
+  unfilled requests, cancellations, pickup times, repeat riders, mix, green km, against the period before; daily CSV), Supply & demand
+  (heatmap by weekday and hour, rider cohorts), Forecast & drivers (next 7–28 days, drivers needed against drivers usually online), Unit
+  economics (average trip; each trip's own breakdown is in the Trips drawer), Pricing simulator (nothing changes until fares are edited in
+  Pricing), Weekly summary (PDF, email now) and Settings.
+- **Check the settings once with the accountant and drivers:** running costs per km by fuel, the card fee (Stripe's rate on the account),
+  and the seasonality calendar. School holiday and event dates come with "check the date" marks: confirm them against the NT Department of
+  Education calendar and the event organisers, then tick "Date confirmed". The taxi tariff defaults to Gazette S53 (1 July 2026); update
+  it when the NT Government gazettes a new one (the website's price check uses it).
+- **Weekly email:** needs `RESEND_API_KEY` and `EMAIL_FROM` (a sender on a domain verified in Resend) on the server. Then Insights →
+  Settings → Weekly owner email: tick "Send every Monday", add the owners' addresses and the hour (Darwin). Last week's summary goes out
+  once, from that hour on Monday (or the first dispatcher tick after it). Without email set up nothing is sent and the PDF can still be
+  downloaded. Sends are in the audit log (`owner_weekly_email`).
+- Numbers are estimates where they say so (card fees, GST on what DingoGo kept, drivers' running costs); BAS and SERR figures come from
+  Tax & compliance, not from here. Test accounts are left out.
+- Locally: `DATABASE_URL=…/dingogo_load npm run db:reset -w services/api && DATABASE_URL=… npx tsx services/api/scripts/seed-load.ts`
+  gives 120 days of realistic history (demand by hour, weekday and season, part-time driver shifts, unfilled peaks, promos, points,
+  cancellations, repeat riders) to look at the Insights pages.
+
 ## 10. Performance and load testing (Round 18)
 - **Migration 022** (indexes only, safe any time; AUTO_MIGRATE applies it). Until it is in, `/health/deep` reports it pending and
   the API runs as before, just with slower dispatch queries as trips grow.

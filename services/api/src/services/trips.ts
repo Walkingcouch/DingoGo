@@ -937,6 +937,8 @@ export async function dispatchTick() {
     const biz = await import('./business.js');
     await biz.runBillingIfDue().catch((e) => logError('business billing', e));
     await biz.runRecurringIfDue().catch((e) => logError('recurring trips', e));
+    // Round 27: owner weekly summary by email (off until switched on in Insights → Settings and Resend is set up).
+    await (await import('./insights.js')).runOwnerWeeklyIfDue().catch((e) => logError('owner weekly', e));
 
     const open = await q(`SELECT id FROM trips WHERE status = 'requested' ORDER BY requested_at LIMIT 50`);
     for (const t of open) await dispatchTrip(t.id).catch((e) => logError('dispatch', e));

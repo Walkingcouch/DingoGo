@@ -30,7 +30,7 @@ export const SCREENS = [
   { app: 'admin', path: '/live' },
   { app: 'admin', path: '/dashboard' },
   { app: 'admin', path: '/trips', open: 'tbody tr.click' },
-  ...['/safety', '/support', '/drivers', '/fleet', '/pricing', '/loyalty', '/tours', '/ads', '/business', '/reports', '/tax', '/settings']
+  ...['/safety', '/support', '/drivers', '/fleet', '/pricing', '/loyalty', '/tours', '/ads', '/business', '/insights', '/reports', '/tax', '/settings']
     .map((path) => ({ app: 'admin', path, tabs: true })),
   // Partner portal
   { app: 'partner-signed-out', path: '/' },

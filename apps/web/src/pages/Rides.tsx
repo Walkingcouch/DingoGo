@@ -54,7 +54,7 @@ export default function Rides() {
       <section className="section" style={{ paddingTop: 0 }}>
         <div className="wrap">
           <h2>Prices</h2>
-          <p className="section-intro">Below the Alice Springs taxi day tariff ($5.30 flagfall plus $2.45 a km) for most trips, and fixed before you book, with no waiting-time meter and no card surcharge. All prices include GST.</p>
+          <p className="section-intro">Below the Alice Springs taxi day tariff ($5.50 flagfall plus $2.45 a km from 1 July 2026) for most trips, and fixed before you book, with no waiting-time meter and no card surcharge. All prices include GST.</p>
           <FareTable services={[rule(cfg, 'ride'), rule(cfg, 'pet')]} />
           <div className="prose" style={{ marginTop: 24 }}>
             <ul>

@@ -300,3 +300,19 @@ ul.plain { margin: 0; padding-left: 1.1rem; display: grid; gap: 4px; }
 .main > .dg-ack { padding: 0 var(--sp-6); margin: var(--sp-6) 0 var(--sp-2); } /* the console footer lines up with the page, not the rail */
 @media (max-width: 1200px) { .main > .dg-ack { padding: 0 var(--sp-5); } }
 @media (max-width: 960px) { .main > .dg-ack { padding: 0 16px; } }
+
+/* Round 27: Insights */
+.grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: var(--sp-4); align-items: start; }
+.grid-2 h3 { margin-top: 0; }
+.heat-wrap { max-width: 100%; }
+.heat { border-collapse: separate; border-spacing: 2px; font-size: .74rem; font-variant-numeric: tabular-nums; min-width: 720px; width: 100%; }
+.heat th { color: var(--muted); font-weight: 700; padding: 2px 4px; text-align: left; white-space: nowrap; }
+.heat thead th { text-align: center; font-weight: 600; }
+.heat td { height: 26px; min-width: 24px; text-align: center; border-radius: 3px; background: color-mix(in srgb, var(--line) 45%, var(--surface)); color: var(--text); }
+.sim-form { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: var(--sp-3); align-items: end; max-width: 980px; }
+.range-rows { display: grid; gap: var(--sp-2); }
+.range-row { min-width: 0; display: grid; grid-template-columns: minmax(180px, 2fr) repeat(3, minmax(120px, 1fr)) auto auto; gap: var(--sp-2); align-items: end; border: 1px solid var(--line); border-radius: var(--r-md); padding: var(--sp-2) var(--sp-3); margin: 0; background: var(--surface); }
+.range-row .dg-check { align-self: center; white-space: nowrap; }
+.range-rows > .dg-btn { justify-self: start; }
+@media (max-width: 760px) { .range-row { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } .grid-2 { grid-template-columns: 1fr; } }
+@media (max-width: 600px) { .kpis, .kpis:has(> :nth-child(6)) { grid-template-columns: repeat(2, minmax(0, 1fr)); } .kpi b { overflow-wrap: anywhere; font-size: var(--fs-xl); } }

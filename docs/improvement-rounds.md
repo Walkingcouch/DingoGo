@@ -2035,3 +2035,98 @@ Ideas for next rounds:
 - A per-route rate-limit matrix like the authorisation one: every mutating public or SMS-sending route must name its limit.
 - CSP in report-only mode for the web apps (still deferred from Round 2), now that the tour can check every screen for violations.
 - Stripe dispute evidence submitted from admin using the minimised pack.
+
+### Round 27 — owner insights and decision tools (business health, unit economics, forecasting, pricing simulator, weekly summary)
+Scan: read the admin Dashboard (`GET /admin/dashboard`), the daily summary, Reports, the GST/levy/BAS reports, `settle` and the driver
+ledger, the fare engine, driver pay rules, online sessions (`driver_online_sessions`), loyalty points, the Round 18 volume seed
+(`scripts/seed-load.ts`) and the website estimator, and checked the Alice Springs taxi tariff against nt.gov.au and NT Government
+Gazette S53. Found: nothing answers the owners' questions — what DingoGo actually keeps per trip after promos, points, card fees and GST,
+what drivers make per hour after running costs, when demand outruns supply, how many requests go unfilled, whether riders come back, or
+what a fare change would do; the dashboard's "today" mixed trips requested today with revenue of trips completed today (the 14-day chart
+counts by completion) and ran 28 correlated scans; the website's taxi comparison used the superseded 22 May 2026 tariff ($5.30/$6.60
+flagfall; the gazette sets $5.50/$6.80 from 1 July 2026) and called it "night" only inside DingoGo's 10pm–5am surcharge window (taxi
+tariff 2 runs 6pm–6am weekdays, all weekend and public holidays); no email at all, so no owner summary; the volume seed is flat (same
+fare, random hours, all rides, no pickups, online time, cancellations reasons or repeat riders), so any chart of it is noise.
+
+Suggested:
+1. [add] Business health report (admin): trips per day, gross bookings, DingoGo take and take rate, net contribution, driver earnings per
+   online and per engaged hour after running costs, unfulfilled requests, cancellation rates by who and when, pickup and wait times,
+   repeat and returning riders, ride/courier/tour mix, green-km share, each against the previous period; test accounts left out.
+2. [add] Unit economics per trip: rider paid → levy, GST, driver pay (fare less fee, pickup pay, fuel surcharge), card processing
+   estimate, promos/Pass/business/points funded by DingoGo, points issued; average waterfall in the health report and a "Unit economics"
+   panel in the trip drawer.
+3. [add] Supply vs demand heatmap by weekday and hour (requests, unfilled, drivers online from online sessions) and monthly rider cohort
+   retention.
+4. [add] Demand forecast by day and hour (recency-weighted hour-of-week baseline, trend, seasonality: tourist season, school holidays,
+   public holidays, events) with drivers needed per hour against drivers usually online, gaps and a day summary.
+5. [add] Pricing simulator: proposed base, per km, per min, booking fee, minimum and service fee replayed over recent rides and standard
+   example trips → rider fare, driver pay (per trip and per engaged hour), DingoGo take, share of trips under the taxi tariff, optional
+   price elasticity for volume.
+6. [add] Weekly owner summary (JSON, PDF, email HTML) with next week's forecast and things to watch; email through Resend behind config
+   (`RESEND_API_KEY`, `EMAIL_FROM`), recipients and an automatic Monday 7am Darwin send in the policy (off by default), sent once per week.
+7. [add] Insights policy (admin-validated setting `insights_policy`): running cost per km by fuel, card fee, target utilisation, minimum
+   drivers, seasonality calendar (events and school holidays editable, dates marked to confirm), taxi tariff, weekly email.
+8. [fix] Taxi comparison: one tariff (gazette S53, 1 July 2026) in the policy, worked out by the API for `/public/estimate` with the right
+   tariff period; website estimator, Rides page and README updated.
+9. [fix] Admin dashboard "today" counts completions and revenue by completion time (as the chart does) and the 14-day chart is one
+   grouped query.
+10. [add] Realistic volume seed for insights (hour and weekday curves, tourist season, real fares from the fare engine, couriers and
+    tours, payment mix, promos and points, cancellations with reasons, unfilled peaks, repeat riders and cohorts, online shifts) and the
+    admin Insights page (Health, Supply & demand, Forecast, Unit economics, Pricing simulator, Weekly summary, Settings).
+
+Done (all 10). No migration (reads existing tables; the policy is the `insights_policy` setting with defaults in code, the weekly
+send marker is the internal `_owner_weekly` setting). Tests: 255 → 264 (`insights.test.ts` 7 unit tests — policy checks and lenient
+reads, taxi tariff periods and metering, unit economics of a card trip with a promo, a cash courier and a cancellation fee, seasonality
+factors and drivers needed, forecast with seasonality divided out and put back plus capped trend and gaps, pricing simulator, cohorts and
+week helpers; 2 e2e — a quiet week built by hand in February 2024 where every health figure (requests, unfilled, gross, levy, driver pay,
+fees, discounts, kept, GST, card fees, refunds, net, take rate, online/engaged hours, running costs, pay per hour, riders, mix, green km,
+daily CSV) is checked to the cent, test accounts left out and back in with `include_test`, the trip drawer's economics equal to the
+report, dispatcher 403, weekly JSON/PDF/HTML, a running week refused, sending with no recipients / without email / through a fake Resend
+(auth, attachment, text), audited, Monday auto-send not before the hour and once a week; supply/demand grid, cohorts, forecast shape and
+service-hour minimum, simulator (no change at today's rates, dearer per km, fee change, tours refused, bad input, fares untouched),
+website taxi comparison at the gazetted tariff and after a policy change, none for parcels, dashboard today = completed today). Route
+matrix: 10 new admin-only routes. Tour: `admin:/insights` (7 tabs) plus dashboard and trips, phone and desktop, light and dark — 0
+problems after fixes; axe: 0 violations. Seed-load volume run: health report 180 ms, supply/demand 15 ms, forecast 30 ms, simulator
+~230 ms on 5,000 trips.
+- API: new `src/lib/insights.ts` (policy schema/defaults/checks, taxi tariff, `unitEconomics`, `factorFor`, `forecast`, `driversNeeded`,
+  `simulate`, `cohortTable`, Darwin date helpers), `src/lib/email.ts` (Resend HTTP, logged when not set up), `src/services/insights.ts`
+  (`healthReport`, `tripEconomics`, `supplyDemand`, `cohorts`, `demandForecast`, `simulatePricing`, `taxiComparison`, `weeklySummary`,
+  `weeklyPdf`, `weeklyEmail`, `sendWeekly`, `runOwnerWeeklyIfDue` in the dispatcher tick), `src/routes/insights.ts`; `routes/public.ts`
+  (estimate `taxi`), `routes/admin.ts` (dashboard today + grouped fortnight), `routes/health.ts` (`email` integration), `config.ts`
+  (`email`), `.env.example` (`RESEND_API_KEY`, `EMAIL_FROM`, `EMAIL_API_BASE`, `EMAIL_TIMEOUT_MS`), `scripts/seed-load.ts` (realistic
+  history, deterministic), `lib/baseSeed.ts` comment.
+- Apps: admin `pages/Insights.tsx` (nav Admin → Insights: Business health with daily charts and CSV, Supply & demand heatmap with four
+  measures and cohorts, Forecast & drivers with hour-by-hour plan, Unit economics, Pricing simulator, Weekly summary with PDF and send,
+  Settings with running costs, card fee, planning, seasons, school holidays and events with "date confirmed", taxi tariff, weekly email),
+  trip drawer "Unit economics" (admins), `admin.css` (heatmap, grids, range rows, KPI strip two columns on phones), `ui.tsx` (`Bars`
+  thins long x axes); web `Estimator.tsx` (taxi from the API, right tariff words), `pages/Rides.tsx` ($5.50 flagfall).
+- Docs/tests: API.md "Owner insights (Round 27)", OPERATIONS 9f, README (tariff, test count), `scripts/lib/screens.mjs` (`/insights`),
+  `test/helpers/routeAccess.ts`, `test/insights.test.ts`, `test/e2e.test.ts`.
+- Behaviour changes to note: the website's taxi comparison now uses the 1 July 2026 gazetted tariff and the taxi's own tariff periods
+  (it showed $5.30/$6.60 flagfall and "night" only 10pm–5am); `/public/estimate` has a `taxi` field; the admin dashboard's "today"
+  completed/revenue count trips finished today (not trips requested today that finished), cancelled counts cancellations made today;
+  the KPI strip shows two columns on phones in every admin page; the volume seed's history is different (realistic) — the load-test
+  tokens and live trips are unchanged.
+- Deploy: nothing to apply (no migration). Optional env `RESEND_API_KEY` and `EMAIL_FROM` (verified Resend domain) for the weekly email,
+  then switch it on in Insights → Settings with the owners' addresses. Check with the owners/accountant: running costs per km, card fee,
+  utilisation target and minimum drivers, and confirm the school holiday and event dates (defaults are marked unconfirmed).
+
+Deferred:
+- Card fees from Stripe's balance transactions (actual fees per charge) instead of the policy estimate: needs the Stripe fee data
+  pulled through the webhook or a nightly sync, and a column to keep it in.
+- Weather (BOM heat days, rain) as a forecast factor: needs a data feed agreement (as Round 19); events and seasons only for now.
+- Forecast accuracy tracking (forecast vs actual per day, stored) — needs a table to keep each day's forecast; worth it once there are
+  a few months of real trips.
+- Per-driver earnings-after-costs ranking and "drivers who'd earn more at other hours" nudges: privacy and fairness questions for the
+  owners first; the fleet-level figure is here.
+- Points issued are shown as a liability, not netted (redemptions already count as discounts); breakage assumptions are an accountant's call.
+- Thousands separators in money (`$21905.65`) — still Round 25's deferred shared `money()` decision.
+
+Ideas for next rounds:
+- Driver supply nudges: from the forecast's short hours, an opt-in text/push to drivers who usually work then ("Friday 4–7pm looks busy"),
+  with a weekly limit per driver.
+- Surge-free incentives: a "busy hour bonus" funded per trip for forecast-short hours, tried in the simulator first and paid via the ledger.
+- Stripe fee sync and a monthly management P&L (revenue kept, card fees, refunds, promos, Pass income, fleet profit, ads) for the owners.
+- Forecast accuracy panel and automatic tuning of the seasonality factors from last year's actuals once there is a year of data.
+- Rider churn alerts: riders from a good cohort who stopped riding, feeding the Round 17 win-back offers with a cost cap.
+- Partner/tour-desk and business-account contribution in the health report (which channels bring repeat riders and margin).

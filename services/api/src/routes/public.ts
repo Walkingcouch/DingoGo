@@ -1,3 +1,4 @@
+import { taxiComparison } from '../services/insights.js';
 import { pushProviders } from '../services/push.js';
 import type { FastifyInstance } from 'fastify';
 import { one, q } from '../db.js';
@@ -119,7 +120,9 @@ export default async function publicRoutes(app: FastifyInstance) {
     const r = await route(b.pickup, b.dropoff);
     const quote = quoteFare(rule, { distance_m: r.distance_m, duration_s: r.duration_s, at: new Date(), zoneMultiplier: Number(zone?.demand_multiplier ?? 1),
       levy: zone?.state_levy_cents != null ? { cents: Number(zone.state_levy_cents), label: zone.state_levy_label } : null });
-    return { quote, in_service_area: !!zone, zone: zone?.name ?? null };
+    // Round 27: what a metered taxi would charge for this distance now (gazetted tariff from the insights policy; rides only).
+    const taxi = rule.service === 'ride' || rule.service === 'pet' ? await taxiComparison(quote.distance_km).catch(() => null) : null;
+    return { quote, in_service_area: !!zone, zone: zone?.name ?? null, taxi };
   });
 
   // /public/tours: routes/tours.ts (Round 19).

@@ -5,7 +5,7 @@
  * Every insert is "only if missing" (ON CONFLICT DO NOTHING): re-running never overwrites what admins have edited since.
  * No demo people, drivers, cars, cafés, promo codes or trips — those live in scripts/seed.ts (DEMO_DATA=true).
  * Roof screens start OFF (they need written NT approval).
- * Fares are set just under the NT-regulated Alice Springs taxi tariff ($5.30 flagfall + $2.45/km day, May 2026).
+ * Fares are set just under the NT-regulated Alice Springs taxi tariff ($5.50 flagfall + $2.45/km day, gazette S53 from 1 July 2026).
  */
 import type pg from 'pg';
 import { phone as phoneSchema } from './validate.js';

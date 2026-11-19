@@ -23,6 +23,7 @@ const Business = lazyWithRetry(() => import('./pages/Business'));
 const Safety = lazyWithRetry(() => import('./pages/Safety'));
 const Support = lazyWithRetry(() => import('./pages/Support'));
 const Reports = lazyWithRetry(() => import('./pages/Reports'));
+const Insights = lazyWithRetry(() => import('./pages/Insights'));
 const Tax = lazyWithRetry(() => import('./pages/Tax'));
 const Settings = lazyWithRetry(() => import('./pages/Settings'));
 
@@ -37,7 +38,7 @@ const NAV: { group: string; items: { to: string; label: string; icon: string; ba
     { to: '/drivers', label: 'Drivers', icon: 'users', badge: 'drivers' }, { to: '/fleet', label: 'Fleet & charging', icon: 'car', badge: 'cars' }, { to: '/business', label: 'Business accounts', icon: 'receipt' }] },
   { group: 'Commercial', items: [
     { to: '/pricing', label: 'Pricing & tours', icon: 'cash' }, { to: '/tours', label: 'Tours & hire', icon: 'compass' }, { to: '/loyalty', label: 'Loyalty & vouchers', icon: 'gift' }, { to: '/ads', label: 'Roof advertising', icon: 'bolt' }] },
-  { group: 'Admin', items: [{ to: '/reports', label: 'Reports', icon: 'document' }, { to: '/tax', label: 'Tax & compliance', icon: 'receipt' }, { to: '/settings', label: 'Settings & broadcast', icon: 'settings' }] },
+  { group: 'Admin', items: [{ to: '/insights', label: 'Insights', icon: 'chart' }, { to: '/reports', label: 'Reports', icon: 'document' }, { to: '/tax', label: 'Tax & compliance', icon: 'receipt' }, { to: '/settings', label: 'Settings & broadcast', icon: 'settings' }] },
 ];
 
 const GO: Record<string, string> = { l: '/live', d: '/dashboard', t: '/trips', s: '/safety', i: '/support', r: '/drivers', f: '/fleet' };
@@ -153,6 +154,7 @@ function Shell({ me, onSignOut }: { me: any; onSignOut: () => void }) {
             <Route path="/business" element={<Business />} />
             <Route path="/safety" element={<Safety />} />
             <Route path="/support" element={<Support />} />
+            <Route path="/insights" element={<Insights />} />
             <Route path="/reports" element={<Reports />} />
             <Route path="/tax" element={<Tax />} />
             <Route path="/settings" element={<Settings />} />

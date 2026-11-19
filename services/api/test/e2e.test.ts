@@ -6017,3 +6017,198 @@ test('round 26: business routes check the account before the form, and texts to 
     await q(`DELETE FROM rate_events WHERE bucket = 'business_member_add' AND key = $1`, [biz24.acct]);
   }
 });
+
+// ───────────── Round 27: owner insights ─────────────
+test('round 27: business health, unit economics and the weekly summary add up for a quiet week (test accounts left out)', async () => {
+  const { darwinInstant: at, taxiFare } = await import('../src/lib/insights.js');
+  const { config: cfg } = await import('../src/config.js');
+  const I = await import('../src/services/insights.js');
+  const user = async (phone: string, name: string, role: string, test = false) =>
+    (await one(`INSERT INTO users (phone, name, role, referral_code, test_account) VALUES ($1,$2,$3,$4,$5)
+                ON CONFLICT (phone) DO UPDATE SET name = excluded.name RETURNING id`, [phone, name, role, 'R27' + phone.slice(-4), test])).id;
+  const rider = await user('+61400002701', 'Insights Rider', 'rider');
+  const tester = await user('+61400002702', 'Insights Tester', 'rider', true);
+  const drv = await user('+61400002711', 'Insights Driver', 'driver');
+  await q(`INSERT INTO drivers (user_id, status, state) VALUES ($1, 'approved', 'NT') ON CONFLICT (user_id) DO NOTHING`, [drv]);
+  const car = (await one(`INSERT INTO vehicles (rego, make, model, year, colour, fuel_type, status, ownership, owner_driver_id, seats)
+                          VALUES ('R27EV1', 'BYD', 'Dolphin', 2024, 'Blue', 'electric', 'approved', 'driver_owned', $1, 4) ON CONFLICT (rego) DO UPDATE SET fuel_type = 'electric' RETURNING id`, [drv])).id;
+  await q(`UPDATE drivers SET vehicle_id = $2 WHERE user_id = $1`, [drv, car]);
+  const trip = async (o: Record<string, any>) => (await one(
+    `INSERT INTO trips (ref, kind, service, status, rider_id, driver_id, vehicle_id, zone_id, pickup_lat, pickup_lng, pickup_address, dropoff_lat, dropoff_lng, dropoff_address,
+                        est_distance_m, est_duration_s, quote_cents, final_cents, fare_breakdown, payment_method, verify_pin, share_token, tip_cents, cancel_fee_cents,
+                        requested_at, accepted_at, arrived_at, started_at, completed_at, cancelled_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,'alice-springs',-23.7,133.88,'A',-23.71,133.87,'B',$8,600,coalesce($9, 0),$9,$10,$11,'1234',$1,$12,$13,$14,$15,$16,$17,$18,$19) RETURNING id`,
+    [o.ref, o.kind ?? 'ride', o.service ?? 'ride', o.status, o.rider ?? rider, o.driver === false ? null : drv, o.driver === false ? null : car, o.m ?? 5000, o.final ?? null,
+      JSON.stringify(o.fb ?? { lines: [] }), o.pay ?? 'card', o.tip ?? 0, o.cancel_fee ?? 0, o.req, o.acc ?? null, o.arr ?? null, o.start ?? null, o.done ?? null, o.cancelled ?? null])).id;
+  const ledger = (t: string, rows: [string, number][], when: Date) => Promise.all(rows.map(([k, c]) =>
+    q(`INSERT INTO driver_ledger (driver_id, trip_id, kind, amount_cents, created_at) VALUES ($1,$2,$3,$4,$5)`, [drv, t, k, c, when])));
+  const A = await trip({ ref: 'R27-A', status: 'completed', final: 1450, tip: 200, req: at('2024-02-06', 8), acc: at('2024-02-06', 8, 1), arr: at('2024-02-06', 8, 6), start: at('2024-02-06', 8, 7), done: at('2024-02-06', 8, 22),
+    fb: { levy_cents: 100, booking_fee_cents: 100, trip_cents: 1400, lines: [{ label: 'Base fare', cents: 300 }, { label: 'Distance (5.0 km)', cents: 800 }, { label: 'Time (10 min)', cents: 300 },
+      { label: 'Booking fee', cents: 100 }, { label: 'Promo WELCOME', cents: -150 }, { label: 'NT passenger levy', cents: 100 }] } });
+  await ledger(A, [['fare', 1400], ['commission', -350], ['tip', 200]], at('2024-02-06', 8, 22));
+  await q(`INSERT INTO trip_events (trip_id, at, type, actor_id, data) VALUES ($1, $2, 'accepted', $3, '{"pickup_m": 2000}')`, [A, at('2024-02-06', 8, 1), drv]);
+  await q(`INSERT INTO loyalty_ledger (user_id, points, reason, trip_id, created_at) VALUES ($1, 14, 'trip_earned', $2, $3)`, [rider, A, at('2024-02-06', 8, 22)]);
+  await q(`INSERT INTO payments (trip_id, user_id, provider, kind, amount_cents, status, created_at) VALUES ($1,$2,'mock','refund',-500,'succeeded',$3)`, [A, rider, at('2024-02-07', 9)]);
+  const B = await trip({ ref: 'R27-B', kind: 'courier', service: 'courier_s', status: 'completed', final: 1500, pay: 'cash', m: 3000, req: at('2024-02-07', 14), acc: at('2024-02-07', 14, 1),
+    arr: at('2024-02-07', 14, 5), start: at('2024-02-07', 14, 6), done: at('2024-02-07', 14, 21), fb: { levy_cents: 0, booking_fee_cents: 0, trip_cents: 1500, lines: [{ label: 'Base fare', cents: 1500 }] } });
+  await ledger(B, [['fare', 1500], ['commission', -375], ['cash_collected', -1500]], at('2024-02-07', 14, 21));
+  await trip({ ref: 'R27-C', status: 'no_drivers', driver: false, req: at('2024-02-08', 22) });
+  const D = await trip({ ref: 'R27-D', status: 'cancelled_rider', cancel_fee: 300, req: at('2024-02-09', 9), acc: at('2024-02-09', 9, 1), cancelled: at('2024-02-09', 9, 5),
+    fb: { lines: [{ label: 'Promo WELCOME', cents: -150 }] } });
+  await ledger(D, [['cancel_fee', 225]], at('2024-02-09', 9, 5));
+  const E = await trip({ ref: 'R27-E', status: 'completed', rider: tester, final: 5000, req: at('2024-02-10', 12), acc: at('2024-02-10', 12, 1), done: at('2024-02-10', 12, 30), fb: { levy_cents: 100, lines: [] } });
+  await ledger(E, [['fare', 4900], ['commission', -1225]], at('2024-02-10', 12, 30));
+  await q(`INSERT INTO driver_online_sessions (driver_id, started_at, ended_at) VALUES ($1,$2,$3), ($1,$4,$5)`, [drv, at('2024-02-06', 7, 30), at('2024-02-06', 11, 30), at('2024-02-07', 13), at('2024-02-07', 15)]);
+
+  const h = await call('GET', '/admin/insights/health?from=2024-02-05&to=2024-02-11', 'admin');
+  assert.equal(h.status, 200, JSON.stringify(h));
+  assert.equal(h.days, 7);
+  assert.deepEqual([h.trips.requests, h.trips.completed, h.trips.no_drivers, h.trips.rider_gave_up, h.trips.cancellations.rider_after_accept, h.trips.unfilled_pct], [4, 2, 1, 0, 1, 25]);
+  const m = h.money;
+  assert.deepEqual([m.gross_cents, m.levy_cents, m.driver_pay_cents, m.service_fees_cents, m.booking_fees_cents, m.cancel_fees_kept_cents, m.discounts_cents, m.discounts.promo],
+    [3250, 100, 2400, 725, 100, 75, 150, 150]);
+  assert.equal(m.kept_cents, 750);
+  assert.equal(m.kept_cents, m.service_fees_cents + m.booking_fees_cents + m.cancel_fees_kept_cents - m.discounts_cents, 'kept is explained by fees less discounts');
+  assert.deepEqual([m.gst_cents, m.card_fees_cents, m.refunds_cents, m.net_cents, m.take_rate_pct, m.points_issued, m.tips_cents], [68, 55 + 34 + 35, 500, 750 - 68 - 124 - 500, 23.8, 14, 200]);
+  assert.deepEqual([h.drivers.online_hours, h.drivers.engaged_hours, h.drivers.running_costs_cents, h.drivers.earnings_cents, h.drivers.per_online_hour_cents, h.drivers.per_engaged_hour_cents],
+    [6, 0.7, 56 + 36, 2600, Math.round((2600 - 92) / 6), Math.round((2600 - 92) / (41 / 60))]);
+  assert.deepEqual([h.riders.active, h.riders.repeat, h.riders.new, h.green.green_km_pct], [1, 1, 1, 100]);
+  assert.deepEqual(h.mix.map((x: any) => [x.kind, x.trips]), [['rides', 1], ['courier', 1], ['tours', 0]]);
+  assert.equal(h.daily.length, 7);
+  assert.equal(h.daily.find((d: any) => d.day === '2024-02-06').kept_cents, 1450 - 100 - 1050);
+  assert.equal(h.previous.trips.completed, 0);
+  assert.equal(h.changes.completed_pct, null, 'nothing the week before: no percentage');
+  const withTest = await call('GET', '/admin/insights/health?from=2024-02-05&to=2024-02-11&include_test=true', 'admin');
+  assert.equal(withTest.trips.completed, 3);
+  assert.equal(withTest.money.gross_cents, 3250 + 5000);
+  const csv = await app.inject({ method: 'GET', url: '/admin/insights/health?from=2024-02-05&to=2024-02-11&format=csv', headers: { authorization: `Bearer ${tokens.admin}` } });
+  assert.match(csv.body.split('\r\n')[0], /^\uFEFF?Day,Requests,Unfilled,Completed/);
+  assert.match(csv.body, /2024-02-06,1,0,1,1,0,0,14\.50,3\.00/);
+
+  // One trip, the same sums: the trip drawer and the report agree.
+  const e = await call('GET', `/admin/trips/${A}/economics`, 'admin');
+  assert.deepEqual([e.rider_paid_cents, e.levy_cents, e.driver.pay_cents, e.dingogo.kept_cents, e.dingogo.discounts.promo, e.dingogo.other_cents, e.dingogo.gst_cents, e.dingogo.card_fees_cents,
+    e.dingogo.refunds_cents, e.dingogo.net_cents, e.points_issued, e.take_rate_pct], [1450, 100, 1050, 300, 150, 0, 27, 89, 500, 300 - 27 - 89 - 500, 14, 22.2]);
+  assert.deepEqual([e.driver_costs.km, e.driver_costs.running_cost_cents, e.driver_costs.engaged_min], [7, 56, 21]);
+  const eD = await call('GET', `/admin/trips/${D}/economics`, 'admin');
+  assert.deepEqual([eD.rider_paid_cents, eD.driver.pay_cents, eD.dingogo.kept_cents, eD.dingogo.discounts_cents], [300, 225, 75, 0]);
+  assert.equal((await call('GET', `/admin/trips/not-a-trip/economics`, 'admin')).status, 404);
+  if (!tokens.dispatcher) await login('dispatcher', '+61400000002', 'admin');
+  assert.equal((await call('GET', `/admin/trips/${A}/economics`, 'dispatcher')).status, 403, 'money is for admins');
+
+  // Weekly summary for that week (any day of it), PDF and email HTML; a week still running is refused.
+  const w = await call('GET', '/admin/insights/weekly?week=2024-02-08', 'admin');
+  assert.deepEqual([w.week, w.to, w.health.trips.completed, w.busiest_day.completed], ['2024-02-05', '2024-02-11', 2, 1]);
+  assert.ok(w.watch.some((x: string) => /unfilled/.test(x)), 'a quarter of requests unfilled is worth a look');
+  assert.equal(w.email.configured, false);
+  const pdf = await app.inject({ method: 'GET', url: '/admin/insights/weekly?week=2024-02-05&format=pdf', headers: { authorization: `Bearer ${tokens.admin}` } });
+  assert.equal(pdf.headers['content-type'], 'application/pdf');
+  assert.ok(pdf.rawPayload.subarray(0, 5).toString() === '%PDF-');
+  const html = await app.inject({ method: 'GET', url: '/admin/insights/weekly?week=2024-02-05&format=html', headers: { authorization: `Bearer ${tokens.admin}` } });
+  assert.match(html.body, /DingoGo week in review/);
+  assert.match(String(html.headers['content-security-policy']), /default-src 'none'/);
+  assert.equal((await call('GET', `/admin/insights/weekly?week=${darwinDay(0)}`, 'admin')).error, 'week_not_finished');
+
+  // Sending: nobody to send to; email not set up (logged, not sent); then through a fake Resend.
+  assert.equal((await call('POST', '/admin/insights/weekly/send', 'admin', { week: '2024-02-05' })).error, 'no_recipients');
+  const off = await call('POST', '/admin/insights/weekly/send', 'admin', { week: '2024-02-05', to: ['owner@example.com'] });
+  assert.deepEqual([off.status, off.sent, off.error], [200, false, 'email_not_configured']);
+  const got: { auth: string; key: string; body: any }[] = [];
+  const fake = http.createServer((req, res) => {
+    let b = ''; req.on('data', (c) => { b += c; });
+    req.on('end', () => { got.push({ auth: String(req.headers.authorization), key: String(req.headers['idempotency-key']), body: JSON.parse(b) }); res.setHeader('content-type', 'application/json'); res.end(JSON.stringify({ id: `em_${got.length}` })); });
+  });
+  await new Promise<void>((r) => fake.listen(0, '127.0.0.1', () => r()));
+  const saved = { ...cfg.email };
+  Object.assign(cfg.email, { resendApiKey: 're_test_key', from: 'DingoGo <reports@example.com>', apiBase: `http://127.0.0.1:${(fake.address() as AddressInfo).port}` });
+  try {
+    const sent = await call('POST', '/admin/insights/weekly/send', 'admin', { week: '2024-02-05', to: ['owner@example.com'] });
+    assert.deepEqual([sent.sent, sent.provider, sent.id, sent.recipients], [true, 'resend', 'em_1', 1]);
+    assert.equal(got[0].auth, 'Bearer re_test_key');
+    assert.deepEqual(got[0].body.to, ['owner@example.com']);
+    assert.match(got[0].body.subject, /^DingoGo week of /);
+    assert.equal(got[0].body.attachments[0].filename, 'dingogo-week-2024-02-05.pdf');
+    assert.equal(Buffer.from(got[0].body.attachments[0].content, 'base64').subarray(0, 5).toString(), '%PDF-');
+    assert.match(got[0].body.text, /Trips completed: 2/);
+    assert.ok((await one(`SELECT 1 FROM audit_log WHERE action = 'owner_weekly_email' AND entity_id = '2024-02-05' AND data->>'sent' = 'true'`)), 'audited');
+
+    // Monday email: checked, switched on, sent once per week from the set hour, never before.
+    assert.equal((await call('PUT', '/admin/insights/policy', 'admin', { weekly_email: { enabled: true, recipients: [], hour: 7 } })).error, 'invalid_insights_policy');
+    assert.equal((await call('PUT', '/admin/insights/policy', 'admin', { target_utilisation_pct: 99 })).error, 'invalid_insights_policy');
+    const pol = await call('PUT', '/admin/insights/policy', 'admin', { weekly_email: { enabled: true, recipients: ['Owner@Example.com'], hour: 7 } });
+    assert.deepEqual([pol.status, pol.policy.weekly_email.recipients, pol.email_configured], [200, ['owner@example.com'], true]);
+    await q(`DELETE FROM settings WHERE key = '_owner_weekly'`);
+    I.resetWeeklyCheck();
+    assert.equal(await I.runOwnerWeeklyIfDue(at('2024-02-12', 6, 30)), null, 'Monday before 7am: not yet');
+    I.resetWeeklyCheck();
+    const auto = await I.runOwnerWeeklyIfDue(at('2024-02-12', 7, 5));
+    assert.deepEqual([auto?.sent, auto?.week], [true, '2024-02-05']);
+    I.resetWeeklyCheck();
+    assert.equal(await I.runOwnerWeeklyIfDue(at('2024-02-13', 9)), null, 'once a week');
+    assert.equal(got.filter((g) => g.key.startsWith('owner-weekly-2024-02-05')).length, 2, 'one by hand, one automatic');
+    assert.equal((await call('GET', '/admin/settings', 'admin')).items.some((s: any) => s.key === '_owner_weekly'), false, 'internal marker hidden');
+  } finally {
+    Object.assign(cfg.email, saved);
+    fake.close();
+    await q(`DELETE FROM settings WHERE key IN ('insights_policy', '_owner_weekly')`);
+    invalidateConfig();
+  }
+});
+
+test('round 27: supply and demand, cohorts, forecast, pricing simulator and the website’s taxi comparison', async () => {
+  const sd = await call('GET', '/admin/insights/supply-demand?weeks=4', 'admin');
+  assert.equal(sd.status, 200);
+  assert.equal(sd.cells.length, 7 * 24);
+  assert.equal(sd.weeks, 4);
+  assert.ok(sd.cells.every((c: any) => c.weekday >= 0 && c.weekday < 7 && c.hour >= 0 && c.hour < 24));
+  const co = await call('GET', '/admin/insights/cohorts?months=3', 'admin');
+  assert.equal(co.months, 3);
+  assert.ok(co.cohorts.every((c: any) => c.retained.length === 4 && (c.riders === 0 || c.retained[0] === 100)));
+  const fc = await call('GET', '/admin/insights/forecast?days=7', 'admin');
+  assert.equal(fc.days.length, 7);
+  assert.equal(fc.days[0].date, darwinDay(1));
+  assert.ok(fc.days.every((d: any) => d.hours.length === 24 && d.hours.every((x: any) => x.drivers_needed >= 0)));
+  assert.ok(fc.days[0].hours[10].drivers_needed >= 2, 'the minimum online in service hours');
+  assert.ok(Array.isArray(fc.unconfirmed) && fc.unconfirmed.length > 0, 'default dates to confirm are listed');
+
+  const now = await call('POST', '/admin/insights/simulate', 'admin', { service: 'ride', days: 28 });
+  assert.equal(now.status, 200, JSON.stringify(now));
+  assert.ok(now.now.trips > 0, 'the demo history has rides');
+  assert.equal(now.change.avg_fare_pct, 0);
+  assert.equal(now.rule.per_km_cents, 160);
+  const up = await call('POST', '/admin/insights/simulate', 'admin', { service: 'ride', days: 28, elasticity: -0.4, proposed: { per_km_cents: 190 }, fee_pct: 20 });
+  assert.ok(up.proposed.avg_fare_cents > up.now.avg_fare_cents && up.proposed.avg_driver_pay_cents > up.now.avg_driver_pay_cents);
+  assert.equal(up.proposed_rule.per_km_cents, 190);
+  assert.deepEqual(up.fee_pct, { now: 25, proposed: 20 });
+  assert.ok(up.estimate.trips <= up.now.trips);
+  assert.equal(up.examples.length, 8);
+  assert.equal((await call('POST', '/admin/insights/simulate', 'admin', { service: 'tour' })).error, 'not_metered');
+  assert.equal((await call('POST', '/admin/insights/simulate', 'admin', { proposed: { per_km_cents: -1 } })).status, 400);
+  assert.equal((await call('POST', '/admin/insights/simulate', 'admin', { service: 'nope' })).status, 404);
+  const fare = await one(`SELECT per_km_cents FROM fare_rules WHERE service = 'ride'`);
+  assert.equal(fare.per_km_cents, 160, 'simulating changes nothing');
+
+  // Website price check: the taxi fare for the distance at the gazetted tariff; changes with the policy at once on this instance.
+  const { taxiFare, INSIGHTS_DEFAULTS } = await import('../src/lib/insights.js');
+  const est = await call('POST', '/public/estimate', undefined, { service: 'ride', pickup: TODD_MALL, dropoff: HOSPITAL }, '10.27.0.1');
+  assert.equal(est.status, 200);
+  assert.ok(['day', 'night'].includes(est.taxi.tariff));
+  assert.equal(est.taxi.cents, taxiFare(est.quote.distance_km, new Date(), false, INSIGHTS_DEFAULTS.taxi_tariff).cents);
+  assert.match(est.taxi.source, /S53/);
+  try {
+    const t = { ...INSIGHTS_DEFAULTS.taxi_tariff, day: { flagfall_cents: 1000, per_km_cents: 300 }, night: { flagfall_cents: 1000, per_km_cents: 300 } };
+    assert.equal((await call('PUT', '/admin/insights/policy', 'admin', { taxi_tariff: t })).status, 200);
+    const est2 = await call('POST', '/public/estimate', undefined, { service: 'ride', pickup: TODD_MALL, dropoff: HOSPITAL }, '10.27.0.1');
+    assert.equal(est2.taxi.cents, Math.round((1000 + 300 * est2.quote.distance_km) / 10) * 10);
+    const courier = await call('POST', '/public/estimate', undefined, { service: 'courier_s', pickup: TODD_MALL, dropoff: HOSPITAL }, '10.27.0.1');
+    assert.equal(courier.taxi, null, 'no taxi comparison for parcels');
+  } finally {
+    await q(`DELETE FROM settings WHERE key = 'insights_policy'`);
+    invalidateConfig();
+  }
+  // Dashboard "today" counts completions by when they finished, like its chart.
+  const d = await call('GET', '/admin/dashboard', 'admin');
+  const sql = await one(`SELECT count(*)::int n FROM trips WHERE status = 'completed' AND completed_at >= (date_trunc('day', now() AT TIME ZONE 'Australia/Darwin') AT TIME ZONE 'Australia/Darwin')`);
+  assert.equal(d.today.completed, sql.n);
+  assert.equal(d.daily[d.daily.length - 1].trips, sql.n);
+});

@@ -30,6 +30,7 @@ export function integrationStatus() {
     sms_replies: on(!!config.twilio.token && !!replyableSender()), sms_relay: on(!!(config.twilio.relayNumber && config.twilio.sid && config.twilio.token)),
     push_fcm: on(pushProviders().fcm), push_web: on(pushProviders().web), push_expo: on(config.expoPushEnabled),
     error_reporting: on(sentryConfigured()),
+    email: on(!!(config.email.resendApiKey && config.email.from)),
   };
 }
 

@@ -322,7 +322,7 @@ export function Bars({ data, value, label, format = (v) => String(v), color = 'v
   const max = raw > 0 ? niceMax(raw) : 1;
   const w = 100 / Math.max(1, data.length);
   const ticks = [max, max / 2, 0];
-  const step = data.length > 10 ? 3 : 1;
+  const step = data.length > 10 ? Math.max(3, Math.ceil(data.length / 7)) : 1;
   return (
     <figure className="chart">
       <div className="chart__plot">

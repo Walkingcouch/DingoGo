@@ -202,14 +202,15 @@ export default async function adminRoutes(app: FastifyInstance) {
     await ops(req);
     const tz = `'Australia/Darwin'`;
     const todayStart = `(date_trunc('day', now() AT TIME ZONE ${tz}) AT TIME ZONE ${tz})`;
+    // Round 27: requests and their outcomes by when they were made; completions and money by when the trip finished (as the
+    // 14-day chart counts them), so "today" and "yesterday" compare like with like.
     const today = await one(
-      `SELECT count(*)::int requested,
-              count(*) FILTER (WHERE status = 'completed')::int completed,
-              count(*) FILTER (WHERE status::text LIKE 'cancelled%')::int cancelled,
-              count(*) FILTER (WHERE status = 'no_drivers')::int unfulfilled,
-              coalesce(sum(final_cents) FILTER (WHERE status = 'completed'),0)::int revenue_cents,
-              count(*) FILTER (WHERE kind = 'courier')::int courier
-       FROM trips WHERE requested_at >= ${todayStart}`);
+      `SELECT (SELECT count(*)::int FROM trips WHERE requested_at >= ${todayStart}) requested,
+              (SELECT count(*)::int FROM trips WHERE requested_at >= ${todayStart} AND kind = 'courier') courier,
+              (SELECT count(*)::int FROM trips WHERE status::text LIKE 'cancelled%' AND cancelled_at >= ${todayStart}) cancelled,
+              (SELECT count(*)::int FROM trips WHERE status = 'no_drivers' AND requested_at >= ${todayStart}) unfulfilled,
+              count(*)::int completed, coalesce(sum(final_cents),0)::int revenue_cents
+       FROM trips WHERE status = 'completed' AND completed_at >= ${todayStart}`);
     const live = await one(
       `SELECT (SELECT count(*)::int FROM trips WHERE status IN ('requested','accepted','arrived','in_progress')) active_trips,
               (SELECT count(*)::int FROM trips WHERE status = 'scheduled') scheduled,
@@ -222,11 +223,13 @@ export default async function adminRoutes(app: FastifyInstance) {
               (SELECT count(*)::int FROM compliance_flags WHERE status = 'open') open_flags,
               (SELECT count(*)::int FROM hire_requests WHERE status = 'new') new_hire_requests,
               (SELECT count(*)::int FROM driver_applications WHERE status = 'new') new_applications`);
+    // One grouped read over the fortnight (was two correlated scans per day).
     const daily = await q(
-      `SELECT to_char(d, 'YYYY-MM-DD') AS day,
-              coalesce((SELECT sum(final_cents) FROM trips t WHERE t.status='completed' AND (t.completed_at AT TIME ZONE ${tz})::date = d),0)::int revenue_cents,
-              coalesce((SELECT count(*) FROM trips t WHERE t.status='completed' AND (t.completed_at AT TIME ZONE ${tz})::date = d),0)::int trips
-       FROM generate_series((now() AT TIME ZONE ${tz})::date - 13, (now() AT TIME ZONE ${tz})::date, interval '1 day') d`);
+      `WITH c AS (SELECT (completed_at AT TIME ZONE ${tz})::date AS d, sum(final_cents) AS cents, count(*) AS n FROM trips
+                  WHERE status = 'completed' AND completed_at >= ((now() AT TIME ZONE ${tz})::date - 13)::timestamp AT TIME ZONE ${tz} GROUP BY 1)
+       SELECT to_char(g, 'YYYY-MM-DD') AS day, coalesce(c.cents, 0)::int revenue_cents, coalesce(c.n, 0)::int trips
+       FROM generate_series((now() AT TIME ZONE ${tz})::date - 13, (now() AT TIME ZONE ${tz})::date, interval '1 day') g
+       LEFT JOIN c ON c.d = g::date ORDER BY g`);
     const mix = await q(`SELECT service, count(*)::int n FROM trips WHERE status = 'completed' AND completed_at > now() - interval '30 days' GROUP BY service ORDER BY n DESC`);
     // Going electric: share of completed-trip km done in green cars (EV + hybrids) over 30 days; EV km & CO₂ count electric cars only.
     const green = await one(

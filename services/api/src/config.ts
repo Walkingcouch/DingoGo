@@ -88,6 +88,14 @@ export const config = {
     vapidSubject: env.WEB_PUSH_SUBJECT ?? 'mailto:support@dingogo.com.au',
     timeoutMs: Number(env.PUSH_TIMEOUT_MS ?? 8000),
   },
+  /** Round 27: email (owner weekly summary) through Resend's HTTP API. Without a key, emails are written to the log and not sent. */
+  email: {
+    resendApiKey: env.RESEND_API_KEY ?? '',
+    /** Sender on a domain verified in Resend, e.g. "DingoGo <reports@dingogo.com.au>". */
+    from: env.EMAIL_FROM ?? '',
+    apiBase: env.EMAIL_API_BASE ?? 'https://api.resend.com',
+    timeoutMs: Number(env.EMAIL_TIMEOUT_MS ?? 10000),
+  },
   /** Legacy: Expo push service, used only for Expo tokens (ExponentPushToken[…]). */
   expoPushEnabled: env.EXPO_PUSH_ENABLED === 'true',
   orsKey: env.ORS_API_KEY ?? '',                             // openrouteservice.org free key (2,000 routes/day)

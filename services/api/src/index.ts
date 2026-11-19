@@ -35,6 +35,7 @@ import tourRoutes from './routes/tours.js';
 import fleetRoutes from './routes/fleet.js';
 import storeRoutes from './routes/store.js';
 import supportRoutes from './routes/support.js';
+import insightsRoutes from './routes/insights.js';
 import { log, logError, reportError, requestId, safePath } from './lib/log.js';
 import { autoMigrateOnce } from './lib/bootstrap.js';
 
@@ -225,6 +226,7 @@ export async function buildServer() {
   await app.register(fleetRoutes);
   await app.register(storeRoutes);
   await app.register(supportRoutes);
+  await app.register(insightsRoutes);
   return app;
 }
 

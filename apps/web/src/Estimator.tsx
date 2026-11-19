@@ -79,9 +79,9 @@ export const RIDER_URL: string = env.VITE_RIDER_URL || '/rider/';
 export const ANDROID_RIDER_APK = 'https://github.com/Walkingcouch/DingoGo/releases/download/android-latest/dingogo-rider.apk';
 export const ANDROID_DRIVER_APK = 'https://github.com/Walkingcouch/DingoGo/releases/download/android-latest/dingogo-driver.apk';
 
-/** Alice Springs taxi tariffs (NT Government, from 22 May 2026): day $5.30 + $2.45/km; night & weekend $6.60 + $2.89/km. */
-const isNightQuote = (q: { lines: { label: string }[] }) => q.lines.some((l) => l.label.startsWith('Late-night'));
-const taxiEstimate = (km: number, night: boolean) => Math.round(night ? 660 + 289 * km : 530 + 245 * km);
+/** Taxi comparison: the API works it out from the gazetted Alice Springs tariff (NT Government Gazette S53, from 1 July 2026: tariff 1
+ *  $5.50 + $2.45/km on weekdays 6am–6pm; tariff 2 $6.80 + $2.89/km at other times, weekends and public holidays). */
+type Taxi = { cents: number; tariff: 'day' | 'night'; source: string };
 
 /** A place from a link (lat, lng, name) as an estimator place. */
 export const linkPlace = (p: { name: string; lat: number; lng: number }): Place => ({ name: p.name, address: p.name, lat: p.lat, lng: p.lng });
@@ -100,6 +100,7 @@ export function Estimator({ initialService = 'ride', compact = false, initialFro
   const [size, setSize] = useState(initialService.startsWith('courier') ? initialService : 'courier_s');
   const service = mode === 'parcel' ? size : mode;
   const [quote, setQuote] = useState<Quote | null>(null);
+  const [taxi, setTaxi] = useState<Taxi | null>(null);
   const [inArea, setInArea] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -108,8 +109,8 @@ export function Estimator({ initialService = 'ride', compact = false, initialFro
     if (!from || !to) return;
     let stale = false;
     setLoading(true);
-    post<{ quote: Quote; in_service_area: boolean }>('/public/estimate', { service, pickup: from, dropoff: to })
-      .then((r) => { if (!stale) { setQuote(r.quote); setInArea(r.in_service_area); setError(null); } })
+    post<{ quote: Quote; in_service_area: boolean; taxi?: Taxi | null }>('/public/estimate', { service, pickup: from, dropoff: to })
+      .then((r) => { if (!stale) { setQuote(r.quote); setTaxi(r.taxi ?? null); setInArea(r.in_service_area); setError(null); } })
       .catch((e) => { if (!stale) setError(e instanceof ApiError ? e.message : 'Price unavailable right now'); })
       .finally(() => { if (!stale) setLoading(false); });
     return () => { stale = true; };
@@ -173,9 +174,9 @@ export function Estimator({ initialService = 'ride', compact = false, initialFro
                 <li><span>Includes GST</span><span>{money(quote.gst_cents)}</span></li>
               </ul>
             </details>
-            {isRide && inArea && (
+            {isRide && inArea && taxi && (
               <p className="est-compare">
-                A taxi on the {isNightQuote(quote) ? 'night' : 'day'} tariff would be about <b>{money(taxiEstimate(quote.distance_km, isNightQuote(quote)))}</b> for this distance, before waiting time and card surcharge.
+                A taxi on the {taxi.tariff === 'night' ? 'night and weekend' : 'weekday day'} tariff would be about <b>{money(taxi.cents)}</b> for this distance right now, before waiting time and card surcharge.
               </p>
             )}
             {!inArea && <p className="dg-note" style={{ marginTop: 10 }}>That pickup is outside Alice Springs. We're starting in town first.</p>}

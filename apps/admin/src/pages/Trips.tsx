@@ -206,6 +206,7 @@ function TripDrawer({ id, onClose }: { id: string; onClose: () => void }) {
             <tr><td><strong>Driver total</strong></td><td className="num"><strong>{money(data.driver_ledger.filter((l: any) => l.kind !== 'cash_collected').reduce((s: number, l: any) => s + l.amount_cents, 0))}</strong></td></tr>
           </tbody></table>
         </>)}
+        {(t.status === 'completed' || t.cancel_fee_cents > 0) && <TripEconomics id={id} />}
         {t.kind === 'ride' && ['accepted', 'arrived', 'in_progress'].includes(t.status) && (
           <div className="panel" style={{ marginTop: 18 }}>
             <h3>Check on the rider</h3>
@@ -332,4 +333,26 @@ function StaffMessage({ tripId, onSent }: { tripId: string; onSent: () => void }
       <button className="dg-btn dg-btn--sm dg-btn--dark">Send</button>
     </form>
   );
+}
+
+/** Round 27: where this trip's money went (admin only; dispatchers don't see it). */
+function TripEconomics({ id }: { id: string }) {
+  const e = useLoad(() => get(`/admin/trips/${id}/economics`).catch(() => null), [id]);
+  const d = e.data;
+  if (!d) return null;
+  const g = d.dingogo;
+  const rows: [string, number, boolean?][] = [
+    ['Rider paid', d.rider_paid_cents, true], ['NT passenger levy', -d.levy_cents], ...(d.guide_fee_cents ? [['Guide fee (to the guide)', -d.guide_fee_cents] as [string, number]] : []),
+    ['Driver pay', -d.driver.pay_cents], ['DingoGo kept', g.kept_cents, true],
+    ...(Object.entries(g.discounts) as [string, number][]).filter(([, v]) => v > 0).map(([k, v]) => [`  includes ${String(d.discount_labels[k]).toLowerCase()}`, -v] as [string, number]),
+    ['GST (estimate)', -g.gst_cents], ['Card fees (estimate)', -g.card_fees_cents], ...(g.refunds_cents ? [['Refunded', -g.refunds_cents] as [string, number]] : []),
+    ['Net contribution', g.net_cents, true],
+  ];
+  return (<>
+    <h3 style={{ marginTop: 18 }}>Unit economics</h3>
+    <table className="tbl"><caption className="sr-only">Where this trip's money went</caption><tbody>
+      {rows.map(([k, v, strong]) => <tr key={k}><td style={{ paddingLeft: k.startsWith('  ') ? 24 : undefined }}>{strong ? <strong>{k.trim()}</strong> : k.trim()}</td><td className="num">{strong ? <strong>{money(v)}</strong> : money(v)}</td></tr>)}
+    </tbody></table>
+    <p className="dg-muted" style={{ fontSize: 'var(--fs-sm)' }}>Take rate {d.take_rate_pct ?? '—'}%. Driver: {d.driver_costs.km} km incl. pickup, about {money(d.driver_costs.running_cost_cents)} running costs, {money(d.driver_costs.after_costs_cents)} after costs{d.driver_costs.per_engaged_hour_cents != null ? ` (${money(d.driver_costs.per_engaged_hour_cents)} an hour)` : ''}. {d.points_issued ? `${d.points_issued} Dingo Points earned.` : ''}</p>
+  </>);
 }
