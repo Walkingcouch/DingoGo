@@ -1373,3 +1373,88 @@ Ideas for next rounds:
 - Tour reviews and ratings per tour and per guide, shown with consent on the website.
 - Yulara / Uluru long-distance tours when the zone opens (charging plan, overnight driver rest rules).
 - Desk statements as PDF and a QR poster for hotel lobbies linking to the tour pages with the desk's referral.
+
+### Round 20 — fleet and EV programme (contracts, maintenance, charging, insurance, profitability, investors)
+Scan: read the vehicles schema (`ownership`, `lease_weekly_cents`), `POST /admin/lease/run`, the charging routes (driver log, admin
+month view and reimburse), battery logs, the Fleet admin page, payouts, the tax statement's lease line and the seed (3 DingoGo BYD
+Dolphins, two "leased"). Found: the lease run could take a driver's balance below zero (it charged the full amount whatever they had
+earned), decided "already charged" with a rolling 6-day window (a Tuesday run then a Monday run skipped a week; no lock, so two
+clicks at once could both charge), kept no record of weeks or arrears, and there was no contract (start, end, rent-to-own price,
+deposit, buy-out); every charging session was reimbursable, including cars drivers own and depot charging, at whatever cost the
+driver typed; no maintenance, downtime, spare cars, insurance or claims records; nothing showed whether a car makes money or what an
+investor's share is.
+
+Suggested:
+1. [fix] Weekly lease run: never below zero (capped at the driver's balance), once per Darwin week with a lock, results recorded;
+   before migration 024 the old run keeps working with the cap.
+2. [add] Fleet contracts (weekly lease and rent-to-own): terms (weekly amount, start/end, deposit, price and term for rent-to-own,
+   catch-up cap, amount always left to the driver), car assigned on start; weekly deduction once per contract per Darwin week, capped
+   so the driver never goes negative, arrears carried and caught up later within the cap; hardship pause (no arrears build up);
+   manual payments and waivers; arrears flag to compliance and a plain note to the driver after N weeks; buy-out balance, buy-out
+   transfers the car to the driver; ending returns the car. Optional automatic Monday run (off by default).
+3. [add] Maintenance scheduling: service plans by fuel type (km and months) for servicing, tyre and brake checks, EV battery health
+   checks shortened in the hot months and brought forward after a hot week (battery logs); due/overdue list per car; jobs booked →
+   off road (car leaves dispatch, downtime counted) → back; spare-car allocation for the car's driver and return afterwards.
+4. [fix] Charging cost rules: home charging reimbursed at the policy tariff per kWh, public charging at cost up to a per-kWh cap
+   (receipt reference kept), depot charging and cars drivers own never; monthly cap per driver; reimburse pays the rule's amount.
+5. [add] Insurance policies and a claims log per car (insurer, policy number, cover, premium, excess, dates; claims with status,
+   excess, driver contribution, payout, repair cost); the policy's end date keeps the car's insurance expiry in step.
+6. [add] Per-car utilisation and profitability for any date range: trips, km, engaged hours per day, days off road, utilisation, income
+   (service fees, lease/rent-to-own collected, roof-screen ads) against costs (charging, maintenance, insurance, claim excess,
+   finance), profit and profit per km; CSV.
+7. [add] Investor revenue share (admin only): investors, share of a car by percent and dates, monthly report and CSV.
+8. [add] Driver: `GET /driver/fleet` (contract, this week, arrears, buy-out balance, history, next service) and a "Your car
+   agreement" panel in the driver app shown only to drivers on a contract; the charging screen shows how a session is reimbursed.
+9. [add] Fleet programme switch (`fleet_policy`, off by default): the new admin tabs stay behind "Fleet programme" until it is
+   switched on; validated policy (charging rules, service plans, arrears weeks, auto run).
+10. [add] Docs (API.md, OPERATIONS.md, README) and tests.
+
+Done (all 10). Migration: `services/api/migrations/024_fleet.sql` (columns `vehicles.purchase_price_cents/purchase_date/
+finance_weekly_cents/spare`, `charging_sessions.reimburse_cents/rule/receipt_ref`; tables `fleet_contracts` (one live agreement per car
+and per driver), `fleet_contract_weeks` (one row per agreement per week), `fleet_contract_payments`, `vehicle_maintenance`,
+`fleet_insurance`, `fleet_claims`, `fleet_investors`, `fleet_investor_shares`; backfills a weekly-lease agreement for each car already
+leased to a driver; additive, IF NOT EXISTS). Before it (`services/fleet.ts` `fleetReady()`, re-checked once a minute): the old lease run
+works (once per Darwin week, locked per driver, capped at the balance), charging logs get the right `reimbursable` and reimburse at cost,
+the car form drops the new fields, `/driver/fleet` says not ready, everything else answers 503 `migration_pending`. Tests: 188 → 198
+(`fleet.test.ts` 5 unit tests — weekly deduction incl. short weeks, catch-up cap, kept minimum, paid ahead, rent-to-own end; agreement
+totals and buy-out; charging rules; maintenance due by km/months, fuels, summer battery interval and hot week; policy checks and
+proration/investor share; 5 e2e — weekly lease never below zero, arrears and catch-up, two runs at once charge once, flag and driver note,
+waiver/payment limits, pause, driver view, roles; rent-to-own checks, weekly run, bank payment, buy-out from balance transfers the car,
+ending returns it; maintenance board with the battery heat rule, off road with a spare and back, odometer and cost, cancel rules, past
+jobs; charging rules and monthly cap, insurance expiry sync, claims with admin-only money, profitability JSON/CSV, investor shares never
+over 100% and the monthly report; everything with the 024 tables and columns renamed away).
+- API: new `src/lib/fleet.ts` (policy, `weekDeduction`, `contractTotals`, `chargeReimbursement`, `dueFor`, proration, `investorShare`),
+  `src/services/fleet.ts` (agreements, `runWeek`, `autoWeeklyIfDue` in the dispatcher tick, legacy `leaseRun`, `driverFleet`,
+  `maintenanceBoard`/jobs with spares, `reimburseCharging`, insurance sync, `profitability`, `investorReport`), `src/routes/fleet.ts`;
+  `routes/admin.ts` (lease run and charging reimburse through the service, charging month view split home/public/depot, vehicle fields);
+  `routes/driver.ts` (charging rule on every session, `receipt_ref`, reimbursement rates); `lib/messages.ts` (4 templates); seed (agreements
+  for the two leased Dolphins, purchase/finance, a policy and a tyre job per fleet car).
+- Apps: admin — Fleet & charging gets a "Fleet programme" tab (switch, rules, service plans) and, when on, Agreements (new agreement form
+  with payoff weeks, run week, pause/resume, bank payment, write off, buy-out, end), Maintenance (due list, book/record, take off road with
+  a spare, back on road), Insurance & claims, Profit per car (CSV), Investors (shares, monthly report CSV); car form purchase/finance/spare
+  fields when on; charging rules note and per-session rule; lease run message; `fleet_arrears` flag label. Driver — "Your car agreement"
+  panel on Earnings (only with an agreement), charging screen shows how sessions are paid back, receipt number for public charging.
+- Behaviour changes to note: `POST /admin/lease/run` never takes more than a driver's balance and charges each week once (with 024 it runs
+  the agreements and returns `{ week, charged, rows, collected_cents, short_cents }`); charging sessions on cars drivers own and at the
+  depot are no longer reimbursable; home charging is paid back at 30c/kWh whatever cost was typed; public charging at cost up to 80c/kWh;
+  reimbursements are capped at $250 per driver per month; starting a maintenance job takes the car out of dispatch.
+- Deploy: apply migration 024 (AUTO_MIGRATE does it). No env vars. Leave the fleet programme switched off until the fleet launches.
+  Check with the owner and accountant: the catch-up limit (150%), arrears flag (2 weeks), charging rates and monthly cap, GST on
+  rent-to-own payments and buy-outs, whether investor shares are of profit (as built) or of income. No data fix.
+
+Deferred:
+- Driver contribution to a claim excess taken through the weekly run (recorded only; taking money for damage needs a signed agreement
+  clause and a dispute path).
+- Km allowance per week with an excess-km charge (`km_per_week` is stored and shown, not charged): needs trustworthy odometer readings
+  (telematics or photo check-ins).
+- Telematics / OEM battery health (state of health %) instead of drivers' check-ins and ambient temperatures.
+- Investor statements as PDF and payment runs (CSV for the accountant for now), and investor logins.
+- A signed agreement document (PDF with terms, e-signature) generated from the agreement record.
+
+Ideas for next rounds:
+- Agreement documents: PDF terms generated from the record with the driver's signature in the app, and a hardship request button for drivers.
+- Odometer photo at each battery check-in (OCR later) feeding maintenance km and a weekly km allowance.
+- Fleet charging plan: depot charger booking slots, off-peak home charging reminders, kWh per km per car to spot battery wear.
+- Spare-car calendar and roster for shift drivers sharing one car (two agreements on one car split by hours).
+- EV transition offer for own-car drivers: estimate their fuel versus a lease's weekly cost from their own trips, shown in the driver app.
+- Fleet dashboard tiles on the admin home (cars off road, overdue checks, arrears total, this month's profit) once the programme is on.

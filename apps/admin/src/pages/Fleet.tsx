@@ -4,6 +4,7 @@ import { Page, useOps } from '../ctx';
 import { Chip, CrudSection, Empty, ErrorMsg, Section, Table, Tabs, downloadCsv, exportCsv, useRun, useToast, type Field } from '../ui';
 import { DOC_STATUS, DOC_TYPE, FUEL, OWNERSHIP, STATE_NAME, VEHICLE_STATUS, VEHICLE_STATUS_TONE, VERIFIED_SOURCE, docTone, isGreenFuel, label } from '../labels';
 import { PPSR_URL, findJ, jurisdictionList, minYearFor, vinYear, type Jurisdiction } from '../rules';
+import { Agreements, Insurance, Investors, Maintenance, Profitability, Programme, useFleet } from './FleetProgramme';
 
 const soon = (d?: string | null) => !d || new Date(d).getTime() < Date.now() + 30 * 864e5;
 const Exp = ({ d }: { d?: string | null }) => <span style={soon(d) ? { color: 'var(--earth-ink)', fontWeight: 700 } : undefined}>{d ? date(d) : 'Missing'}</span>;
@@ -39,21 +40,40 @@ const VEHICLE_FIELDS: Field[] = [
   { key: 'wheelchair_accessible', label: 'Wheelchair accessible', type: 'bool' },
   { key: 'has_roof_display', label: 'Has roof display', type: 'bool' }, { key: 'active', label: 'In service', type: 'bool' },
 ];
+/** Round 20 car costs (fleet programme on): purchase, finance and the spare-car flag, used by Profit per car. */
+const FLEET_FIELDS: Field[] = [
+  { key: 'purchase_price_cents', label: 'Purchase price', type: 'money' }, { key: 'purchase_date', label: 'Bought on', type: 'date', help: 'Service schedule starts from this date' },
+  { key: 'finance_weekly_cents', label: 'Finance per week', type: 'money' }, { key: 'spare', label: 'Keep free as a spare car', type: 'bool' },
+];
+
+type FleetTab = 'vehicles' | 'charging' | 'payouts' | 'programme' | 'agreements' | 'maintenance' | 'insurance' | 'profit' | 'investors';
 
 export default function Fleet() {
-  const [tab, setTab] = useState<'vehicles' | 'charging' | 'payouts'>('vehicles');
+  const [tab, setTab] = useState<FleetTab>('vehicles');
+  const fleet = useFleet();
+  // Round 20: the fleet programme tabs stay hidden until it is switched on (Fleet programme tab).
+  const on = !!fleet.data?.ready && !!fleet.data?.policy?.enabled;
+  const tabs: [FleetTab, string][] = [['vehicles', 'Vehicles'], ['charging', 'Charging & battery'], ['payouts', 'Payouts & leases'],
+    ...(on ? [['agreements', 'Agreements'], ['maintenance', 'Maintenance'], ['insurance', 'Insurance & claims'], ['profit', 'Profit per car'], ['investors', 'Investors']] as [FleetTab, string][] : []),
+    ['programme', 'Fleet programme']];
   return (
     <Page title="Fleet & charging">
-      <Tabs tabs={[['vehicles', 'Vehicles'], ['charging', 'Charging & battery'], ['payouts', 'Payouts & leases']]} value={tab} onChange={setTab}>
-      {tab === 'vehicles' && <Vehicles />}
+      <Tabs tabs={tabs} value={tab} onChange={setTab}>
+      {tab === 'vehicles' && <Vehicles fleetOn={on} />}
       {tab === 'charging' && <Charging />}
       {tab === 'payouts' && <Payouts />}
+      {tab === 'programme' && <Programme info={fleet.data} onChanged={() => void fleet.reload()} />}
+      {on && tab === 'agreements' && <Agreements />}
+      {on && tab === 'maintenance' && <Maintenance />}
+      {on && tab === 'insurance' && <Insurance />}
+      {on && tab === 'profit' && <Profitability />}
+      {on && tab === 'investors' && <Investors />}
       </Tabs>
     </Page>
   );
 }
 
-function Vehicles() {
+function Vehicles({ fleetOn }: { fleetOn: boolean }) {
   const run = useRun();
   const { refreshCounts } = useOps();
   const [key, setKey] = useState<any>(null);
@@ -62,7 +82,7 @@ function Vehicles() {
   const changed = () => { setRefresh((n) => n + 1); refreshCounts(); };
   return (<>
     <ReviewQueue refresh={refresh} onReviewed={changed} />
-    <CrudSection title="Vehicles" path="vehicles" query="status=all" refresh={refresh} onSaved={changed} newLabel="Add vehicle" fields={VEHICLE_FIELDS}
+    <CrudSection title="Vehicles" path="vehicles" query="status=all" refresh={refresh} onSaved={changed} newLabel="Add vehicle" fields={fleetOn ? [...VEHICLE_FIELDS, ...FLEET_FIELDS] : VEHICLE_FIELDS}
       filter={show === 'all' ? undefined : (v) => (v.status ?? 'approved') === show}
       right={<label className="toolbar-inline"><span className="dg-muted">Show</span>
         <select className="dg-select" value={show} onChange={(e) => setShow(e.target.value as any)} aria-label="Show vehicles">
@@ -331,13 +351,15 @@ function Charging() {
     <div className="toolbar"><label className="dg-field" style={{ margin: 0 }}><span>Month</span><input className="dg-input" type="month" value={month} onChange={(e) => setMonth(e.target.value)} /></label></div>
     <ErrorMsg error={error} />
     <Section title="Charging by vehicle" right={data && <button className="dg-btn dg-btn--sm dg-btn--ghost" onClick={() => exportCsv(`charging-${month}.csv`, data.by_vehicle)}>Export CSV</button>} />
+    {data?.rules && <p className="dg-muted" style={{ maxWidth: 760 }}>Paid back: home charging at {data.rules.home_cents_per_kwh}c per kWh, public chargers at cost up to {data.rules.public_max_cents_per_kwh}c per kWh{data.rules.public_needs_receipt ? ' with a receipt' : ''}{data.rules.depot_reimbursed ? ', depot at cost' : ', depot charging not paid back'}{data.rules.monthly_cap_cents ? `, at most ${money(data.rules.monthly_cap_cents)} a month per driver` : ''}. Cars drivers own are never paid back.</p>}
     <Table rows={data?.by_vehicle} empty="No charging logged this month." rowKey={(r) => r.rego + r.driver_id} cols={[
       { key: 'rego', label: 'Vehicle' }, { key: 'driver_name', label: 'Driver' }, { key: 'sessions', label: 'Sessions', num: true },
       { key: 'home_sessions', label: 'At home', num: true }, { key: 'kwh', label: 'kWh', num: true },
+      { key: 'split', label: 'Home / public / depot', num: true, render: (r) => r.home_cents != null ? `${money(r.home_cents)} / ${money(r.public_cents)} / ${money(r.depot_cents)}` : '—' },
       { key: 'cost_cents', label: 'Electricity cost', num: true, render: (r) => money(r.cost_cents) },
       { key: 'unreimbursed_cents', label: 'Owed to driver', num: true, render: (r) => money(r.unreimbursed_cents ?? 0) },
       { key: 'x', label: '', render: (r) => r.unreimbursed_cents > 0 && r.driver_id && (
-        <button className="dg-btn dg-btn--sm dg-btn--green" onClick={async () => { const x = await run(() => post('/admin/charging/reimburse', { driver_id: r.driver_id })); if (x) { alert(`Credited ${money(x.total_cents)} for ${x.sessions} sessions to the driver's next payout.`); void reload(); } }}>Reimburse</button>) },
+        <button className="dg-btn dg-btn--sm dg-btn--green" onClick={async () => { const x = await run(() => post('/admin/charging/reimburse', { driver_id: r.driver_id })); if (x) { alert(`Credited ${money(x.total_cents)} for ${x.sessions} sessions to the driver's next payout.${x.over_cap_cents ? ` ${money(x.over_cap_cents)} was over the monthly limit.` : ''}`); void reload(); } }}>Reimburse</button>) },
     ]} />
     <Section title="Battery and heat" right={<span className="dg-muted">Electric and plug-in hybrid cars</span>} />
     <Table rows={data?.fleet?.filter((r: any) => PLUG.includes(fuelOf(r)))} empty="No electric or plug-in hybrid cars on the road." rowKey={(r) => r.rego} cols={[
@@ -354,7 +376,7 @@ function Charging() {
       { key: 'location', label: 'Where', render: (s) => s.site_name ? `${s.location}, ${s.site_name}` : s.location },
       { key: 'kwh', label: 'kWh', num: true }, { key: 'pct', label: 'Battery', num: true, render: (s) => s.start_pct != null ? `${s.start_pct}% to ${s.end_pct}%` : '—' },
       { key: 'cost_cents', label: 'Cost', num: true, render: (s) => money(s.cost_cents) },
-      { key: 'reimbursed_at', label: 'Reimbursed', render: (s) => (s.reimbursed_at ? date(s.reimbursed_at) : s.reimbursable ? 'Pending' : 'Not reimbursable') },
+      { key: 'reimbursed_at', label: 'Reimbursed', render: (s) => <>{s.reimbursed_at ? date(s.reimbursed_at) : s.reimbursable ? 'Pending' : 'Not reimbursable'}{s.rule_text && <span className="sub">{s.rule_text}{s.reimburse_cents != null ? `: ${money(s.reimburse_cents)}` : ''}</span>}</> },
     ]} />
   </>);
 }
@@ -368,9 +390,9 @@ function Payouts() {
     <p className="dg-muted" style={{ maxWidth: 760 }}>Balances include fares less the DingoGo service fee, pickup pay, fuel surcharges, earnings-floor top-ups, tips (100% to drivers), charging credits, cash already held by drivers, and weekly lease deductions. Pay positive balances by bank transfer, then record the payout here.</p>
     <div className="actions" style={{ marginBottom: 12 }}>
       <button className="dg-btn dg-btn--sm dg-btn--dark" onClick={async () => {
-        if (!confirm('Charge this week\'s lease to every driver on a leased vehicle? Drivers already charged in the last 6 days are skipped.')) return;
+        if (!confirm('Charge this week\'s lease to every driver on a leased car? Each driver is charged once a week, and never more than their balance (the rest is carried as owing).')) return;
         const r = await run(() => post('/admin/lease/run'));
-        if (r) { alert(`Lease charged to ${r.charged} driver(s).`); void reload(); }
+        if (r) { alert(`Week of ${r.week}: lease taken from ${r.charged} driver(s).${r.rows?.some((x: any) => x.short_cents > 0) ? ' Some balances were too low: the rest is owing.' : ''}`); void reload(); }
       }}>Run weekly lease deductions</button>
       {data && <button className="dg-btn dg-btn--sm dg-btn--ghost" onClick={() => exportCsv('driver-balances.csv', data.balances.map((r: any) => ({ driver: r.name, driver_id: r.driver_id, bank_details: r.has_bank ? 'On file' : 'Missing', last_payout: r.last_payout ?? '', balance: (r.balance_cents / 100).toFixed(2) })))}>Export balances CSV</button>}
     </div>

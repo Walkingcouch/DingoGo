@@ -909,6 +909,7 @@ export async function dispatchTick() {
     await safety.runSafetyChecks().catch((e) => logError('safety checks', e));
     await (await import('./tax.js')).runRetentionIfDue().catch((e) => logError('record retention', e));
     await runLoyaltyIfDue().catch((e) => logError('loyalty', e));
+    await (await import('./fleet.js')).autoWeeklyIfDue().catch((e) => logError('fleet weekly', e));
 
     const open = await q(`SELECT id FROM trips WHERE status = 'requested' ORDER BY requested_at LIMIT 50`);
     for (const t of open) await dispatchTrip(t.id).catch((e) => logError('dispatch', e));

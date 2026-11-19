@@ -42,7 +42,7 @@ export function Charging() {
             <div className="stat"><b>{money(m.cost_cents)}</b><span>Electricity</span></div>
             <div className="stat"><b>{centsPerKm != null ? `${centsPerKm}c` : 'None'}</b><span>Per km</span></div>
           </div>
-          <p className="fine-print"><Icon name="info" size={16} />{m.trip_km ? `Based on ${m.trip_km} trip km. ` : ''}{reimbursed ? 'Home charging is reimbursed at the household tariff with your next payout.' : 'Keep a log of your charging costs for your tax return.'}</p>
+          <p className="fine-print"><Icon name="info" size={16} />{m.trip_km ? `Based on ${m.trip_km} trip km. ` : ''}{reimbursed ? (data?.reimbursement ? `Paid back with your next payout: home charging at ${data.reimbursement.home_cents_per_kwh}c per kWh, public chargers at cost up to ${data.reimbursement.public_max_cents_per_kwh}c per kWh${data.reimbursement.public_needs_receipt ? ' (add the receipt number)' : ''}${data.reimbursement.depot ? '' : '. Depot charging is paid by DingoGo'}.` : 'Home charging is reimbursed at the household tariff with your next payout.') : 'Keep a log of your charging costs for your tax return.'}</p>
         </>
       )}
 
@@ -58,7 +58,7 @@ export function Charging() {
             </div>
             <div className="session-end">
               <div className="dg-money">{money(s.cost_cents)}</div>
-              {s.reimbursed_at ? <span className="dg-chip dg-chip--green">Reimbursed</span> : s.reimbursable ? <span className="dg-chip">Pending</span> : null}
+              {s.reimbursed_at ? <span className="dg-chip dg-chip--green">Reimbursed{s.reimburse_cents != null ? ` ${money(s.reimburse_cents)}` : ''}</span> : s.reimbursable ? <span className="dg-chip">Pending</span> : null}
             </div>
           </li>
         ))}
@@ -72,7 +72,7 @@ export function Charging() {
 }
 
 function LogCharge({ onClose, onSaved }: { onClose: () => void; onSaved: (endPct?: number) => void }) {
-  const [v, setV] = useState<any>({ location: 'home', started_at: nowLocal(-300), ended_at: nowLocal(), kwh: '', start_pct: '', end_pct: '', tariff: '', cost: '', site_name: '' });
+  const [v, setV] = useState<any>({ location: 'home', started_at: nowLocal(-300), ended_at: nowLocal(), kwh: '', start_pct: '', end_pct: '', tariff: '', cost: '', site_name: '', receipt: '' });
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const set = (k: string) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => setV({ ...v, [k]: e.target.value });
@@ -86,6 +86,7 @@ function LogCharge({ onClose, onSaved }: { onClose: () => void; onSaved: (endPct
         started_at: new Date(v.started_at).toISOString(), ended_at: v.ended_at ? new Date(v.ended_at).toISOString() : undefined,
         kwh: Number(v.kwh), start_pct: num(v.start_pct), end_pct: num(v.end_pct),
         tariff_cents_per_kwh: num(v.tariff), cost_cents: v.cost ? Math.round(Number(v.cost) * 100) : undefined,
+        receipt_ref: v.location === 'public' && v.receipt.trim() ? v.receipt.trim() : undefined,
       });
       onSaved(num(v.end_pct));
     } catch (e2) { setErr(e2 instanceof ApiError ? e2.message : 'Could not save'); } finally { setBusy(false); }
@@ -99,6 +100,7 @@ function LogCharge({ onClose, onSaved }: { onClose: () => void; onSaved: (endPct
           {['home', 'depot', 'public'].map((l) => <button type="button" key={l} aria-pressed={v.location === l} onClick={() => setV({ ...v, location: l })}>{l[0].toUpperCase() + l.slice(1)}</button>)}
         </div>
         {v.location === 'public' && <label className="dg-field"><span>Charger name</span><input className="dg-input" value={v.site_name} onChange={set('site_name')} placeholder="e.g. NRMA fast charger" /></label>}
+        {v.location === 'public' && <label className="dg-field"><span>Receipt or session number</span><input className="dg-input" value={v.receipt} onChange={set('receipt')} maxLength={80} /></label>}
         <div style={{ display: 'grid', gap: 0 }}>
           <label className="dg-field"><span>Started</span><input className="dg-input" type="datetime-local" value={v.started_at} onChange={set('started_at')} required /></label>
           <label className="dg-field"><span>Finished</span><input className="dg-input" type="datetime-local" value={v.ended_at} onChange={set('ended_at')} /></label>

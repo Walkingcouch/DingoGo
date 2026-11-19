@@ -193,6 +193,14 @@ export const templates = {
   payout_sent: t<{ cents: number }>({ category: 'account', render: (v) => ({ title: 'Payout sent', body: `${money(v.cents)} is on its way to your bank account.` }) }),
   earnings_floor_topup: t<{ cents: number; week: string; rate_cents: number }>({ category: 'account',
     render: (v) => ({ title: 'Earnings floor top-up', body: `${money(v.cents)} added for the week of ${v.week}, so you earned at least ${money(v.rate_cents)} per engaged hour.` }) }),
+  // Round 20: DingoGo car agreements and maintenance.
+  fleet_arrears: t<{ cents: number; rego: string }>({ category: 'account',
+    render: (v) => ({ title: 'Car payments behind', body: `${money(v.cents)} is owing on your agreement for ${v.rego}. Nothing more than your balance is ever taken. Call DingoGo if you need a pause or a plan.` }) }),
+  fleet_bought_out: t<{}>({ category: 'account',
+    render: () => ({ title: 'The car is yours', body: 'Your rent-to-own agreement is paid off. DingoGo will help you transfer the registration.' }) }),
+  fleet_car_off_road: t<{ spare: string | null }>({ category: 'account',
+    render: (v) => ({ title: 'Your car is in for maintenance', body: v.spare ? `Use the spare car ${v.spare} until yours is back. It is set as your car in the app.` : 'You are offline until it is back. We will let you know.' }) }),
+  fleet_car_back: t<{}>({ category: 'account', render: () => ({ title: 'Your car is back', body: 'Maintenance is done. Your car is set as your car in the app again.' }) }),
   document_expiring: t<{ label: string; days_left: number }>({ category: 'documents',
     render: (v) => ({
       title: v.days_left < 0 ? `${v.label} has expired` : v.days_left === 0 ? `${v.label} expires today` : `${v.label} expires in ${v.days_left} day${v.days_left === 1 ? '' : 's'}`,

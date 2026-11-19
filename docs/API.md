@@ -1092,3 +1092,99 @@ each card payment in turn.
 Messages: `tour_booked_for_you` (guest text), `tour_advisory` (in-app, safety), `guide_assigned` (guide text), `hire_quote`
 (contact text). Visitor-language words for the tour and hire screens are in `packages/shared/src/i18n/visitor.json` (machine
 translations, flagged until reviewed; `tv()`), kept apart from the community languages, which are never machine-translated.
+
+## Fleet and EV programme (Round 20)
+Migration `024_fleet.sql`. Admin → Fleet keeps the new tabs behind the programme switch (`fleet_policy.enabled`, off by default)
+until the fleet launches. Before the migration (`services/api/src/services/fleet.ts` `fleetReady()`, re-checked once a minute)
+the old weekly lease run and charging logs keep working, the car form drops the new car fields, `GET /driver/fleet` answers
+`{ ready: false, contract: null }` and the other routes below answer 503 `migration_pending`.
+
+**Programme and policy**
+- `GET /admin/fleet` (admin, dispatcher) → `{ ready, policy, defaults, counts { cars, agreements, off_road, open_claims } }`.
+- `PUT /admin/fleet/policy` (admin) `{ policy }` → checked and saved (`settings.fleet_policy`); 400 `invalid_fleet_policy` with
+  `details.field`. Policy: `enabled`, `auto_weekly` (run agreements on Monday from 6 am Darwin time), `arrears_flag_weeks` (2),
+  `target_hours_per_day` (10, for utilisation), `charging { home_cents_per_kwh 30, public_max_cents_per_kwh 80,
+  public_needs_receipt, depot_reimbursed, monthly_cap_cents 25000 }`, `service_plans [{ key, kind, label, every_km, every_months,
+  fuels }]`, `heat { hot_months [10..3], battery_every_months_hot 3, hot_week_c 40, recheck_days 30 }`.
+
+**Car agreements** (`fleet_contracts`; one live agreement per car and per driver)
+- `GET /admin/fleet/contracts?status=` (admin, dispatcher) → items with `totals { due_cents, collected_cents, paid_cents,
+  waived_cents, deposit_cents, owing_cents (negative = paid ahead), buy_out_cents (rent-to-own), weeks_behind }`.
+  `GET /admin/fleet/contracts/:id` adds `weeks`, `payments`, `payoff_weeks`.
+- `POST /admin/fleet/contracts` (admin) `{ vehicle_id, driver_id, kind: weekly_lease | rent_to_own, weekly_cents, starts_on,
+  ends_on?, term_weeks?, price_cents (rent-to-own), deposit_cents?, deposit_ref?, catch_up_pct? (100–300, default 150),
+  keep_min_cents?, km_per_week?, notes?, assign? }` → 201 `{ contract, assigned }`. The car becomes `leased_to_driver` at this
+  weekly amount and the driver's car (unless `assign: false` or they are on a trip). 400 `not_fleet_car`, `car_not_approved`,
+  `price_required`, `deposit_too_high`, `weekly_required`, `dates`; 409 `car_has_agreement`, `driver_has_agreement`, `car_in_use`.
+- `PATCH /admin/fleet/contracts/:id` (admin) `{ status: active | paused, paused_reason, weekly_cents, ends_on, catch_up_pct,
+  keep_min_cents, km_per_week, notes }`; pausing needs a reason (400 `reason_required`); paused weeks are not charged.
+- `POST /admin/fleet/contracts/:id/payments` (admin) `{ kind: payment | waiver, cents, method: bank | balance, reference }`:
+  a payment lowers what is owing (and the buy-out); a waiver writes off what is owing (400 `waiver_too_big`), not the buy-out;
+  `method: balance` takes it from the driver's balance (400 `balance_too_low`); 400 `payment_too_big` past the buy-out.
+- `POST /admin/fleet/contracts/:id/buy-out` (admin, rent-to-own) `{ method, reference }`: pays the rest, closes the agreement
+  (`bought_out`), the car becomes `driver_owned` by the driver and investor shares in it end. 400 `not_rent_to_own`.
+- `POST /admin/fleet/contracts/:id/end` (admin) `{ reason }`: the car goes back to the fleet and the driver stops using it
+  (`car_returned`; not while they are on a trip, `driver_on_trip`). What is owing stays on the record. 409 `agreement_closed`.
+- `POST /admin/fleet/run-week` (admin) `{ week? }` (a Monday, default this week) and `POST /admin/lease/run` (this week) →
+  `{ week, charged, rows [{ contract_id, due_cents, collected_cents, owing_after_cents, short_cents, buy_out_after_cents,
+  flagged }], collected_cents, short_cents }`. Each live agreement once per Darwin week (`fleet_contract_weeks` key, same
+  per-driver lock as payouts). Deduction = this week + what is owing, at most `catch_up_pct` of the weekly amount and never more
+  than the driver's balance above `keep_min_cents`, so nobody goes below zero; rent-to-own never past the price. Ledger kind
+  `lease`. Owing `arrears_flag_weeks` or more raises one open `fleet_arrears` compliance flag and the `fleet_arrears` note.
+  Before migration 024 `POST /admin/lease/run` is the old run (`legacy: true`), now once per week and capped at the balance.
+- `GET /driver/fleet` (driver) → `{ ready, contract (no staff notes) with totals, weeks (12), payments, this_week,
+  next_service [due items], off_road }`; `contract: null` without an agreement.
+
+**Maintenance** (`vehicle_maintenance`; DingoGo cars only, 400 `not_fleet_car`)
+- `GET /admin/fleet/maintenance` (admin, dispatcher) → `{ today, cars [{ rego, driver, odometer_km, week_c, hot_week, due [{ key,
+  kind, label, due_date, due_km, days_left, km_left, status: ok | due_soon | overdue, reason: time | km | hot_week, last_done }],
+  open_jobs, recent_jobs }], spares, summary { overdue, due_soon, off_road } }`. Due from the last job of that kind (else the
+  purchase date and 0 km); due soon within 30 days or 1,000 km; batteries every 3 months in the hot months and straight away after
+  a week averaging `hot_week_c` (battery logs) once `recheck_days` have passed.
+- `POST /admin/fleet/maintenance` (admin, dispatcher) `{ vehicle_id, kind: service | tyres | brakes | battery_check | repair |
+  inspection | other, booked_for?, provider?, notes?, cost_cents?, odometer_km?, done_on? (records a past job), claim_id? }` → 201.
+- `POST /admin/fleet/maintenance/:id/start` `{ spare_vehicle_id? }`: the car goes off the road (`vehicles.active = false`, out of
+  dispatch); its driver (the agreement driver first) gets the spare car if one is given, other drivers of the car are taken
+  offline. 409 `car_on_trip`, `spare_not_free`, `job_not_booked`; 400 `no_driver`. Spares: approved DingoGo cars nobody drives,
+  not off road and not on an agreement (`vehicles.spare` first).
+- `POST /admin/fleet/maintenance/:id/finish` `{ odometer_km?, cost_cents?, notes?, provider? }`: back on the road, odometer and
+  cost recorded, the driver moved back from the spare (`driver_in_spare: true` if they are on a trip in it). Downtime = started
+  to finished. `POST /admin/fleet/maintenance/:id/cancel`: booked jobs only (409 `job_not_booked`).
+
+**Charging** (Round 20 rules; `charging_sessions.reimburse_cents`, `rule`, `receipt_ref`)
+- `POST /driver/charging` also takes `receipt_ref`; the session gets `reimbursable`, `reimburse_cents`, `rule`
+  (`home_tariff`, `public_at_cost`, `public_capped`, `public_no_receipt`, `depot`, `depot_at_cost`, `driver_owned`) and
+  `rule_text`. Home: kWh × `home_cents_per_kwh` (whatever was typed as the cost); public: the cost up to kWh ×
+  `public_max_cents_per_kwh`; depot and cars drivers own: not paid back (before 024 `reimbursable` follows the same rules).
+  `GET /driver/charging` adds `reimbursement` (the rates, or null for own cars) and `rule_text` per session.
+- `POST /admin/charging/reimburse` → `{ sessions, total_cents, over_cap_cents }`: each session's rule amount, at most
+  `monthly_cap_cents` per driver per Darwin month (0 = no cap), credited as `charging_credit`. `GET /admin/charging` adds
+  `home_cents`, `public_cents`, `depot_cents` per car, `rule_text` per session and `rules`.
+
+**Insurance and claims**
+- `GET /admin/fleet/insurance` (admin, dispatcher) → `{ policies (current, days_left), claims }`.
+- `POST /admin/fleet/insurance` / `PATCH /admin/fleet/insurance/:id` (admin) `{ vehicle_id, insurer, policy_no, cover:
+  comprehensive | third_party_property | ctp | public_liability | other, starts_on, ends_on, premium_cents, excess_cents, notes }`;
+  the latest comprehensive / property policy end becomes `vehicles.insurance_expiry`. 400 `dates`.
+- `POST /admin/fleet/claims` / `PATCH /admin/fleet/claims/:id` (admin, dispatcher; money fields admin only) `{ vehicle_id,
+  policy_id (that car's), driver_id, trip_id, incident_at, kind: collision | animal | windscreen | hail | theft | vandalism | other,
+  description, status: open | lodged | approved | declined | paid | closed, claim_no, at_fault, excess_cents,
+  driver_contribution_cents, repair_cost_cents, payout_cents, notes }`. 400 `policy`.
+
+**Profitability and investors** (admin only)
+- `GET /admin/fleet/profitability?from=&to=&format=csv` (default this month, up to 400 days) → `{ cars [{ rego, days,
+  off_road_days, trips, km, engaged_hours, engaged_hours_per_day, utilisation_pct (engaged ÷ (days on the road ×
+  target_hours_per_day)), income { service_fees_cents, agreement_cents, ads_cents, insurance_payouts_cents, total_cents }, costs
+  { charging_cents, maintenance_cents, insurance_cents (premium spread by day), claims_cents (excess, or the repair if declined,
+  less the driver's part), finance_cents (`vehicles.finance_weekly_cents`), total_cents }, profit_cents, profit_per_km_cents }],
+  totals }`. 400 `range`.
+- `GET /admin/fleet/investors`, `POST /admin/fleet/investors`, `PATCH /admin/fleet/investors/:id` `{ name, email, abn,
+  payment_ref, notes, active }`; `POST /admin/fleet/investor-shares` `{ investor_id, vehicle_id, share_pct, starts_on, ends_on? }`
+  and `PATCH /admin/fleet/investor-shares/:id`: DingoGo cars only, a car's shares never over 100% on any day (400
+  `shares_over_100`).
+- `GET /admin/fleet/investor-report?month=YYYY-MM&format=csv` → `{ rows [{ investor, rego, share_pct, days, car_income_cents,
+  car_costs_cents, car_profit_cents, share_cents }], investors [{ investor, cars, share_cents }] }`: the car's profit × share ×
+  days the share ran ÷ days in the month (losses are shared too).
+
+Vehicles (`PATCH /admin/vehicles/:id`, `POST /admin/vehicles`) also take `purchase_price_cents`, `purchase_date`,
+`finance_weekly_cents` and `spare`. Messages: `fleet_arrears`, `fleet_bought_out`, `fleet_car_off_road`, `fleet_car_back`.

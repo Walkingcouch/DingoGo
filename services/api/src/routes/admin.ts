@@ -1,3 +1,4 @@
+import * as fleet from '../services/fleet.js';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { one, pool, q, tx } from '../db.js';
 import { requireUser } from '../auth.js';
@@ -137,6 +138,7 @@ function corporateInput(d: Record<string, any>) {
 }
 
 const PPSR_URL = 'https://www.ppsr.gov.au/carcheck';
+const FLEET_VEHICLE_FIELDS = ['purchase_price_cents', 'purchase_date', 'finance_weekly_cents', 'spare'];
 /** What the admin "Checks" panel needs for a car's state. */
 function stateRules(j: any) {
   if (!j) return null;
@@ -625,8 +627,15 @@ export default async function adminRoutes(app: FastifyInstance) {
     ['rego', 'make', 'model', 'year', 'colour', 'seats', 'doors', 'fuel_type', 'vin', 'status', 'review_note', 'registered_owner', 'owner_driver_id',
       'battery_kwh', 'range_km', 'pet_friendly', 'wheelchair_accessible', 'has_roof_display',
       'ownership', 'lease_weekly_cents', 'rego_expiry', 'inspection_expiry', 'insurance_expiry', 'cvl_number', 'cvl_expiry', 'roadworthy_date', 'active', 'odometer_km',
-      'rego_state', 'verified_year', 'verified_source'],
-    { order: 'rego', list: false, out: (r) => vehicleOut(r, { keepSecrets: true }), prepare: prepareAdminVehicle });
+      'rego_state', 'verified_year', 'verified_source', 'purchase_price_cents', 'purchase_date', 'finance_weekly_cents', 'spare'],
+    { order: 'rego', list: false, out: (r) => vehicleOut(r, { keepSecrets: true }), prepare: async (data, id) => {
+      // Round 20 fields need migration 024: dropped (not an error) before it, so the car form keeps saving.
+      const out = await prepareAdminVehicle(data, id);
+      if (!(await fleet.fleetReady())) for (const k of FLEET_VEHICLE_FIELDS) delete out[k];
+      else for (const k of FLEET_VEHICLE_FIELDS) if (out[k] === '') out[k] = k === 'spare' ? false : k === 'finance_weekly_cents' ? 0 : null;
+      if (!Object.keys(out).length) throw bad('empty');
+      return out;
+    } });
 
   /** Check a driver-owned car. Approve needs: the state's expiry dates (CVL for NT, inspection for SA, rego, insurance),
    *  a verified year of manufacture within the state's age limit, and rego_checked=true (checked on the state gov site). */
@@ -754,18 +763,11 @@ export default async function adminRoutes(app: FastifyInstance) {
     return { vehicle: v };
   });
 
-  /** Weekly lease deductions for drivers on DingoGo-leased cars (e.g. EV Direct Finance ~$113.33/wk). */
+  /** Weekly lease deductions (Round 20): with migration 024, this week's car agreement run (capped so nobody goes below zero,
+   *  arrears carried); before it, the old run, now once per Darwin week and never more than the driver's balance. */
   app.post('/admin/lease/run', async (req) => {
     const me = await admin(req);
-    const rows = await q(
-      `INSERT INTO driver_ledger (driver_id, kind, amount_cents, note)
-       SELECT d.user_id, 'lease', -v.lease_weekly_cents, 'Weekly vehicle lease ' || v.rego || ' — week of ' || to_char(now() AT TIME ZONE 'Australia/Darwin', 'DD Mon YYYY')
-       FROM drivers d JOIN vehicles v ON v.id = d.vehicle_id
-       WHERE v.ownership = 'leased_to_driver' AND v.lease_weekly_cents > 0 AND d.status = 'approved'
-         AND NOT EXISTS (SELECT 1 FROM driver_ledger l WHERE l.driver_id = d.user_id AND l.kind = 'lease' AND l.created_at > now() - interval '6 days')
-       RETURNING driver_id, amount_cents`);
-    await audit(me.id, 'lease_run', 'driver_ledger', String(rows.length));
-    return { charged: rows.length, rows };
+    return fleet.leaseRun(me.id);
   });
 
   // ───────────── Pricing & zones ─────────────
@@ -895,10 +897,15 @@ export default async function adminRoutes(app: FastifyInstance) {
     await ops(req);
     const { month } = req.query as { month?: string };
     const m = month && /^\d{4}-\d{2}$/.test(month) ? month : trips.localMonth();
+    const fleetOn = await fleet.fleetReady();
+    const owed = fleetOn ? 'coalesce(s.reimburse_cents, s.cost_cents)' : 's.cost_cents';
     const by = await q(
       `SELECT v.rego, u.name AS driver_name, s.driver_id, count(*)::int sessions, sum(s.kwh)::numeric(8,1) kwh, sum(s.cost_cents)::int cost_cents,
-              sum(s.cost_cents) FILTER (WHERE s.reimbursable AND s.reimbursed_at IS NULL)::int unreimbursed_cents,
-              count(*) FILTER (WHERE s.location = 'home')::int home_sessions
+              sum(${owed}) FILTER (WHERE s.reimbursable AND s.reimbursed_at IS NULL)::int unreimbursed_cents,
+              count(*) FILTER (WHERE s.location = 'home')::int home_sessions,
+              coalesce(sum(s.cost_cents) FILTER (WHERE s.location = 'home'), 0)::int home_cents,
+              coalesce(sum(s.cost_cents) FILTER (WHERE s.location = 'public'), 0)::int public_cents,
+              coalesce(sum(s.cost_cents) FILTER (WHERE s.location = 'depot'), 0)::int depot_cents
        FROM charging_sessions s JOIN vehicles v ON v.id = s.vehicle_id LEFT JOIN users u ON u.id = s.driver_id
        WHERE to_char(s.started_at AT TIME ZONE 'Australia/Darwin', 'YYYY-MM') = $1
        GROUP BY v.rego, u.name, s.driver_id ORDER BY v.rego`, [m]);
@@ -908,20 +915,16 @@ export default async function adminRoutes(app: FastifyInstance) {
               (SELECT max(b.at) FROM battery_logs b WHERE b.vehicle_id = v.id) last_log
        FROM vehicles v WHERE v.active AND v.fuel_type IN ('electric','plug_in_hybrid') ORDER BY v.rego`);
     const sessions = await q(`SELECT s.*, v.rego FROM charging_sessions s JOIN vehicles v ON v.id = s.vehicle_id ORDER BY s.started_at DESC LIMIT 100`);
-    return { month: m, by_vehicle: by, fleet: efficiency, sessions };
+    const rules = (await fleet.loadFleetPolicy()).charging;
+    return { month: m, by_vehicle: by, fleet: efficiency, sessions: sessions.map((x: any) => ({ ...x, rule_text: fleet.chargeRuleText(x.rule) })), rules };
   });
 
-  /** Reimburse drivers for home-charging electricity (credited to their ledger, paid with next payout). */
+  /** Pay a driver back for charging (Round 20 rules: home at the policy tariff, public at cost up to a per-kWh limit, depot and
+   *  cars drivers own never; monthly cap). Credited to their ledger, paid with the next payout. */
   app.post('/admin/charging/reimburse', async (req) => {
     const me = await admin(req);
     const b = parse(z.object({ driver_id: z.string().uuid() }), req.body);
-    return tx(async (c) => {
-      const rows = await q(`UPDATE charging_sessions SET reimbursed_at = now() WHERE driver_id = $1 AND reimbursable AND reimbursed_at IS NULL RETURNING cost_cents`, [b.driver_id], c);
-      const total = rows.reduce((s, r) => s + (r.cost_cents ?? 0), 0);
-      if (total > 0) await c.query(`INSERT INTO driver_ledger (driver_id, kind, amount_cents, note) VALUES ($1,'charging_credit',$2,$3)`, [b.driver_id, total, `Home charging reimbursement (${rows.length} sessions)`]);
-      await audit(me.id, 'charging_reimburse', 'driver', b.driver_id, { total });
-      return { sessions: rows.length, total_cents: total };
-    });
+    return fleet.reimburseCharging(me.id, b.driver_id);
   });
 
   // ───────────── Payouts ─────────────

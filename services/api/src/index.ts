@@ -31,6 +31,7 @@ import safetyRoutes from './routes/safety.js';
 import taxRoutes from './routes/tax.js';
 import loyaltyRoutes from './routes/loyalty.js';
 import tourRoutes from './routes/tours.js';
+import fleetRoutes from './routes/fleet.js';
 import { log, logError, reportError, requestId, safePath } from './lib/log.js';
 import { autoMigrateOnce } from './lib/bootstrap.js';
 
@@ -210,6 +211,7 @@ export async function buildServer() {
   await app.register(taxRoutes);
   await app.register(loyaltyRoutes);
   await app.register(tourRoutes);
+  await app.register(fleetRoutes);
   return app;
 }
 

@@ -4783,3 +4783,310 @@ test('before migration 023: tours list, quote, book and cancel with the built-in
     resetToursReady(); invalidateConfig();
   }
 });
+
+// ───────────── Round 20: fleet and EV programme ─────────────
+import { resetFleetReady } from '../src/services/fleet.js';
+
+const uidOf = async (phone: string) => (await one('SELECT id FROM users WHERE phone = $1', [phone]))!.id as string;
+const balOf = async (id: string) => (await one(`SELECT coalesce(sum(amount_cents),0)::int c FROM driver_ledger WHERE driver_id = $1`, [id]))!.c as number;
+async function setBal(id: string, cents: number) {
+  const b = await balOf(id);
+  if (b !== cents) await q(`INSERT INTO driver_ledger (driver_id, kind, amount_cents, note) VALUES ($1,'adjustment',$2,'test balance')`, [id, cents - b]);
+}
+const carId = async (rego: string) => (await one('SELECT id FROM vehicles WHERE rego = $1', [rego]))!.id as string;
+async function rawGet(url: string, who: string) {
+  return app.inject({ method: 'GET', url, headers: { authorization: `Bearer ${tokens[who]}` } });
+}
+
+test('round 20: weekly lease — never below zero, arrears caught up within the cap, once a week (two runs at once), pause, waiver and the arrears flag', async () => {
+  if (!tokens.dispatcher) await login('dispatcher', '+61400000002', 'admin');
+  const sarah = await uidOf('+61400000012');
+  const list = await call('GET', '/admin/fleet/contracts', 'dispatcher');
+  assert.equal(list.status, 200, JSON.stringify(list));
+  const k = list.items.find((c: any) => c.driver_id === sarah && c.status === 'active');
+  assert.ok(k && k.kind === 'weekly_lease' && k.weekly_cents === 11333 && k.rego === 'CA 34 DG', 'seeded agreement');
+  await q(`UPDATE fleet_contracts SET starts_on = '2026-01-05' WHERE id = $1`, [k.id]);
+  assert.equal((await call('POST', '/admin/fleet/run-week', 'dispatcher', { week: '2026-01-05' })).status, 403, 'runs are admin only');
+  assert.equal((await call('POST', '/admin/fleet/run-week', 'admin', { week: '2026-01-06' })).error, 'week', 'a Monday');
+  const mine = (r: any) => r.rows.find((x: any) => x.contract_id === k.id);
+
+  // $50 earned: $50 taken, never below zero. Two runs at once charge once.
+  await setBal(sarah, 5000);
+  const [a, b] = await Promise.all([call('POST', '/admin/fleet/run-week', 'admin', { week: '2026-01-05' }), call('POST', '/admin/fleet/run-week', 'admin', { week: '2026-01-05' })]);
+  const both = [mine(a), mine(b)].filter(Boolean);
+  assert.equal(both.length, 1, 'charged once');
+  assert.deepEqual([both[0].due_cents, both[0].collected_cents, both[0].owing_after_cents], [11333, 5000, 6333]);
+  assert.equal(await balOf(sarah), 0);
+  assert.equal((await one(`SELECT count(*)::int n FROM driver_ledger WHERE driver_id = $1 AND kind = 'lease' AND note LIKE '%2026-01-05'`, [sarah])).n, 1);
+  // Next week: this week plus the arrears, at most 150% of the weekly amount.
+  await setBal(sarah, 20000);
+  const w2 = mine(await call('POST', '/admin/fleet/run-week', 'admin', { week: '2026-01-12' }));
+  assert.deepEqual([w2.collected_cents, w2.owing_after_cents], [17000, 6333 + 11333 - 17000]);
+  assert.equal(await balOf(sarah), 3000);
+  // Nothing earned for two weeks: two weeks behind → one compliance flag and a note to the driver.
+  await setBal(sarah, 0);
+  assert.equal(mine(await call('POST', '/admin/fleet/run-week', 'admin', { week: '2026-01-19' })).flagged, undefined);
+  const w4 = mine(await call('POST', '/admin/fleet/run-week', 'admin', { week: '2026-01-26' }));
+  assert.deepEqual([w4.collected_cents, w4.owing_after_cents, w4.flagged], [0, 666 + 2 * 11333, true]);
+  assert.equal(await balOf(sarah), 0, 'still never below zero');
+  assert.ok(await one(`SELECT 1 FROM compliance_flags WHERE driver_id = $1 AND kind = 'fleet_arrears' AND status = 'open'`, [sarah]));
+  await flushBackground();
+  assert.ok(await one(`SELECT 1 FROM notifications WHERE user_id = $1 AND title = 'Car payments behind'`, [sarah]));
+
+  // Waivers only up to what is owing; payments from the balance only up to the balance.
+  assert.equal((await call('POST', `/admin/fleet/contracts/${k.id}/payments`, 'admin', { kind: 'waiver', cents: 999999 })).error, 'waiver_too_big');
+  assert.equal((await call('POST', `/admin/fleet/contracts/${k.id}/payments`, 'admin', { kind: 'payment', cents: 500, method: 'balance' })).error, 'balance_too_low');
+  const waived = await call('POST', `/admin/fleet/contracts/${k.id}/payments`, 'admin', { kind: 'waiver', cents: 2000, reference: 'Hardship' });
+  assert.equal(waived.contract.totals.owing_cents, 666 + 2 * 11333 - 2000);
+  // Pause (needs a reason): paused weeks are not charged and nothing builds up.
+  assert.equal((await call('PATCH', `/admin/fleet/contracts/${k.id}`, 'admin', { status: 'paused' })).error, 'reason_required');
+  assert.equal((await call('PATCH', `/admin/fleet/contracts/${k.id}`, 'admin', { status: 'paused', paused_reason: 'Sorry Business' })).contract.status, 'paused');
+  await setBal(sarah, 50000);
+  assert.equal(mine(await call('POST', '/admin/fleet/run-week', 'admin', { week: '2026-02-02' })), undefined, 'paused: not charged');
+  const resumed = await call('PATCH', `/admin/fleet/contracts/${k.id}`, 'admin', { status: 'active' });
+  assert.deepEqual([resumed.contract.status, resumed.contract.paused_reason], ['active', null]);
+
+  // The driver sees their agreement, what is owing and recent weeks; staff notes stay private.
+  const me = await call('GET', '/driver/fleet', 'd2');
+  assert.equal(me.contract.totals.owing_cents, 666 + 2 * 11333 - 2000);
+  assert.equal(me.contract.weeks.length, 4);
+  assert.deepEqual([me.contract.notes, me.contract.created_by], [undefined, undefined]);
+  assert.ok(Array.isArray(me.next_service));
+  assert.equal((await call('GET', '/driver/fleet', 'd1')).contract, null, 'no agreement, nothing shown');
+  // The old button runs this week's agreements.
+  const legacy = await call('POST', '/admin/lease/run', 'admin');
+  assert.equal(legacy.status, 200);
+  assert.equal(legacy.week, weekStartOf(new Date()));
+  assert.ok(await balOf(sarah) >= 0);
+  await q(`UPDATE compliance_flags SET status = 'resolved' WHERE driver_id = $1 AND kind = 'fleet_arrears'`, [sarah]);
+});
+
+test('round 20: rent-to-own — checks, weekly payments and a bank payment reduce the buy-out, buy-out from the balance gives the car to the driver; ending an agreement returns the car', async () => {
+  if (!tokens.dispatcher) await login('dispatcher', '+61400000002', 'admin');
+  const tjala = await uidOf('+61400000011');
+  const v1 = await carId('CA 12 DG');
+  await q(`UPDATE drivers SET vehicle_id = NULL WHERE vehicle_id = $1 AND user_id <> $2`, [v1, tjala]);   // earlier tests share this car
+  const own = await carId('CB47JP');
+  const base = { driver_id: tjala, kind: 'rent_to_own', weekly_cents: 30000, price_cents: 100000, deposit_cents: 20000, deposit_ref: 'DEP-1', starts_on: '2026-01-05' };
+  assert.equal((await call('POST', '/admin/fleet/contracts', 'admin', { ...base, vehicle_id: own })).error, 'not_fleet_car');
+  assert.equal((await call('POST', '/admin/fleet/contracts', 'admin', { ...base, vehicle_id: v1, driver_id: await uidOf('+61400000012') })).error, 'driver_has_agreement');
+  assert.equal((await call('POST', '/admin/fleet/contracts', 'admin', { ...base, vehicle_id: v1, price_cents: undefined })).error, 'price_required');
+  assert.equal((await call('POST', '/admin/fleet/contracts', 'admin', { ...base, vehicle_id: v1, deposit_cents: 100000 })).error, 'deposit_too_high');
+  assert.equal((await call('POST', '/admin/fleet/contracts', 'dispatcher', { ...base, vehicle_id: v1 })).status, 403);
+  const made = await call('POST', '/admin/fleet/contracts', 'admin', { ...base, vehicle_id: v1 });
+  assert.equal(made.status, 201, JSON.stringify(made));
+  const k = made.contract;
+  assert.deepEqual([k.totals.buy_out_cents, k.totals.deposit_cents, k.payoff_weeks, made.assigned], [80000, 20000, 3, true]);
+  assert.equal((await one(`SELECT ownership FROM vehicles WHERE id = $1`, [v1])).ownership, 'leased_to_driver');
+  assert.equal((await call('POST', '/admin/fleet/contracts', 'admin', { ...base, vehicle_id: v1, driver_id: await uidOf('+61400000013') })).error, 'car_has_agreement');
+  try {
+    await setBal(tjala, 100000);
+    const r = (await call('POST', '/admin/fleet/run-week', 'admin', { week: '2026-03-02' })).rows.find((x: any) => x.contract_id === k.id);
+    assert.deepEqual([r.collected_cents, r.buy_out_after_cents], [30000, 50000]);
+    assert.equal((await call('POST', `/admin/fleet/contracts/${k.id}/payments`, 'admin', { kind: 'payment', cents: 60000 })).error, 'payment_too_big');
+    const paid = await call('POST', `/admin/fleet/contracts/${k.id}/payments`, 'admin', { kind: 'payment', cents: 10000, method: 'bank', reference: 'EFT 123' });
+    assert.equal(paid.contract.totals.buy_out_cents, 40000);
+    const out = await call('POST', `/admin/fleet/contracts/${k.id}/buy-out`, 'admin', { method: 'balance', reference: 'Paid off' });
+    assert.deepEqual([out.contract.status, out.contract.buy_out_paid_cents, out.contract.totals.buy_out_cents], ['bought_out', 40000, 0]);
+    assert.equal(await balOf(tjala), 100000 - 30000 - 40000);
+    const car = await one(`SELECT ownership, owner_driver_id, lease_weekly_cents FROM vehicles WHERE id = $1`, [v1]);
+    assert.deepEqual([car.ownership, car.owner_driver_id, car.lease_weekly_cents], ['driver_owned', tjala, 0]);
+    assert.equal((await call('POST', `/admin/fleet/contracts/${k.id}/buy-out`, 'admin', { method: 'bank' })).error, 'agreement_closed');
+    await flushBackground();
+    assert.ok(await one(`SELECT 1 FROM notifications WHERE user_id = $1 AND title = 'The car is yours'`, [tjala]));
+  } finally {
+    await q(`UPDATE vehicles SET ownership = 'fleet', owner_driver_id = NULL, lease_weekly_cents = 0 WHERE id = $1`, [v1]);
+  }
+  // A weekly lease that ends: the car goes back to the fleet and the driver stops using it.
+  const lease = await call('POST', '/admin/fleet/contracts', 'admin', { vehicle_id: v1, driver_id: tjala, kind: 'weekly_lease', weekly_cents: 10000, starts_on: '2026-11-02' });
+  assert.equal(lease.status, 201, JSON.stringify(lease));
+  try {
+    assert.equal((await call('POST', `/admin/fleet/contracts/${lease.contract.id}/buy-out`, 'admin', { method: 'bank' })).error, 'not_rent_to_own');
+    const ended = await call('POST', `/admin/fleet/contracts/${lease.contract.id}/end`, 'admin', { reason: 'Driver moving to Darwin' });
+    assert.deepEqual([ended.contract.status, ended.contract.car_returned], ['ended', true]);
+    assert.equal((await one(`SELECT vehicle_id FROM drivers WHERE user_id = $1`, [tjala])).vehicle_id, null);
+    assert.equal((await one(`SELECT ownership FROM vehicles WHERE id = $1`, [v1])).ownership, 'fleet');
+    assert.equal((await call('POST', `/admin/fleet/contracts/${lease.contract.id}/end`, 'admin', { reason: 'Again' })).error, 'agreement_closed');
+  } finally {
+    await q(`UPDATE drivers SET vehicle_id = $2 WHERE user_id = $1`, [tjala, v1]);
+  }
+});
+
+test('round 20: maintenance — due list with the battery heat rule, off road with a spare car and back, downtime; ops can run it', async () => {
+  if (!tokens.dispatcher) await login('dispatcher', '+61400000002', 'admin');
+  const tjala = await uidOf('+61400000011');
+  const v1 = await carId('CA 12 DG');
+  await q(`UPDATE drivers SET vehicle_id = NULL WHERE vehicle_id = $1 AND user_id <> $2`, [v1, tjala]);   // earlier tests share this car
+  const v2 = await carId('CA 34 DG');
+  const spare = (await one(`INSERT INTO vehicles (rego, make, model, year, colour, fuel_type, status, ownership, spare, battery_kwh, range_km)
+    VALUES ('CA 99 DG', 'BYD', 'Dolphin', 2026, 'Ski White', 'electric', 'approved', 'fleet', true, 60.5, 427) RETURNING id`))!.id;
+  await q(`INSERT INTO battery_logs (vehicle_id, pct, ambient_c) SELECT $1, 60, 46 FROM generate_series(1, 30)`, [v2]);
+  const board = await call('GET', '/admin/fleet/maintenance', 'dispatcher');
+  assert.equal(board.status, 200, JSON.stringify(board));
+  const c1 = board.cars.find((c: any) => c.rego === 'CA 12 DG');
+  const item = (c: any, key: string) => c.due.find((d: any) => d.key === key);
+  assert.equal(item(c1, 'battery').status, 'overdue', 'bought 200 days ago, never checked');
+  assert.equal(item(c1, 'tyres').status, 'ok', 'done 60 days ago');
+  assert.equal(item(c1, 'service_fuel'), undefined, 'no petrol service for an EV');
+  assert.equal(board.cars.find((c: any) => c.rego === 'CA 34 DG').hot_week, true);
+  assert.ok(board.spares.some((s: any) => s.rego === 'CA 99 DG'));
+  assert.ok(!board.cars.some((c: any) => c.rego === 'CB47JP'), 'cars drivers own are not tracked');
+  assert.equal((await call('POST', '/admin/fleet/maintenance', 'admin', { vehicle_id: await carId('CB47JP'), kind: 'service' })).error, 'not_fleet_car');
+
+  const job = await call('POST', '/admin/fleet/maintenance', 'dispatcher', { vehicle_id: v1, kind: 'service', booked_for: '2026-11-25', provider: 'Demo Motors' });
+  assert.equal(job.status, 201, JSON.stringify(job));
+  assert.equal((await call('POST', `/admin/fleet/maintenance/${job.job.id}/start`, 'dispatcher', { spare_vehicle_id: v2 })).error, 'spare_not_free');
+  const started = await call('POST', `/admin/fleet/maintenance/${job.job.id}/start`, 'dispatcher', { spare_vehicle_id: spare });
+  assert.equal(started.status, 200, JSON.stringify(started));
+  assert.equal(started.spare.rego, 'CA 99 DG');
+  assert.equal((await one(`SELECT vehicle_id FROM drivers WHERE user_id = $1`, [tjala])).vehicle_id, spare, 'driver gets the spare');
+  assert.equal((await one(`SELECT active FROM vehicles WHERE id = $1`, [v1])).active, false, 'off road: out of dispatch');
+  const during = await call('GET', '/admin/fleet/maintenance', 'admin');
+  assert.ok(during.summary.off_road >= 1);
+  assert.ok(!during.spares.some((s: any) => s.rego === 'CA 99 DG'), 'the spare is in use');
+  assert.equal((await call('POST', `/admin/fleet/maintenance/${job.job.id}/start`, 'dispatcher', {})).error, 'job_not_booked');
+  await flushBackground();
+  assert.ok(await one(`SELECT 1 FROM notifications WHERE user_id = $1 AND title = 'Your car is in for maintenance'`, [tjala]));
+
+  const done = await call('POST', `/admin/fleet/maintenance/${job.job.id}/finish`, 'dispatcher', { odometer_km: 9000, cost_cents: 25000 });
+  assert.deepEqual([done.job.status, done.driver_in_spare], ['done', false]);
+  assert.equal((await one(`SELECT vehicle_id FROM drivers WHERE user_id = $1`, [tjala])).vehicle_id, v1, 'back in their own car');
+  const car = await one(`SELECT active, odometer_km FROM vehicles WHERE id = $1`, [v1]);
+  assert.deepEqual([car.active, car.odometer_km], [true, 9000]);
+  const after = await call('GET', '/admin/fleet/maintenance', 'admin');
+  const svc = item(after.cars.find((c: any) => c.rego === 'CA 12 DG'), 'service_ev');
+  assert.deepEqual([svc.status, svc.due_km], ['ok', 29000]);
+  assert.equal((await call('POST', `/admin/fleet/maintenance/${job.job.id}/cancel`, 'dispatcher')).error, 'job_not_booked');
+  const other = await call('POST', '/admin/fleet/maintenance', 'dispatcher', { vehicle_id: v1, kind: 'brakes' });
+  assert.equal((await call('POST', `/admin/fleet/maintenance/${other.job.id}/cancel`, 'dispatcher')).job.status, 'cancelled');
+  // A past job for the history (sets where the schedule starts).
+  const past = await call('POST', '/admin/fleet/maintenance', 'admin', { vehicle_id: v1, kind: 'battery_check', done_on: '2026-11-10', odometer_km: 8800 });
+  assert.equal(past.job.status, 'done');
+  assert.equal(item((await call('GET', '/admin/fleet/maintenance', 'admin')).cars.find((c: any) => c.rego === 'CA 12 DG'), 'battery').last_done, '2026-11-10');
+});
+
+test('round 20: charging rules with the monthly cap; insurance and claims; per-car profitability and investor shares (admin only); the programme switch', async () => {
+  if (!tokens.dispatcher) await login('dispatcher', '+61400000002', 'admin');
+  const sarah = await uidOf('+61400000012');
+  const v1 = await carId('CA 12 DG');
+  assert.equal((await call('PUT', '/admin/fleet/policy', 'dispatcher', { policy: { enabled: true } })).status, 403);
+  assert.equal((await call('PUT', '/admin/fleet/policy', 'admin', { policy: { arrears_flag_weeks: 0 } })).error, 'invalid_fleet_policy');
+  const before = await call('GET', '/admin/fleet', 'dispatcher');
+  assert.deepEqual([before.ready, before.policy.enabled], [true, false], 'off until the fleet launches');
+  assert.equal((await call('PUT', '/admin/fleet/policy', 'admin', { policy: { enabled: true, charging: { monthly_cap_cents: 1000 } } })).policy.charging.monthly_cap_cents, 1000);
+  const on = await call('GET', '/admin/fleet', 'admin');
+  assert.equal(on.policy.enabled, true);
+  assert.ok(on.counts.agreements >= 1);
+
+  // Charging: home at 30c/kWh whatever was claimed, public at cost up to 80c/kWh, depot never; capped at $10 this month.
+  await q(`UPDATE charging_sessions SET reimbursed_at = now(), reimburse_cents = 0 WHERE driver_id = $1 AND reimbursed_at IS NULL`, [sarah]);
+  const at = new Date().toISOString();
+  const home = await call('POST', '/driver/charging', 'd2', { location: 'home', started_at: at, kwh: 20, cost_cents: 2000 });
+  assert.deepEqual([home.session.reimburse_cents, home.session.rule, home.session.reimbursable], [600, 'home_tariff', true]);
+  const pub = await call('POST', '/driver/charging', 'd2', { location: 'public', site_name: 'Demo charger', started_at: at, kwh: 10, cost_cents: 1200, receipt_ref: 'RCPT-1' });
+  assert.deepEqual([pub.session.reimburse_cents, pub.session.rule], [800, 'public_capped']);
+  const depot = await call('POST', '/driver/charging', 'd2', { location: 'depot', started_at: at, kwh: 30, cost_cents: 900 });
+  assert.deepEqual([depot.session.reimbursable, depot.session.rule], [false, 'depot']);
+  const view = await call('GET', '/driver/charging', 'd2');
+  assert.equal(view.reimbursement.home_cents_per_kwh, 30);
+  assert.ok(view.sessions.some((s: any) => s.rule_text?.startsWith('Public charger')));
+  const balBefore = await balOf(sarah);
+  const paid = await call('POST', '/admin/charging/reimburse', 'admin', { driver_id: sarah });
+  assert.deepEqual([paid.sessions, paid.total_cents, paid.over_cap_cents], [2, 1000, 400]);
+  assert.equal(await balOf(sarah), balBefore + 1000);
+  assert.equal((await call('POST', '/admin/charging/reimburse', 'admin', { driver_id: sarah })).total_cents, 0, 'nothing twice');
+  const month = await call('GET', '/admin/charging', 'admin');
+  assert.ok(month.by_vehicle.find((r: any) => r.rego === 'CA 34 DG').public_cents >= 1200);
+
+  // Insurance: the policy's end date becomes the car's insurance expiry.
+  assert.equal((await call('POST', '/admin/fleet/insurance', 'admin', { vehicle_id: v1, insurer: 'Demo Insurer', policy_no: 'P-2', starts_on: '2026-11-01', ends_on: '2026-10-01' })).error, 'dates');
+  const pol = await call('POST', '/admin/fleet/insurance', 'admin', { vehicle_id: v1, insurer: 'Demo Insurer', policy_no: 'P-2', cover: 'comprehensive',
+    starts_on: '2026-11-01', ends_on: '2027-12-31', premium_cents: 365000, excess_cents: 150000 });
+  assert.equal(pol.status, 201, JSON.stringify(pol));
+  assert.equal((await one(`SELECT insurance_expiry::text d FROM vehicles WHERE id = $1`, [v1])).d, '2027-12-31');
+  assert.equal((await call('POST', '/admin/fleet/insurance', 'dispatcher', { vehicle_id: v1, insurer: 'X', policy_no: 'P', starts_on: '2026-11-01', ends_on: '2027-01-01' })).status, 403);
+  // Claims: ops log them; money on a claim is admin only.
+  const other = (await one(`SELECT id FROM fleet_insurance WHERE vehicle_id <> $1 LIMIT 1`, [v1]))!.id;
+  assert.equal((await call('POST', '/admin/fleet/claims', 'dispatcher', { vehicle_id: v1, policy_id: other, kind: 'animal', incident_at: '2026-11-03T20:00:00+09:30', description: 'Kangaroo' })).error, 'policy');
+  const claim = await call('POST', '/admin/fleet/claims', 'dispatcher', { vehicle_id: v1, policy_id: pol.item.id, driver_id: await uidOf('+61400000011'), kind: 'animal',
+    incident_at: '2026-11-03T20:00:00+09:30', description: 'Kangaroo strike on the Stuart Highway at dusk', excess_cents: 150000 });
+  assert.equal(claim.status, 201, JSON.stringify(claim));
+  assert.equal((await call('PATCH', `/admin/fleet/claims/${claim.item.id}`, 'dispatcher', { payout_cents: 500 })).status, 403);
+  assert.equal((await call('PATCH', `/admin/fleet/claims/${claim.item.id}`, 'dispatcher', { status: 'lodged', claim_no: 'CLM-9' })).item.status, 'lodged');
+  assert.equal((await call('PATCH', `/admin/fleet/claims/${claim.item.id}`, 'admin', { status: 'approved', driver_contribution_cents: 50000 })).item.driver_contribution_cents, 50000);
+  const ins = await call('GET', '/admin/fleet/insurance', 'dispatcher');
+  assert.equal(ins.policies.find((p: any) => p.policy_no === 'P-2').current, true);
+  assert.equal(ins.claims.find((c: any) => c.id === claim.item.id).status, 'approved');
+
+  // Profitability per car (admin only), JSON and CSV.
+  assert.equal((await call('GET', '/admin/fleet/profitability?from=2026-11-01&to=2026-11-30', 'dispatcher')).status, 403);
+  assert.equal((await call('GET', '/admin/fleet/profitability?from=2026-11-30&to=2026-11-01', 'admin')).error, 'range');
+  const prof = await call('GET', '/admin/fleet/profitability?from=2026-11-01&to=2026-11-30', 'admin');
+  assert.equal(prof.status, 200, JSON.stringify(prof));
+  const p1 = prof.cars.find((c: any) => c.rego === 'CA 12 DG');
+  assert.equal(p1.costs.claims_cents, 100000, 'excess less what the driver pays');
+  assert.equal(p1.costs.finance_cents, Math.round((9500 * 30) / 7));
+  assert.ok(p1.costs.insurance_cents > 0 && Number.isInteger(p1.costs.maintenance_cents));
+  assert.equal(p1.profit_cents, p1.income.total_cents - p1.costs.total_cents);
+  assert.equal(prof.totals.profit_cents, prof.cars.reduce((s: number, c: any) => s + c.profit_cents, 0));
+  assert.ok(!prof.cars.some((c: any) => c.rego === 'CB47JP'));
+  const csv = await rawGet('/admin/fleet/profitability?from=2026-11-01&to=2026-11-30&format=csv', 'admin');
+  assert.match(String(csv.headers['content-type']), /text\/csv/);
+  assert.ok(csv.body.includes('CA 12 DG') && csv.body.includes('Profit per km'));
+
+  // Investors: shares by percent and dates (never over 100% of a car), monthly share of profit.
+  assert.equal((await call('GET', '/admin/fleet/investors', 'dispatcher')).status, 403);
+  const inv = await call('POST', '/admin/fleet/investors', 'admin', { name: 'Demo Community Fund', abn: '51 824 753 556', payment_ref: 'BSB 000-000' });
+  assert.equal(inv.status, 201, JSON.stringify(inv));
+  assert.equal((await call('POST', '/admin/fleet/investor-shares', 'admin', { investor_id: inv.item.id, vehicle_id: await carId('CB47JP'), share_pct: 10, starts_on: '2026-11-01' })).error, 'not_fleet_car');
+  assert.equal((await call('POST', '/admin/fleet/investor-shares', 'admin', { investor_id: inv.item.id, vehicle_id: v1, share_pct: 60, starts_on: '2026-11-16' })).status, 201);
+  assert.equal((await call('POST', '/admin/fleet/investor-shares', 'admin', { investor_id: inv.item.id, vehicle_id: v1, share_pct: 50, starts_on: '2026-12-01' })).error, 'shares_over_100');
+  const rep = await call('GET', '/admin/fleet/investor-report?month=2026-11', 'admin');
+  const row = rep.rows.find((r: any) => r.rego === 'CA 12 DG');
+  assert.deepEqual([row.days, row.share_pct], [15, 60]);
+  assert.equal(row.share_cents, Math.round((row.car_profit_cents * 0.6 * 15) / 30));
+  assert.equal(rep.investors[0].share_cents, row.share_cents);
+  const repCsv = await rawGet('/admin/fleet/investor-report?month=2026-11&format=csv', 'admin');
+  assert.ok(repCsv.body.includes('Demo Community Fund'));
+  assert.equal((await call('GET', '/admin/fleet/investors', 'admin')).items[0].shares.length, 1);
+  await call('PUT', '/admin/fleet/policy', 'admin', { policy: { enabled: false } });
+});
+
+test('before migration 024: the old lease run (capped at the balance, once a week), charging logs and the car form still work; the rest says migration_pending', async () => {
+  const tables = ['fleet_contract_weeks', 'fleet_contract_payments', 'fleet_investor_shares', 'fleet_investors', 'fleet_claims', 'fleet_insurance', 'vehicle_maintenance', 'fleet_contracts'];
+  const vcols = ['purchase_price_cents', 'purchase_date', 'finance_weekly_cents', 'spare'];
+  const ccols = ['reimburse_cents', 'rule', 'receipt_ref'];
+  for (const t of tables) await q(`ALTER TABLE ${t} RENAME TO ${t}_off`);
+  for (const c of vcols) await q(`ALTER TABLE vehicles RENAME COLUMN ${c} TO ${c}_off`);
+  for (const c of ccols) await q(`ALTER TABLE charging_sessions RENAME COLUMN ${c} TO ${c}_off`);
+  resetFleetReady();
+  const sarah = await uidOf('+61400000012');
+  try {
+    assert.equal((await call('GET', '/admin/fleet', 'admin')).ready, false);
+    assert.equal((await call('GET', '/admin/fleet/contracts', 'admin')).error, 'migration_pending');
+    assert.equal((await call('GET', '/admin/fleet/maintenance', 'admin')).error, 'migration_pending');
+    assert.equal((await call('GET', '/admin/fleet/profitability', 'admin')).error, 'migration_pending');
+    assert.deepEqual(await call('GET', '/driver/fleet', 'd2').then((r) => [r.ready, r.contract]), [false, null]);
+    const s = await call('POST', '/driver/charging', 'd2', { location: 'home', started_at: new Date().toISOString(), kwh: 10, cost_cents: 500 });
+    assert.equal(s.status, 200, JSON.stringify(s));
+    assert.equal(s.session.reimbursable, true);
+    assert.ok((await call('POST', '/admin/charging/reimburse', 'admin', { driver_id: sarah })).total_cents >= 500);
+    // Old lease run: never more than the balance, once per week.
+    await q(`DELETE FROM driver_ledger WHERE driver_id = $1 AND kind = 'lease' AND note LIKE 'Weekly vehicle lease%'`, [sarah]);
+    await setBal(sarah, 5000);
+    const run = await call('POST', '/admin/lease/run', 'admin');
+    assert.equal(run.legacy, true);
+    assert.deepEqual(run.rows.find((r: any) => r.driver_id === sarah), { driver_id: sarah, amount_cents: -5000, due_cents: 11333, short_cents: 6333 });
+    assert.equal(await balOf(sarah), 0);
+    assert.equal((await call('POST', '/admin/lease/run', 'admin')).rows.find((r: any) => r.driver_id === sarah), undefined, 'once a week');
+    // The car form drops the new fields instead of failing.
+    const v1 = await carId('CA 12 DG');
+    assert.equal((await call('PATCH', `/admin/vehicles/${v1}`, 'admin', { spare: true })).error, 'empty');
+    assert.equal((await call('PATCH', `/admin/vehicles/${v1}`, 'admin', { colour: 'Atlantis Grey', finance_weekly_cents: 100 })).status, 200);
+  } finally {
+    for (const t of tables) await q(`ALTER TABLE ${t}_off RENAME TO ${t}`);
+    for (const c of vcols) await q(`ALTER TABLE vehicles RENAME COLUMN ${c}_off TO ${c}`);
+    for (const c of ccols) await q(`ALTER TABLE charging_sessions RENAME COLUMN ${c}_off TO ${c}`);
+    resetFleetReady();
+  }
+});

@@ -38,7 +38,7 @@ export const VERIFIED_SOURCE: Map = { vin: 'VIN', compliance_plate: 'Compliance 
 export const DOC_STATUS: Map = { pending: 'Waiting for review', approved: 'Approved', rejected: 'Rejected', expired: 'Expired' };
 export const docTone = (s: string) => (s === 'approved' ? 'green' : s === 'pending' ? 'ochre' : 'red');
 
-export const FLAG_KIND: Map = { assistance_animal_refusal: 'Assistance animal refusal', doc_expired: 'Document expired', route_deviation: 'Route deviation', levy: 'Passenger levy', repeat_cancellation: 'Repeated cancellations after accepting', delivery_far_from_address: 'Parcel left far from the address' };
+export const FLAG_KIND: Map = { assistance_animal_refusal: 'Assistance animal refusal', doc_expired: 'Document expired', route_deviation: 'Route deviation', levy: 'Passenger levy', repeat_cancellation: 'Repeated cancellations after accepting', delivery_far_from_address: 'Parcel left far from the address', fleet_arrears: 'Car agreement payments behind' };
 export const PARCEL_OUTCOME: Map = { delivered: 'Delivered', returning: 'Coming back to the sender', returned: 'Returned to the sender', accepted: 'Accepted', arrived: 'At pickup', in_progress: 'On its way', requested: 'Searching', scheduled: 'Booked', completed: 'Completed' };
 export const FAIL_REASON: Map = { no_one_home: 'Nobody home', no_safe_place: 'No safe place', refused: 'Refused', wrong_address: 'Wrong address', no_access: 'No access', unsafe: 'Unsafe', other: 'Other' };
 export const FLAG_STATUS: Map = { open: 'Open', reviewing: 'Reviewing', reviewed: 'Reviewed', actioned: 'Action taken', resolved: 'Resolved', dismissed: 'Dismissed' };

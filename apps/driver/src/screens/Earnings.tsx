@@ -6,7 +6,7 @@ import { TaxStatements } from './Tax';
 const KIND: Record<string, string> = {
   fare: 'Fares', commission: 'DingoGo fee', pickup_pay: 'Pickup pay', fuel_surcharge: 'Fuel surcharge', cancel_fee: 'Cancellation fees',
   tip: 'Tips', earnings_floor: 'Earnings floor top-ups', bonus: 'Bonuses', charging_credit: 'Charging reimbursed', adjustment: 'Adjustments',
-  lease: 'Vehicle lease', cash_collected: 'Cash you collected', payout: 'Paid to your bank',
+  lease: 'Car agreement', cash_collected: 'Cash you collected', payout: 'Paid to your bank',
 };
 /** Breakdown groups: what trips paid, what came on top, what came off. */
 const GROUPS: { title: string; kinds: string[]; total?: string }[] = [
@@ -119,6 +119,8 @@ export function Earnings() {
             <p className="fine-print"><Icon name="info" size={16} />Set the GST (1/11 of fares, pickup pay, fuel surcharge and cancellation fees) aside for your BAS. Cash you collect comes off what DingoGo pays you.</p>
           </section>
 
+          <CarAgreement />
+
           <TaxStatements />
 
           {(data.ledger ?? []).length > 0 && <h2>Recent activity</h2>}
@@ -134,5 +136,29 @@ export function Earnings() {
       )}
       <Ranges height={36} fill="var(--line)" style={{ marginTop: 24 }} />
     </div>
+  );
+}
+
+/** Round 20: shown only to drivers on a DingoGo car agreement (weekly lease or rent-to-own). */
+function CarAgreement() {
+  const { data } = useLoad(() => get('/driver/fleet').catch(() => null), []);
+  const k = data?.contract;
+  if (!k) return null;
+  const t = k.totals;
+  const rto = k.kind === 'rent_to_own';
+  const live = k.status === 'active' || k.status === 'paused';
+  const svc = (data.next_service ?? []).find((d: any) => d.status !== 'ok');
+  return (
+    <section className="panel">
+      <h2 className="panel-title">Your car agreement</h2>
+      <div className="info-row"><span>{k.rego}, {rto ? 'rent-to-own' : 'weekly lease'}</span><strong>{k.status === 'paused' ? 'Paused' : k.status === 'bought_out' ? 'Yours now' : k.status === 'ended' ? 'Ended' : `${money(k.weekly_cents)} a week`}</strong></div>
+      {live && k.this_week && <div className="info-row"><span>This week</span><strong className="dg-money">{money(k.this_week.collected_cents)} of {money(k.this_week.due_cents)}</strong></div>}
+      {t.owing_cents > 0 && <div className="info-row"><span>Still owing</span><strong className="dg-money" style={{ color: 'var(--earth-ink)' }}>{money(t.owing_cents)}</strong></div>}
+      {t.owing_cents < 0 && <div className="info-row"><span>Paid ahead</span><strong className="dg-money">{money(-t.owing_cents)}</strong></div>}
+      {rto && t.buy_out_cents != null && <div className="info-row"><span>Left to own the car</span><strong className="dg-money">{money(t.buy_out_cents)}</strong></div>}
+      {data.off_road && <div className="info-row"><span>Car in for maintenance</span><strong>{data.off_road.spare_rego ? `Use ${data.off_road.spare_rego}` : 'Back soon'}</strong></div>}
+      {svc && <div className="info-row"><span>{svc.label}</span><strong>{svc.status === 'overdue' ? 'Overdue' : 'Due soon'}</strong></div>}
+      <p className="fine-print"><Icon name="info" size={16} />Taken from your earnings each Monday. We never take more than your balance{k.keep_min_cents ? ` and always leave you ${money(k.keep_min_cents)}` : ''}. Anything we can’t take is carried over. Call DingoGo if you need a pause.</p>
+    </section>
   );
 }

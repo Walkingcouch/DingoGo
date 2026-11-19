@@ -13,6 +13,7 @@ import { decodeVin, normaliseVin, vinYearMismatch } from '../lib/vin.js';
 import { toOps } from '../realtime.js';
 import { ownUpload } from '../lib/uploads.js';
 import * as trips from '../services/trips.js';
+import * as fleet from '../services/fleet.js';
 import { loadDriverPay, serviceFeeFor, TRIP_PAY_KINDS } from '../lib/driverPay.js';
 import { myFloorWeek } from '../services/earningsFloor.js';
 import { expiringDocs } from '../services/docExpiry.js';
@@ -566,18 +567,24 @@ export default async function driverRoutes(app: FastifyInstance) {
       kwh: z.number().min(0).max(100), tariff_cents_per_kwh: z.number().int().min(0).max(200).optional(),
       cost_cents: z.number().int().min(0).optional(), start_pct: z.number().int().min(0).max(100).optional(),
       end_pct: z.number().int().min(0).max(100).optional(), meter_ref: z.string().max(60).optional(),
+      receipt_ref: z.string().trim().max(80).optional(),
     }), req.body);
-    const d = await one('SELECT d.vehicle_id, v.fuel_type FROM drivers d LEFT JOIN vehicles v ON v.id = d.vehicle_id WHERE d.user_id = $1', [me.id]);
+    const d = await one('SELECT d.vehicle_id, v.fuel_type, v.ownership FROM drivers d LEFT JOIN vehicles v ON v.id = d.vehicle_id WHERE d.user_id = $1', [me.id]);
     if (!d?.vehicle_id) throw conflict('no_vehicle', 'No vehicle assigned');
     if (!['electric', 'plug_in_hybrid'].includes(d.fuel_type)) throw bad('not_plug_in', 'Charging logs are for electric and plug-in hybrid cars');
     const tariff = b.tariff_cents_per_kwh ?? (await one(`SELECT value FROM settings WHERE key = 'home_tariff_cents_per_kwh'`))?.value ?? 30;
     const cost = b.cost_cents ?? Math.round(b.kwh * Number(tariff));
+    // Round 20: how it is paid back — home at the policy tariff, public at cost up to the per-kWh limit, never depot or own cars.
+    const rule = await fleet.chargingRuleFor({ location: b.location, kwh: b.kwh, cost_cents: cost, receipt_ref: b.receipt_ref }, d.ownership);
+    const ready = await fleet.fleetReady();
     const s = await one(
-      `INSERT INTO charging_sessions (driver_id, vehicle_id, location, site_name, started_at, ended_at, kwh, tariff_cents_per_kwh, cost_cents, start_pct, end_pct, meter_ref)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,
-      [me.id, d.vehicle_id, b.location, b.site_name ?? null, b.started_at, b.ended_at ?? null, b.kwh, tariff, cost, b.start_pct ?? null, b.end_pct ?? null, b.meter_ref ?? null]);
+      `INSERT INTO charging_sessions (driver_id, vehicle_id, location, site_name, started_at, ended_at, kwh, tariff_cents_per_kwh, cost_cents, start_pct, end_pct, meter_ref,
+         reimbursable${ready ? ', reimburse_cents, rule, receipt_ref' : ''})
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13${ready ? ',$14,$15,$16' : ''}) RETURNING *`,
+      [me.id, d.vehicle_id, b.location, b.site_name ?? null, b.started_at, b.ended_at ?? null, b.kwh, tariff, cost, b.start_pct ?? null, b.end_pct ?? null, b.meter_ref ?? null,
+        rule.reimbursable, ...(ready ? [rule.reimbursable ? rule.cents : null, rule.rule, b.receipt_ref ?? null] : [])]);
     if (b.end_pct != null) await q('UPDATE vehicles SET battery_pct = $2 WHERE id = $1', [d.vehicle_id, b.end_pct]);
-    return { session: s };
+    return { session: { ...s, reimburse_cents: rule.reimbursable ? rule.cents : 0, rule: rule.rule, rule_text: fleet.chargeRuleText(rule.rule) } };
   });
 
   app.get('/driver/charging', async (req) => {
@@ -588,7 +595,13 @@ export default async function driverRoutes(app: FastifyInstance) {
        WHERE driver_id = $1 AND started_at > date_trunc('month', now())`, [me.id]);
     const km = await one(
       `SELECT coalesce(sum(coalesce(actual_distance_m, est_distance_m)),0)::int m FROM trips WHERE driver_id = $1 AND status = 'completed' AND completed_at > date_trunc('month', now())`, [me.id]);
-    return { sessions, month: { ...month, trip_km: Math.round(km!.m / 1000) } };
+    const rules = (await fleet.loadFleetPolicy()).charging;
+    const own = await one(`SELECT v.ownership FROM drivers d LEFT JOIN vehicles v ON v.id = d.vehicle_id WHERE d.user_id = $1`, [me.id]);
+    return { sessions: sessions.map((x: any) => ({ ...x, rule_text: fleet.chargeRuleText(x.rule) })), month: { ...month, trip_km: Math.round(km!.m / 1000) },
+      reimbursement: own?.ownership && own.ownership !== 'driver_owned'
+        ? { home_cents_per_kwh: rules.home_cents_per_kwh, public_max_cents_per_kwh: rules.public_max_cents_per_kwh, public_needs_receipt: rules.public_needs_receipt,
+            monthly_cap_cents: rules.monthly_cap_cents, depot: rules.depot_reimbursed }
+        : null };
   });
 
   app.post('/driver/battery', async (req) => {

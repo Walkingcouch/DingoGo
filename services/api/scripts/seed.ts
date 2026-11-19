@@ -207,6 +207,19 @@ for (const [i, d] of driverRows.entries()) {
     await q(`INSERT INTO battery_logs (vehicle_id, driver_id, at, pct, ambient_c) VALUES ($1,$2,$3,$4,$5)`, [vehicle.id, d.id, start, 30 + k, 33 + Math.random() * 8]);
   }
 }
+// Round 20: the fleet programme (admin → Fleet; hidden until switched on). The two leased Dolphins are on weekly-lease
+// agreements; each fleet car has a purchase price, finance, a comprehensive policy and a first service on record.
+for (const [i, v] of [v1, v2, v3].entries()) {
+  await q(`UPDATE vehicles SET purchase_price_cents = 3899000, purchase_date = $2, finance_weekly_cents = 9500, spare = false WHERE id = $1`, [v.id, plusDays(-200)]);
+  await q(`INSERT INTO fleet_insurance (vehicle_id, insurer, policy_no, cover, starts_on, ends_on, premium_cents, excess_cents)
+           VALUES ($1, 'Demo Rideshare Insurance', $2, 'comprehensive', $3, $4, 280000, 100000)`, [v.id, `DEMO-POL-${i + 1}`, plusDays(-65), plusDays(300)]);
+  await q(`INSERT INTO vehicle_maintenance (vehicle_id, kind, status, odometer_km, cost_cents, provider, started_at, finished_at, notes)
+           VALUES ($1, 'tyres', 'done', 1000, 6000, 'Demo Tyres Alice Springs', $2, $2, 'Rotation and tread check')`, [v.id, plusDays(-60)]);
+}
+for (const [i, v] of [v2, v3].entries()) {
+  await q(`INSERT INTO fleet_contracts (vehicle_id, driver_id, kind, weekly_cents, starts_on, notes) VALUES ($1, $2, 'weekly_lease', 11333, $3, 'Demo agreement')`,
+    [v.id, driverRows[i + 1].id, plusDays(-30)]);
+}
 await q(`INSERT INTO hire_requests (kind, contact_name, contact_email, organisation, event_date, passengers, vehicles, details) VALUES
   ('conference', 'Event Coordinator', 'events@example.com', 'Desert Conference Centre (demo)', $1, 40, 3, 'Airport transfers for delegates over 2 days')`, [plusDays(21)]);
 await q(`INSERT INTO driver_applications (name, phone, email, suburb, has_licence_years, wants_lease, languages, message) VALUES

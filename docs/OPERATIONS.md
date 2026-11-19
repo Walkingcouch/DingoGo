@@ -215,6 +215,39 @@ hire quote links (503 `migration_pending`). Admin → Tours & hire; tour product
   translations and say so. To sign one off, a fluent reviewer checks it and an admin sets `status: reviewed` with `reviewed_by` and
   `reviewed_on` (tour text in Pricing → Tours → Visitor-language text; screen words in `packages/shared/src/i18n/visitor.json`).
 
+## 9c. Fleet and EV programme (Round 20)
+
+Migration `024_fleet.sql` (AUTO_MIGRATE applies it; it also gives each car already leased to a driver a weekly-lease agreement at its
+current weekly amount, from the day it runs). Admin → Fleet & charging → **Fleet programme**: the switch (off by default) shows the
+Agreements, Maintenance, Insurance & claims, Profit per car and Investors tabs. Leave it off until DingoGo-owned cars are on the road.
+Before the migration, "Run weekly lease deductions" (Payouts & leases) still works, once per week and never past a driver's balance.
+
+- **Weekly run order (Mondays):** run the agreement deductions first (Agreements → Run week, or switch on "Run every Monday morning"),
+  then pay drivers. A deduction never takes a driver below zero (or below the amount the agreement always leaves them): what can't be
+  taken is owing and caught up in later weeks, at most the catch-up limit (150% of the weekly amount by default) in one week.
+- **Arrears:** owing 2 weeks or more raises a "Car agreement payments behind" compliance flag and a plain note to the driver. Talk to them
+  first. Options: pause payments (hardship, Sorry Business, car off the road; paused weeks add nothing), record a bank payment, or write off
+  what is owing (audited). Ending an agreement returns the car to the fleet; what is owing stays on the record.
+- **Rent-to-own:** set the price to own the car, the deposit already paid and the weekly amount (the form shows the weeks to pay it off).
+  The weekly run stops at the price. "Buy-out" pays the rest (from the balance or by bank), closes the agreement and makes the car the
+  driver's own car in DingoGo (their own-car fee rate applies, investor shares in it end). Transfer the registration with the driver.
+  GST on rent-to-own payments and the buy-out: confirm with the accountant (they are recorded as `lease` like the weekly lease).
+- **Maintenance:** each DingoGo car shows what is due from the service plans (scheduled service, tyres, brakes, battery health) by km and
+  months; batteries every 3 months from October to March and straight away after a week averaging 40°C (from drivers' battery check-ins).
+  Book the job; "Take off road" removes the car from dispatch (refused while on a trip), lends the driver a spare car if you pick one
+  (cars marked "Keep free as a spare car" first) and takes other drivers of the car offline; "Done, back on road" records the odometer
+  and cost and moves the driver back. Record past services with "Already done" so the schedule starts from them.
+- **Charging:** home charging is paid back at the household rate per kWh (30c), public chargers at cost up to 80c per kWh (optionally
+  only with a receipt number), depot charging and drivers' own cars are not paid back, at most $250 a month per driver. All editable on
+  the Fleet programme tab. Reimburse per driver from Charging & battery (credited to the next payout).
+- **Insurance and claims:** record each policy with its premium and excess (the car's insurance expiry follows it). Log incidents
+  (kangaroo strikes are "Animal strike") and move the claim through lodged → approved/declined → paid; excess, the driver's contribution
+  and payouts are admin only. The driver's contribution is recorded, not deducted: agree it with the driver and take it as a bank payment.
+- **Profit per car and investors (admin only):** income (service fees from the car's trips, agreement payments, roof ads, insurance
+  payouts) less costs (charging paid, maintenance, insurance spread by day, claims, finance per week from the car record). Investor shares
+  are a percentage of a car's profit from a date (never over 100% of a car); the monthly report and CSV are for the accountant. It is a
+  management report, not a statement of account: check it before paying anyone.
+
 ## 10. Performance and load testing (Round 18)
 - **Migration 022** (indexes only, safe any time; AUTO_MIGRATE applies it). Until it is in, `/health/deep` reports it pending and
   the API runs as before, just with slower dispatch queries as trips grow.
