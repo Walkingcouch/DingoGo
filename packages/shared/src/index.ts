@@ -13,3 +13,6 @@ export type { PushState } from './push';
 export { NotifySettings } from './NotifySettings';
 export { ServiceNotice } from './ServiceNotice';
 export * from './courier';
+export * from './i18n';
+export { Acknowledgement, Words, DraftNotice } from './Acknowledgement';
+export { speak, canSpeak } from './speak';

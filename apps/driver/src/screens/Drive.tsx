@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { ApiError, Icon, money, post } from '@dingogo/shared';
+import { ApiError, Icon, del, money, post } from '@dingogo/shared';
 import { DgMap, type MapMarker } from '@dingogo/shared/map';
 import { PLACES, rangeKm, useDriver } from '../state';
 import { FuelChip, isEv } from '../vehicle';
@@ -12,6 +12,9 @@ export function Drive() {
   const [pickPlace, setPickPlace] = useState(false);
   const [busy, setBusy] = useState(false);
   const [errors, setErrors] = useState<string[] | null>(null);
+  const [leaveOpen, setLeaveOpen] = useState(false);
+  const leave = me?.driver?.leave as { kind: string; until: string | null } | null | undefined;
+  async function back() { setBusy(true); try { await del('/driver/leave'); await reloadMe(); } finally { setBusy(false); } }
   const v = me?.driver?.vehicle;
   const ev = isEv(v);
   const range = rangeKm(v?.range_km, battery);
@@ -53,7 +56,13 @@ export function Drive() {
             <button className="link-btn" onClick={() => setPickPlace(true)}>Set location</button>
           </div>
         )}
-        <ExpiryBanner />
+        {leave ? (
+          <div className="inline-notice" role="status">
+            <Icon name="heart" size={20} />
+            <span>You're on leave ({LEAVE_LABEL[leave.kind] ?? 'leave'}){leave.until ? ` until ${new Date(leave.until).toLocaleDateString('en-AU', { day: 'numeric', month: 'short' })}` : ''}. No trips, no reminders, nothing counts against you.</span>
+            <button className="link-btn" onClick={back} disabled={busy}>I'm back</button>
+          </div>
+        ) : <ExpiryBanner />}
         {online
           ? <button className="online-toggle stop" onClick={goOffline} disabled={busy}><Icon name="power" size={24} />Go offline</button>
           : <button className="online-toggle go" onClick={() => { setErrors(null); if (ev) setAskBattery(true); else void goOnline(); }} disabled={busy}><Icon name="power" size={24} />{busy ? 'Going online…' : 'Go online'}</button>}
@@ -72,6 +81,7 @@ export function Drive() {
           <div className="stat"><b>{money(me?.today?.gross_cents ?? 0)}</b><span>Fares today</span></div>
           <div className="stat"><b>{me?.driver?.rating_avg ? Number(me.driver.rating_avg).toFixed(2) : 'New'}</b><span>Rating</span></div>
         </div>
+        {!online && !leave && <button className="link-btn" style={{ marginTop: 8 }} onClick={() => setLeaveOpen(true)}>Take leave (Sorry Business, cultural business, family)</button>}
         {(v || acc != null) && (
           <div className="vehicle-line">
             {v && <span><Icon name="car" size={18} />{v.colour} {v.make} {v.model}, <strong>{v.rego}</strong>{!ev && <FuelChip v={v} />}</span>}
@@ -104,6 +114,8 @@ export function Drive() {
         </Sheet>
       )}
 
+      {leaveOpen && <LeaveSheet onClose={() => setLeaveOpen(false)} onDone={async () => { setLeaveOpen(false); setOnline(false); await reloadMe(); }} />}
+
       {pickPlace && (
         <Sheet onClose={() => setPickPlace(false)} labelledBy="loc-h">
             <h2 id="loc-h">Where are you?</h2>
@@ -120,5 +132,38 @@ export function Drive() {
         </Sheet>
       )}
     </div>
+  );
+}
+
+const LEAVE_LABEL: Record<string, string> = { sorry_business: 'Sorry Business', cultural: 'cultural business', family: 'family' };
+
+/** Leave without penalty: offline, no offers, paper reminders paused. Nothing more is asked. */
+function LeaveSheet({ onClose, onDone }: { onClose: () => void; onDone: () => Promise<void> }) {
+  const [kind, setKind] = useState('sorry_business');
+  const [until, setUntil] = useState('');
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  async function go() {
+    setBusy(true); setErr(null);
+    try { await post('/driver/leave', { kind, until: until || null }); await onDone(); }
+    catch (e) { setErr(e instanceof ApiError ? e.message : 'Could not save. Go offline for now.'); } finally { setBusy(false); }
+  }
+  return (
+    <Sheet onClose={onClose} labelledBy="leave-h">
+      <h2 id="leave-h">Take leave</h2>
+      <p className="dg-muted" style={{ marginTop: 0 }}>Take the time you need. You won't get trips or reminders, and nothing counts against you. Come back any time.</p>
+      <div role="radiogroup" aria-label="Kind of leave" style={{ display: 'grid', gap: 8 }}>
+        {Object.entries({ sorry_business: 'Sorry Business', cultural: 'Cultural business', family: 'Family' }).map(([k, l]) => (
+          <button key={k} type="button" role="radio" aria-checked={kind === k} className="dg-btn dg-btn--ghost dg-btn--block"
+            style={{ justifyContent: 'flex-start', minHeight: 52, ...(kind === k ? { outline: '3px solid var(--ochre)' } : {}) }} onClick={() => setKind(k)}>{l}</button>
+        ))}
+      </div>
+      <label className="dg-field" style={{ marginTop: 12 }}><span>Back on (optional)</span><input className="dg-input" type="date" value={until} onChange={(e) => setUntil(e.target.value)} /></label>
+      {err && <p className="dg-error" role="alert">{err}</p>}
+      <div className="btn-row" style={{ marginTop: 14 }}>
+        <button className="dg-btn dg-btn--ghost btn-xl" onClick={onClose}>Not now</button>
+        <button className="dg-btn btn-xl" onClick={go} disabled={busy}>{busy ? 'Saving…' : 'Start leave'}</button>
+      </div>
+    </Sheet>
   );
 }

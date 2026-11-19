@@ -9,7 +9,7 @@ export default function About() {
   const zones = cfg?.zones ?? [];
   return (
     <>
-      <PageHead title="A local business, on local Country">DingoGo is an Aboriginal-owned rides and deliveries network for the Northern Territory, starting in Mparntwe. Our goal is an all-electric fleet.</PageHead>
+      <PageHead title="A local business, on local Country">DingoGo is an Aboriginal-owned rides and deliveries network for the Northern Territory, starting in Mparntwe. Our goal is an electric fleet.</PageHead>
       <section className="section">
         <div className="wrap split">
           <div><h2>Why we started</h2></div>

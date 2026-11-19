@@ -1,6 +1,6 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { ApiError, Icon, PARCEL_SIZE_MAX_KG, PROHIBITED_ITEMS, get, money, post, Ranges, useLoad } from '@dingogo/shared';
+import { ApiError, Icon, PARCEL_SIZE_MAX_KG, PROHIBITED_ITEMS, canSpeak, get, money, post, Ranges, speak, t, useLoad } from '@dingogo/shared';
 import { DgMap, type MapMarker } from '@dingogo/shared/map';
 import { PlaceField, type Place } from '../components/PlaceField';
 import { QuoteBox } from '../components/QuoteBox';
@@ -199,9 +199,19 @@ export function RideScreen() {
   useEffect(() => { if (error) errRef.current?.focus(); }, [error]);
   const corp = me?.corporate_accounts ?? [];
   const firstName = me?.user.name?.split(' ')[0];
+  // Simple mode (Account → Profile): big pictures, short words, two choices, and the booking read out on request.
+  const simple = !!me?.user.accessibility?.simple;
+  const lang = me?.user.language;
+  const modes = simple ? MODES.filter((m) => m.id === 'ride' || m.id === 'courier').map((m) => ({ ...m, label: m.id === 'ride' ? t('simple_ride', lang) : t('simple_parcel', lang) })) : MODES;
+  useEffect(() => { if (simple && mode !== 'ride' && mode !== 'courier') setMode('ride'); }, [simple]); // eslint-disable-line
+  function hearIt() {
+    const what = mode === 'courier' ? 'Parcel' : 'Ride';
+    speak([`${what}.`, `From: ${pickup?.address ?? 'not chosen yet'}.`, `To: ${dropoff?.address ?? 'not chosen yet'}.`,
+      quote ? `Price: ${money(quote.total_cents)}.` : '', why ?? `Tap the Book button to book.`].filter(Boolean).join(' '));
+  }
 
   return (
-    <div className="ride">
+    <div className={`ride ${simple ? 'ride--simple' : ''}`}>
       <div className="ride__map">
         <DgMap markers={markers} route={route} onMapClick={mode === 'hire' ? undefined : onMapClick} padding={50} />
         {mode !== 'hire' && (
@@ -211,10 +221,13 @@ export function RideScreen() {
 
       <div className="sheet">
         <div className="sheet__grab" aria-hidden="true" />
-        <h1 className="sheet__hello">{firstName ? `Where to, ${firstName}?` : 'Where to?'}</h1>
+        <h1 className="sheet__hello">{simple ? t('simple_where', lang) : firstName ? `Where to, ${firstName}?` : 'Where to?'}</h1>
+        {simple && canSpeak() && (
+          <button type="button" className="dg-btn dg-btn--ghost hearit" onClick={hearIt}><Icon name="volume" size={22} />{t('simple_hear', lang)}</button>
+        )}
 
-        <div className="modes" role="tablist" aria-label="Service">
-          {MODES.map((m) => (
+        <div className={`modes ${simple ? 'modes--simple' : ''}`} role="tablist" aria-label="Service">
+          {modes.map((m) => (
             <button key={m.id} role="tab" aria-selected={mode === m.id} className={`modes__b ${mode === m.id ? 'is-on' : ''}`} onClick={() => setMode(m.id)}>
               <span className="modes__i"><Icon name={m.icon} size={22} /></span><span className="modes__l">{m.label}</span>
             </button>
@@ -226,9 +239,9 @@ export function RideScreen() {
         ) : (
           <>
             <div className="places">
-              <PlaceField label="Pickup" dot="A" value={pickup} onChange={setPickup} placeholder={mode === 'courier' ? 'Collect parcel from' : 'Pickup location'}
+              <PlaceField label={simple ? t('simple_from', lang) : 'Pickup'} dot="A" value={pickup} onChange={setPickup} placeholder={simple ? t('simple_from', lang) : mode === 'courier' ? 'Collect parcel from' : 'Pickup location'}
                 active={target === 'pickup'} onFocusField={() => setTarget('pickup')} />
-              <PlaceField label="Drop-off" dot="B" value={dropoff} onChange={setDropoff} placeholder={mode === 'courier' ? 'Deliver to' : 'Where are you going?'}
+              <PlaceField label={simple ? t('simple_to', lang) : 'Drop-off'} dot="B" value={dropoff} onChange={setDropoff} placeholder={simple ? t('simple_to', lang) : mode === 'courier' ? 'Deliver to' : 'Where are you going?'}
                 active={target === 'dropoff'} onFocusField={() => setTarget('dropoff')} />
             </div>
             <button type="button" className="linkbtn" onClick={useMyLocation}>Use my location for pickup</button>
@@ -295,7 +308,7 @@ export function RideScreen() {
             )}
 
             <button type="button" className="disclose" aria-expanded={showMore} onClick={() => setShowMore((s) => !s)}>
-              <span>Trip options</span>
+              <span>{simple ? t('simple_more', lang) : 'Trip options'}</span>
               <span className="dg-muted">{[later && 'Scheduled', mode !== 'courier' && passengers > 1 && `${passengers} people`, assist && 'Assistance animal', femalePref && 'Female driver', promo && 'Promo', usePoints && 'Points'].filter(Boolean).join(', ') || 'Schedule, accessibility, promo'}</span>
             </button>
             {showMore && (
@@ -373,7 +386,7 @@ export function RideScreen() {
             {why && <p id="book-why" className={`requestbar__why ${whyLoud ? 'is-alert' : ''}`} role={whyLoud ? 'alert' : undefined}>{why}</p>}
             <button className="dg-btn dg-btn--block dg-btn--dark request" aria-disabled={!canRequest || busy} aria-describedby={why ? 'book-why' : undefined}
               onClick={() => { if (busy) return; if (!canRequest) { setWhyLoud(true); return; } void request(); }}>
-              {busy ? 'Booking…' : mode === 'courier' ? `Send parcel${quote ? ` for ${money(quote.total_cents)}` : ''}` : later ? `Schedule ${mode === 'pet' ? 'pet ride' : 'ride'}` : `Book ${mode === 'pet' ? 'pet ride' : 'ride'}${quote ? ` for ${money(quote.total_cents)}` : ''}`}
+              {busy ? 'Booking…' : simple ? `${t('simple_book', lang)}${quote ? ` ${money(quote.total_cents)}` : ''}` : mode === 'courier' ? `Send parcel${quote ? ` for ${money(quote.total_cents)}` : ''}` : later ? `Schedule ${mode === 'pet' ? 'pet ride' : 'ride'}` : `Book ${mode === 'pet' ? 'pet ride' : 'ride'}${quote ? ` for ${money(quote.total_cents)}` : ''}`}
             </button>
             </div>
           </>

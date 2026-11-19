@@ -7,6 +7,7 @@ import { limit } from '../lib/rateLimit.js';
 import { quoteFare } from '../lib/fares.js';
 import { lastRouteError, route } from '../lib/geo.js';
 import { searchPlaces } from '../lib/places.js';
+import { CONCESSION_TYPES, LANGUAGE_INFO, communityReady, loadCommunityPricing } from '../lib/community.js';
 import { latLng, parse, z } from '../lib/validate.js';
 import { toOps } from '../realtime.js';
 import { shareLinkExpired, zoneFor } from '../services/trips.js';
@@ -77,6 +78,15 @@ export default async function publicRoutes(app: FastifyInstance) {
       prohibited: { version: PROHIBITED_VERSION, keys: PROHIBITED_KEYS }, fail_reasons: FAIL_REASONS,
       runs: await courierReady(), windows: await courierReady(),
     },
+    // Round 12: app languages (Arrernte and Kriol are community drafts) and concession fares (off unless switched on in admin).
+    languages: LANGUAGE_INFO,
+    community_pricing: await (async () => {
+      const r = await loadCommunityPricing();
+      const on = r.enabled && (await communityReady());
+      return { concession: on, pct: on ? r.concession_pct : 0, max_cents: on ? r.concession_max_cents : 0, services: on ? r.services : [],
+        types: on ? Object.fromEntries(r.types.map((t) => [t, CONCESSION_TYPES[t]])) : {} };
+    })(),
+    client_bookings: await communityReady(),
   }));
 
   app.get('/public/places', async (req) => ({ places: searchPlaces(String((req.query as any).q ?? '').slice(0, 100)) }));

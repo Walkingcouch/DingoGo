@@ -4,6 +4,7 @@ import { Page } from '../ctx';
 import { Chip, CrudSection, Empty, ErrorMsg, Section, Tabs, useRun, type Field } from '../ui';
 import { DOC_TYPE, STATE_NAME, label } from '../labels';
 import DriverPay from './DriverPay';
+import Community from './Community';
 import { jurisdictionList, minYearFor, type Jurisdiction } from '../rules';
 
 const FARE_FIELDS: Field[] = [
@@ -18,10 +19,10 @@ const FARE_FIELDS: Field[] = [
 ];
 
 export default function Pricing() {
-  const [tab, setTab] = useState<'fares' | 'driver_pay' | 'zones' | 'states' | 'promos' | 'plans' | 'holidays' | 'tours'>('fares');
+  const [tab, setTab] = useState<'fares' | 'driver_pay' | 'community' | 'zones' | 'states' | 'promos' | 'plans' | 'holidays' | 'tours'>('fares');
   return (
     <Page title="Pricing & tours">
-      <Tabs tabs={[['fares', 'Fares'], ['driver_pay', 'Driver pay'], ['zones', 'Service areas'], ['states', 'States'], ['promos', 'Promo codes'], ['plans', 'DingoGo Pass'], ['holidays', 'Public holidays'], ['tours', 'Tours']]} value={tab} onChange={setTab}>
+      <Tabs tabs={[['fares', 'Fares'], ['driver_pay', 'Driver pay'], ['community', 'Community'], ['zones', 'Service areas'], ['states', 'States'], ['promos', 'Promo codes'], ['plans', 'DingoGo Pass'], ['holidays', 'Public holidays'], ['tours', 'Tours']]} value={tab} onChange={setTab}>
       {tab === 'fares' && <CrudSection title="Fare rules" path="fares" pk="service" newLabel="Add service" fields={FARE_FIELDS}
         describe={<p className="dg-muted" style={{ marginTop: 0, maxWidth: 780 }}>Benchmark: the Alice Springs taxi maximum tariff from 1 July 2026 is $5.50 flagfall plus $2.45/km on weekdays by day, and $6.80 plus $2.89/km at night and on weekends (NT Government Gazette S53). Taxis add a card surcharge. All DingoGo fares include GST.</p>}
         cols={[
@@ -45,6 +46,7 @@ export default function Pricing() {
         { key: 'launch_note', label: 'Note' }, { key: 'active', label: 'Status', render: (z) => (z.active ? <Chip tone="green">Live</Chip> : <Chip>Planned</Chip>) },
       ]} />}
       {tab === 'driver_pay' && <DriverPay />}
+      {tab === 'community' && <Community />}
       {tab === 'states' && <States onZones={() => setTab('zones')} />}
       {tab === 'promos' && <CrudSection title="Promo codes" path="promos" pk="code" newLabel="New promo code" fields={[
         { key: 'code', label: 'Code', required: true, readOnlyOnEdit: true }, { key: 'kind', label: 'Type', type: 'select', required: true, options: [['percent', 'Percent off'], ['fixed', 'Fixed amount off (cents)']] },

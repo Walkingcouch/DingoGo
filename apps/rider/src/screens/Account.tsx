@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link, Route, Routes, useNavigate, useSearchParams } from 'react-router-dom';
-import { ApiError, Icon, NotifySettings, ago, date, del, get, money, patch, post, useLoad, Ranges } from '@dingogo/shared';
+import { Acknowledgement, ApiError, DraftNotice, Icon, NotifySettings, ago, date, del, get, langInfo, money, normaliseLang, patch, post, put, t, useLoad, Ranges } from '@dingogo/shared';
 import { Dialog, Page, Spinner } from '../components/ui';
 import { useMe } from '../ctx';
+import { CLIENT_KINDS } from './Clients';
 
 export function AccountScreen() {
   return (
@@ -15,6 +16,7 @@ export function AccountScreen() {
       <Route path="help" element={<Help />} />
       <Route path="safety" element={<Safety />} />
       <Route path="privacy" element={<Privacy />} />
+      <Route path="organisations" element={<Organisations />} />
     </Routes>
   );
 }
@@ -28,15 +30,18 @@ function Menu() {
     { to: 'payment', icon: 'wallet', title: 'Payment and credit', sub: `${money(me?.user.wallet_cents ?? 0)} DingoGo credit` },
     { to: 'notifications', icon: 'bell', title: 'Notifications', sub: `${n ? `${n} unread` : 'All caught up'}. Settings and offers` },
     ...((me?.corporate_accounts?.length ?? 0) > 0 ? [{ to: '/business', icon: 'package', title: 'Business deliveries', sub: 'Parcels sent, runs of several drops, spreadsheet import' }] : []),
+    ...((me?.corporate_accounts ?? []).some((a) => CLIENT_KINDS.includes(a.kind ?? '')) ? [{ to: '/clients', icon: 'users', title: 'Book for clients', sub: 'Rides for your clients, with their consent' }] : []),
     { to: 'help', icon: 'help', title: 'Help', sub: 'Lost property, fares, report a problem' },
     { to: 'safety', icon: 'shield', title: 'Safety', sub: 'Trip PIN, sharing, SOS, our drivers' },
+    { to: 'organisations', icon: 'users', title: 'Organisations', sub: 'Who can book rides for you' },
     { to: 'privacy', icon: 'lock', title: 'Privacy and your data', sub: 'Download or delete your data' },
   ];
+  const lang = normaliseLang(me?.user.language);
   return (
     <Page title="Account">
       <div className="me">
         <div className="me__av" aria-hidden="true">{me?.user.name?.[0] ?? '?'}</div>
-        <div><strong>{me?.user.name || 'Add your name'}</strong><span className="dg-muted">{me?.user.phone}</span>
+        <div>{lang !== 'en' && <span className="dg-muted">{t('greeting', lang)} <span className="dg-draft">(draft)</span></span>}<strong>{me?.user.name || 'Add your name'}</strong><span className="dg-muted">{me?.user.phone}</span>
           {me?.user.rating_avg && <span className="dg-muted"><Icon name="star" size={14} /> {Number(me.user.rating_avg).toFixed(1)} rider rating</span>}</div>
       </div>
       <ul className="list">
@@ -48,6 +53,7 @@ function Menu() {
       <button className="dg-btn dg-btn--ghost dg-btn--block" style={{ marginTop: 20 }} onClick={signOut}>Sign out</button>
       <Ranges height={40} fill="var(--ochre-soft)" style={{ marginTop: 28 }} />
       <p className="dg-muted" style={{ fontSize: 'var(--fs-xs)', textAlign: 'center' }}>DingoGo Rideshare & Courier. Aboriginal-owned, Mparntwe (Alice Springs).</p>
+      <Acknowledgement style={{ textAlign: 'center', fontSize: 'var(--fs-xs)' }} />
     </Page>
   );
 }
@@ -55,13 +61,13 @@ function Menu() {
 function Profile() {
   const { me, reload } = useMe();
   const u = me?.user;
-  const [f, setF] = useState({ name: '', email: '', ec_name: '', ec_phone: '', language: 'en', marketing: false, wheelchair: false, assistance_animal: false, hearing: false, vision: false, notes: '' });
+  const [f, setF] = useState({ name: '', email: '', ec_name: '', ec_phone: '', language: 'en', simple: false, marketing: false, wheelchair: false, assistance_animal: false, hearing: false, vision: false, notes: '' });
   const [saved, setSaved] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   useEffect(() => {
     if (!u) return;
-    setF({ name: u.name ?? '', email: u.email ?? '', ec_name: u.emergency_contact?.name ?? '', ec_phone: u.emergency_contact?.phone ?? '', language: u.language ?? 'en',
-      marketing: u.marketing_opt_in, wheelchair: !!u.accessibility?.wheelchair, assistance_animal: !!u.accessibility?.assistance_animal,
+    setF({ name: u.name ?? '', email: u.email ?? '', ec_name: u.emergency_contact?.name ?? '', ec_phone: u.emergency_contact?.phone ?? '', language: normaliseLang(u.language),
+      simple: !!u.accessibility?.simple, marketing: u.marketing_opt_in, wheelchair: !!u.accessibility?.wheelchair, assistance_animal: !!u.accessibility?.assistance_animal,
       hearing: !!u.accessibility?.hearing, vision: !!u.accessibility?.vision, notes: u.accessibility?.notes ?? '' });
   }, [u?.id]); // eslint-disable-line
 
@@ -71,7 +77,7 @@ function Profile() {
       await patch('/me', {
         name: f.name || undefined, email: f.email, language: f.language,
         emergency_contact: f.ec_name && f.ec_phone ? { name: f.ec_name, phone: f.ec_phone } : null,
-        accessibility: { wheelchair: f.wheelchair, assistance_animal: f.assistance_animal, hearing: f.hearing, vision: f.vision, notes: f.notes },
+        accessibility: { ...(u?.accessibility ?? {}), wheelchair: f.wheelchair, assistance_animal: f.assistance_animal, hearing: f.hearing, vision: f.vision, notes: f.notes, simple: f.simple },
       });
       await reload(); setSaved(true);
     } catch (e2) { setErr(e2 instanceof ApiError ? e2.message : 'Could not save'); }
@@ -98,19 +104,22 @@ function Profile() {
         {chk('hearing', 'I am Deaf or hard of hearing (driver will message, not call)')}
         {chk('vision', 'I am blind or have low vision (driver will come to the door)')}
         <label className="dg-field"><span>Anything else drivers should know</span><input className="dg-input" value={f.notes} onChange={(e) => setF({ ...f, notes: e.target.value })} /></label>
+        <h2 className="section__title" style={{ marginTop: 24 }}>Easy to use</h2>
+        {chk('simple', <>Simple mode<br /><small className="dg-muted">Big pictures, fewer words, fewer choices. The app reads your trip out loud.</small></>)}
         <h2 className="section__title" style={{ marginTop: 24 }}>Language</h2>
         <label className="dg-field"><span>App language</span>
           <select className="dg-select" value={f.language} onChange={(e) => setF({ ...f, language: e.target.value })}>
-            <option value="en">English</option>
-            <option value="arr" disabled>Arrernte (coming, being made with community)</option>
-            <option value="wbp" disabled>Warlpiri (coming)</option>
+            {(['en', 'aer', 'rop'] as const).map((l) => <option key={l} value={l}>{langInfo(l).english_name}{l !== 'en' ? ' (draft, a few words only)' : ''}</option>)}
           </select></label>
+        <DraftNotice lang={f.language} />
+        {f.language !== 'en' && <p className="dg-muted" style={{ fontSize: 'var(--fs-sm)' }}>We're making these words with Arrernte and Kriol speakers. Tell us in Help if a word is wrong.</p>}
         <h2 className="section__title" style={{ marginTop: 24 }}>Offers and notifications</h2>
         <p><Link to="/account/notifications/settings">Choose what we send you, and whether you'd like offers</Link></p>
         {err && <p className="dg-error" role="alert">{err}</p>}
         {saved && <p className="callout callout--green" role="status">Saved.</p>}
         <button className="dg-btn dg-btn--dark dg-btn--block" style={{ marginTop: 12 }}>Save changes</button>
       </form>
+      <Concession />
     </Page>
   );
 }
@@ -397,6 +406,81 @@ function Privacy() {
         <button className="dg-btn dg-btn--danger dg-btn--block" onClick={remove}>Delete my account</button>
         <button className="dg-btn dg-btn--ghost dg-btn--block" style={{ marginTop: 10 }} onClick={() => setOpen(false)}>Keep my account</button>
       </Dialog>
+    </Page>
+  );
+}
+
+/** Concession card for concession fares (only when DingoGo has switched them on). Only the last 4 digits are sent. */
+function Concession() {
+  const { me, reload } = useMe();
+  const cfg = useLoad(() => get('/public/config'), []);
+  const cp = cfg.data?.community_pricing;
+  const card = me?.user.concession as any;
+  const [f, setF] = useState({ type: '', last4: '', expires: '' });
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  if (!cp?.concession) return null;
+  const types = Object.entries<string>(cp.types ?? {});
+  async function send(e: React.FormEvent) {
+    e.preventDefault(); setErr(null); setBusy(true);
+    try { await put('/me/concession', { type: f.type || types[0]?.[0], last4: f.last4, expires: f.expires }); await reload(); }
+    catch (e2) { setErr(e2 instanceof ApiError ? e2.message : 'Could not send'); } finally { setBusy(false); }
+  }
+  return (
+    <section style={{ marginTop: 28 }} aria-labelledby="conc-h">
+      <h2 id="conc-h" className="section__title">Concession fares</h2>
+      <p className="dg-muted" style={{ marginTop: 0 }}>With a concession card, rides are {cp.pct}% off{cp.max_cents ? ` (up to ${money(cp.max_cents)} a trip)` : ''}. DingoGo pays the difference, not your driver.</p>
+      {card && card.status !== 'rejected' ? (
+        <p className={`callout ${card.status === 'approved' ? 'callout--green' : ''}`} role="status">
+          {card.status === 'approved' ? 'Concession fares are on' : 'We are checking your card'}: {cp.types?.[card.type] ?? card.type} ending {card.last4}, expires {date(card.expires)}.{' '}
+          <button type="button" className="linkbtn" onClick={async () => { await del('/me/concession'); await reload(); }}>Remove</button>
+        </p>
+      ) : (
+        <form onSubmit={send}>
+          {card?.status === 'rejected' && <p className="dg-error" role="alert">Not approved: {card.note}</p>}
+          <label className="dg-field"><span>Card</span>
+            <select className="dg-select" value={f.type || types[0]?.[0]} onChange={(e) => setF({ ...f, type: e.target.value })}>
+              {types.map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+            </select></label>
+          <div className="grid2">
+            <label className="dg-field"><span>Last 4 digits of the card</span>
+              <input className="dg-input" inputMode="numeric" maxLength={4} value={f.last4} onChange={(e) => setF({ ...f, last4: e.target.value.replace(/\D/g, '') })} /></label>
+            <label className="dg-field"><span>Expiry date</span>
+              <input className="dg-input" type="date" value={f.expires} onChange={(e) => setF({ ...f, expires: e.target.value })} /></label>
+          </div>
+          <p className="dg-muted" style={{ fontSize: 'var(--fs-sm)' }}>Don't type the whole card number. We may ask to see the card.</p>
+          {err && <p className="dg-error" role="alert">{err}</p>}
+          <button className="dg-btn dg-btn--block" disabled={busy || f.last4.length !== 4 || !f.expires}>{busy ? 'Sending…' : 'Send for checking'}</button>
+        </form>
+      )}
+    </section>
+  );
+}
+
+/** Organisations (health services, community organisations, NDIS providers) the rider has let book rides for them. */
+function Organisations() {
+  const list = useLoad(() => get<{ consents: any[] }>('/me/consents'), []);
+  const [msg, setMsg] = useState<string | null>(null);
+  const current = list.data?.consents.filter((c) => c.current) ?? [];
+  const past = list.data?.consents.filter((c) => !c.current) ?? [];
+  return (
+    <Page title="Organisations" back="/account">
+      <p className="dg-muted" style={{ marginTop: 0 }}>These organisations can book DingoGo rides for you. They see only the rides they book, not your other trips. You get a text for each ride.</p>
+      {list.loading ? <Spinner /> : current.length === 0 ? <p>No organisation can book rides for you.</p> : (
+        <ul className="list">
+          {current.map((c) => (
+            <li key={c.id} className="row"><span className="row__main"><strong>{c.organisation}</strong>
+              <span className="dg-muted">Since {date(c.given_at)}{c.expires_at ? `, until ${date(c.expires_at)}` : ''}</span></span>
+              <button className="dg-btn dg-btn--sm dg-btn--ghost" onClick={async () => {
+                await post(`/me/consents/${c.id}/withdraw`, {}); setMsg(`${c.organisation} can no longer book rides for you.`); await list.reload();
+              }}>Stop</button></li>
+          ))}
+        </ul>
+      )}
+      {msg && <p className="callout callout--green" role="status">{msg}</p>}
+      {past.length > 0 && <><h2 className="section__title" style={{ marginTop: 24 }}>Before</h2>
+        <ul className="list">{past.map((c) => <li key={c.id} className="row"><span className="row__main"><strong>{c.organisation}</strong>
+          <span className="dg-muted">{c.withdrawn_at ? `Stopped ${date(c.withdrawn_at)}` : `Ended ${date(c.expires_at)}`}</span></span></li>)}</ul></>}
     </Page>
   );
 }

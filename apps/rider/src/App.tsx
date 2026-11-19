@@ -6,6 +6,7 @@ import { RideScreen } from './screens/Ride';
 import { TripScreen, clearCachedTrip, readCachedTrip } from './screens/Trip';
 import { TripsScreen } from './screens/Trips';
 import { BusinessScreen } from './screens/Business';
+import { ClientsScreen } from './screens/Clients';
 import { RewardsScreen } from './screens/Rewards';
 import { AccountScreen } from './screens/Account';
 import { Toast, toast } from './components/Toast';
@@ -73,6 +74,7 @@ export function App() {
             <Route path="/trips/:id" element={<TripScreen />} />
             <Route path="/rewards" element={<RewardsScreen />} />
             <Route path="/business" element={<BusinessScreen />} />
+            <Route path="/clients" element={<ClientsScreen />} />
             <Route path="/account/*" element={<AccountScreen />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>

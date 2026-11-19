@@ -30,6 +30,23 @@ export const templates = {
   // Round 11: booked with a pickup window; on its way with an ETA; couldn't be delivered; back with the sender.
   parcel_recipient_booked: t<{ sender: string; ref: string; url: string; pin: string; when: string }>({ category: 'trip', smsKind: 'transactional',
     render: (v) => ({ sms: `DingoGo: ${v.sender} is sending you a parcel (${v.ref}), collected ${v.when}. Track it: ${v.url} - give the driver PIN ${v.pin} on delivery.` }) }),
+  // Round 12: an organisation booking rides for a client. The client is told, and how to stop it.
+  client_consent_recorded: t<{ org: string }>({ category: 'account', smsKind: 'transactional',
+    render: (v) => ({
+      title: `${v.org} can book rides for you`,
+      body: `${v.org} can now book DingoGo rides for you. To stop this, go to Account, Organisations, or call DingoGo.`,
+      sms: `DingoGo: ${v.org} can now book rides for you. You'll get a text for each trip. To stop this, call DingoGo or use the app (Account, Organisations).`,
+    }) }),
+  concession_reviewed: t<{ approved: boolean; note: string | null }>({ category: 'account',
+    render: (v) => v.approved
+      ? { title: 'Concession fares are on', body: 'Your concession card is checked. Concession prices show when you book.' }
+      : { title: 'Concession card not approved', body: `We couldn't approve your concession card${v.note ? `: ${v.note}` : ''}. You can send it again in Account.` } }),
+  ride_booked_for_you: t<{ org: string; ref: string; when: string; pickup: string }>({ category: 'trip', smsKind: 'transactional',
+    render: (v) => ({
+      title: 'Ride booked for you',
+      body: `${v.org} booked ride ${v.ref} for you, ${v.when}, from ${v.pickup}.`,
+      sms: `DingoGo: ${v.org} booked ride ${v.ref} for you, ${v.when}, from ${v.pickup}. We'll text when your driver is on the way.`,
+    }) }),
   parcel_on_way: t<{ sender: string; ref: string; eta: string; url: string; safe_place: string | null }>({ category: 'trip', smsKind: 'transactional',
     render: (v) => ({ sms: `DingoGo: your parcel from ${v.sender} (${v.ref}) is on its way, arriving about ${v.eta}.${v.safe_place ? ` If you're out it will be left: ${v.safe_place}.` : ''} Track: ${v.url}` }) }),
   parcel_failed_recipient: t<{ sender: string; ref: string; reason: string }>({ category: 'trip', smsKind: 'transactional',

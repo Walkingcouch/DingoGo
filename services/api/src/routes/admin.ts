@@ -22,6 +22,7 @@ import { DRIVER_PAY_DEFAULTS, loadDriverPay, mergeDriverPay } from '../lib/drive
 import { floorReport, runEarningsFloor } from '../services/earningsFloor.js';
 import { gstReport, levyReport, tripFilters } from '../services/reports.js';
 import { audit as writeAudit } from '../lib/audit.js';
+import { saveCommunityPricing } from './community.js';
 
 /** Driver pay rules (all optional on update; merged over what is stored). Bounds keep a typo from paying out wildly. */
 const driverPayBody = z.object({
@@ -948,6 +949,7 @@ export default async function adminRoutes(app: FastifyInstance) {
     const b = parse(z.object({ value: z.any() }), req.body);
     // Driver pay goes through its own validation.
     if ((req.params as any).key === 'driver_pay') return { item: { key: 'driver_pay', value: await saveDriverPay(me.id, b.value) } };
+    if ((req.params as any).key === 'community_pricing') return { item: { key: 'community_pricing', value: await saveCommunityPricing(me.id, b.value) } };
     const row = await one(`INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2 RETURNING *`, [(req.params as any).key, JSON.stringify(b.value)]);
     // Legacy setting: the NT max age now lives on the NT jurisdiction — keep them in step.
     if (row.key === 'vehicle_max_age_years' && Number(b.value) >= 1 && Number(b.value) <= 50) {

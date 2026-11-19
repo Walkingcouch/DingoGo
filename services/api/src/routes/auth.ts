@@ -11,6 +11,8 @@ import { disconnectUser } from '../realtime.js';
 import { sendSmsT } from '../services/notify.js';
 import { withdrawOffers } from '../services/trips.js';
 import { loadRecipient, setMarketing } from '../services/prefs.js';
+import { CONCESSION_TYPES, LANGS, communityPending, communityReady, loadCommunityPricing, normaliseLang, type ConcessionType } from '../lib/community.js';
+import { audit } from '../lib/audit.js';
 
 /** Compare two hex hashes in constant time. */
 function sameHash(a: string, b: string) {
@@ -20,10 +22,10 @@ function sameHash(a: string, b: string) {
 const OTP_MAX_TRIES = 5;
 
 const publicUser = (u: any) => ({
-  id: u.id, phone: u.phone, email: u.email, name: u.name, role: u.role, language: u.language,
+  id: u.id, phone: u.phone, email: u.email, name: u.name, role: u.role, language: normaliseLang(u.language),
   accessibility: u.accessibility, emergency_contact: u.emergency_contact, referral_code: u.referral_code,
   loyalty_points: u.loyalty_points, wallet_cents: u.wallet_cents, marketing_opt_in: u.marketing_opt_in,
-  rating_avg: u.rating_avg, partner_id: u.partner_id, created_at: u.created_at,
+  rating_avg: u.rating_avg, partner_id: u.partner_id, created_at: u.created_at, concession: u.concession ?? null,
 });
 
 // Demo sign-in only for the exact seeded demo numbers, and only when demo mode is switched on (OTP_DEMO_PREFIXES set).
@@ -123,7 +125,7 @@ export default async function authRoutes(app: FastifyInstance) {
       `SELECT s.*, p.name AS plan_name, p.ride_discount_pct, p.free_deliveries, p.waive_booking_fee FROM subscriptions s JOIN plans p ON p.code = s.plan_code
        WHERE s.user_id = $1 AND s.status = 'active' AND s.period_end > now()`, [me.id]);
     const corporate = await q(
-      `SELECT a.id, a.name, m.role FROM corporate_members m JOIN corporate_accounts a ON a.id = m.account_id WHERE m.user_id = $1 AND a.active`, [me.id]);
+      `SELECT a.id, a.name, a.kind, m.role FROM corporate_members m JOIN corporate_accounts a ON a.id = m.account_id WHERE m.user_id = $1 AND a.active`, [me.id]);
     return { user: publicUser(u), subscription: sub, corporate_accounts: corporate };
   });
 
@@ -132,7 +134,8 @@ export default async function authRoutes(app: FastifyInstance) {
     const b = parse(z.object({
       name: z.string().min(1).max(80).optional(),
       email: z.string().email().optional().or(z.literal('')),
-      language: z.string().max(8).optional(),
+      // English, Arrernte (aer) or Kriol (rop); "arr" from older apps means Arrernte.
+      language: z.enum([...LANGS, 'arr']).transform((l) => normaliseLang(l)).optional(),
       accessibility: z.record(z.string().max(40), z.any()).refine((v) => JSON.stringify(v).length <= 2000, 'too much detail').optional(),
       emergency_contact: z.object({ name: z.string().max(80), phone: z.string().max(20) }).nullable().optional(),
       marketing_opt_in: z.boolean().optional(),
@@ -178,7 +181,10 @@ export default async function authRoutes(app: FastifyInstance) {
       WHERE m.sender_id = $1 ORDER BY m.id DESC LIMIT 5000`, [me.id]), []);
     const marketing_consents = await opt(q('SELECT granted, channel, source, wording, created_at FROM marketing_consents WHERE user_id = $1 ORDER BY id', [me.id]), []);
     const notification_prefs = (await loadRecipient(me.id))?.prefs ?? null;
-    return { exported_at: new Date().toISOString(), user: publicUser(user), trips, loyalty, messages, marketing_consents, notification_prefs };
+    // Round 12: organisations I let book rides for me (migration 017).
+    const booking_consents = await opt(q(`SELECT a.name AS organisation, c.method, c.given_at, c.expires_at, c.withdrawn_at FROM client_consents c
+      JOIN corporate_accounts a ON a.id = c.account_id WHERE c.client_id = $1 ORDER BY c.given_at`, [me.id]), []);
+    return { exported_at: new Date().toISOString(), user: publicUser(user), trips, loyalty, messages, marketing_consents, notification_prefs, booking_consents };
   });
 
   app.post('/me/push-token', async (req) => {
@@ -193,6 +199,52 @@ export default async function authRoutes(app: FastifyInstance) {
     const me = await requireUser(req);
     return { notifications: await q('SELECT * FROM notifications WHERE user_id = $1 ORDER BY created_at DESC LIMIT 50', [me.id]) };
   });
+  // ───────────── Concession card (Round 12) ─────────────
+  /** Apply for concession fares: card type, the last 4 digits and the expiry (never the whole number). DingoGo checks it. */
+  app.put('/me/concession', async (req) => {
+    const me = await requireUser(req);
+    if (!(await communityReady())) throw new ApiError(503, 'migration_pending', `Concession cards: ${communityPending}`);
+    const rules = await loadCommunityPricing();
+    if (!rules.enabled) throw bad('concession_off', 'Concession fares are not available yet');
+    const b = parse(z.object({
+      type: z.enum(Object.keys(CONCESSION_TYPES) as [ConcessionType, ...ConcessionType[]]),
+      last4: z.string().regex(/^\d{4}$/, 'The last 4 digits of the card'),
+      expires: z.string().date(),
+    }), req.body);
+    if (!rules.types.includes(b.type)) throw bad('concession_type', 'That card is not accepted for concession fares');
+    if (b.expires < new Date().toISOString().slice(0, 10)) throw bad('concession_expired', 'That card has expired');
+    const card = { ...b, status: 'pending', applied_at: new Date().toISOString() };
+    const u = await one(`UPDATE users SET concession = $2 WHERE id = $1 RETURNING *`, [me.id, JSON.stringify(card)]);
+    await audit(me.id, 'concession_applied', 'user', me.id, { type: b.type });
+    return { user: publicUser(u) };
+  });
+  app.delete('/me/concession', async (req) => {
+    const me = await requireUser(req);
+    if (!(await communityReady())) return { ok: true };
+    await q(`UPDATE users SET concession = NULL WHERE id = $1`, [me.id]);
+    return { ok: true };
+  });
+
+  // ───────────── Organisations that book rides for me (Round 12) ─────────────
+  app.get('/me/consents', async (req) => {
+    const me = await requireUser(req);
+    if (!(await communityReady())) return { consents: [] };
+    return { consents: await q(
+      `SELECT c.id, a.name AS organisation, a.kind, c.method, c.given_at, c.expires_at, c.withdrawn_at,
+              (c.withdrawn_at IS NULL AND (c.expires_at IS NULL OR c.expires_at > now())) AS current
+       FROM client_consents c JOIN corporate_accounts a ON a.id = c.account_id WHERE c.client_id = $1 ORDER BY c.given_at DESC`, [me.id]) };
+  });
+  /** The client says stop: the organisation can't book for them any more (booked trips stay; they can cancel those). */
+  app.post('/me/consents/:id/withdraw', async (req) => {
+    const me = await requireUser(req);
+    if (!(await communityReady())) throw new ApiError(503, 'migration_pending', communityPending);
+    const r = await one(`UPDATE client_consents SET withdrawn_at = now(), withdrawn_by = $2 WHERE id = $1 AND client_id = $2 AND withdrawn_at IS NULL RETURNING id, account_id`,
+      [(req.params as any).id, me.id]);
+    if (!r) throw bad('not_found', 'Nothing to withdraw');
+    await audit(me.id, 'client_consent_withdrawn', 'corporate_account', r.account_id, { consent_id: r.id, by: 'client' });
+    return { ok: true };
+  });
+
   app.post('/me/notifications/read', async (req) => {
     const me = await requireUser(req);
     await q('UPDATE notifications SET read_at = now() WHERE user_id = $1 AND read_at IS NULL', [me.id]);

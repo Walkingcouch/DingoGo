@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { ApiError, requestOtp, verifyOtp } from './api';
 import { Ranges } from './Ranges';
+import { Acknowledgement } from './Acknowledgement';
 import mascot from '../assets/mascot.png';
 
 /** Phone + SMS code sign-in, shared by every app. */
@@ -60,6 +61,7 @@ export function Login({ title, subtitle, onDone, askName = false, askReferral = 
             <button type="button" className="dg-btn dg-btn--ghost dg-btn--block" style={{ marginTop: 8 }} onClick={() => { setStep('phone'); setCode(''); }}>Use a different number</button>
           </form>
         )}
+        <Acknowledgement style={{ marginTop: 28 }} />
       </main>
       <Ranges height={56} fill="var(--ochre)" />
     </div>

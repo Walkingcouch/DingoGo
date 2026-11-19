@@ -3,7 +3,7 @@ import ReactDOM from 'react-dom/client';
 import { BrowserRouter, NavLink, Navigate, Route, Routes, useLocation, useNavigate, Link } from 'react-router-dom';
 import '@dingogo/shared/brand.css';
 import './admin.css';
-import { Login, connectRealtime, get, getToken, initAuth, setToken, Icon, ServiceNotice, type Msg } from '@dingogo/shared';
+import { Login, connectRealtime, get, getToken, initAuth, setToken, Icon, ServiceNotice, Acknowledgement, type Msg } from '@dingogo/shared';
 import { ROLE, label } from './labels';
 import mascot from '@dingogo/shared/assets/mascot.png';
 import { AskProvider, Modal, ToastProvider } from './ui';
@@ -149,6 +149,7 @@ function Shell({ me, onSignOut }: { me: any; onSignOut: () => void }) {
             <Route path="/settings" element={<Settings />} />
             <Route path="*" element={<Navigate to="/live" replace />} />
           </Routes>
+          <Acknowledgement short style={{ margin: '32px 0 8px' }} />
         </main>
       </div>
       {help && (

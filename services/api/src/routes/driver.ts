@@ -17,6 +17,23 @@ import { loadDriverPay, serviceFeeFor, TRIP_PAY_KINDS } from '../lib/driverPay.j
 import { myFloorWeek } from '../services/earningsFloor.js';
 import { expiringDocs } from '../services/docExpiry.js';
 import type { FastifyRequest } from 'fastify';
+import { ApiError } from '../lib/errors.js';
+import { LEAVE_KINDS, communityPending, communityReady, type LeaveKind } from '../lib/community.js';
+
+/** Put a driver on leave (Sorry Business, cultural business, family): offline at once, any request on screen goes to the next
+ *  driver, paper reminders pause. Nothing about it counts against them. Needs migration 017. */
+export async function startLeave(driverId: string, kind: LeaveKind, until?: string | null) {
+  if (!(await communityReady())) throw new ApiError(503, 'migration_pending', `Leave ${communityPending}. Go offline for now; nothing counts against you while offline.`);
+  const leave = { kind, from: new Date().toISOString(), until: until ?? null };
+  await q(`UPDATE drivers SET leave = $2, online = false WHERE user_id = $1`, [driverId, JSON.stringify(leave)]);
+  await trips.withdrawOffers(driverId);
+  toOps('driver.status', { driver_id: driverId, online: false, on_leave: true });
+  return leave;
+}
+async function endLeave(driverId: string) {
+  if (!(await communityReady())) return;
+  await q(`UPDATE drivers SET leave = NULL WHERE user_id = $1 AND leave IS NOT NULL`, [driverId]);
+}
 
 /** A tap the driver app may send more than once (queued with no signal, or the reply was lost): the Idempotency-Key header
  *  names the tap, `client_at` says when it happened. */
@@ -281,12 +298,26 @@ export default async function driverRoutes(app: FastifyInstance) {
     return { ok: true, current_vehicle_id: id, vehicle: vehicleOut(v) };
   });
 
+  app.post('/driver/leave', async (req) => {
+    const me = await requireUser(req, 'driver');
+    const b = parse(z.object({ kind: z.enum(Object.keys(LEAVE_KINDS) as [LeaveKind, ...LeaveKind[]]), until: z.string().date().nullable().optional() }), req.body);
+    const live = await one(`SELECT ref FROM trips WHERE driver_id = $1 AND status IN ('accepted','arrived','in_progress') LIMIT 1`, [me.id]);
+    if (live) throw conflict('on_trip', `Finish or pass on trip ${live.ref} first (choose "Sorry Business" when you cancel)`);
+    return { leave: await startLeave(me.id, b.kind, b.until) };
+  });
+  app.delete('/driver/leave', async (req) => {
+    const me = await requireUser(req, 'driver');
+    await endLeave(me.id);
+    return { leave: null };
+  });
+
   app.post('/driver/online', async (req) => {
     const me = await requireUser(req, 'driver');
     const b = parse(z.object({ online: z.boolean(), lat: z.number().optional(), lng: z.number().optional(), battery_pct: z.number().int().min(0).max(100).optional() }), req.body);
     if (b.online) {
       const issues = await complianceIssues(me.id);
       if (issues.length) throw bad('not_compliant', issues[0], issues);
+      await endLeave(me.id);   // going online again ends any leave
     }
     const veh = await one('SELECT v.fuel_type FROM drivers d JOIN vehicles v ON v.id = d.vehicle_id WHERE d.user_id = $1', [me.id]);
     const ev = isEv(veh?.fuel_type);
@@ -438,10 +469,14 @@ export default async function driverRoutes(app: FastifyInstance) {
   });
   app.post('/driver/trips/:id/cancel', async (req) => {
     const me = await requireUser(req, 'driver');
-    const b = parse(z.object({ reason: z.enum(['rider_no_show', 'unsafe', 'rider_requested', 'vehicle_issue', 'parcel_prohibited', 'other']), note: z.string().max(200).optional() }), req.body);
+    const b = parse(z.object({ reason: z.enum(['rider_no_show', 'unsafe', 'rider_requested', 'vehicle_issue', 'parcel_prohibited', 'sorry_business', 'other']), note: z.string().max(200).optional() }), req.body);
     // Rider-side reasons end the trip; the driver's own reasons (car trouble, something else) pass it to the next driver.
-    const trip = await trips.cancelTrip(me, (req.params as any).id, b.reason + (b.note ? `: ${b.note}` : ''), { reasonCode: b.reason, note: b.note });
-    return { trip: trips.viewFor(trip, me) };
+    // Sorry Business: no reason is written down beyond that, nothing counts against the driver, and they're paused straight away.
+    const note = b.reason === 'sorry_business' ? undefined : b.note;
+    const trip = await trips.cancelTrip(me, (req.params as any).id, b.reason + (note ? `: ${note}` : ''), { reasonCode: b.reason, note });
+    let leave: Awaited<ReturnType<typeof startLeave>> | null = null;
+    if (b.reason === 'sorry_business') leave = await startLeave(me.id, 'sorry_business').catch(() => null);
+    return { trip: trips.viewFor(trip, me), ...(leave ? { leave } : {}) };
   });
 
   /** Earnings: ledger summary for a period, grouped so drivers see trip pay, extras, costs and true take-home, plus engaged

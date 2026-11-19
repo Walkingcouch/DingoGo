@@ -1,6 +1,7 @@
 /** Driver document expiry: what runs out soon (shown in the driver app) and reminders at 30, 14 and 3 days.
  *  No new tables: reminders are de-duplicated against the driver's own notifications (data.reminder). */
 import { q } from '../db.js';
+import { communityReady } from '../lib/community.js';
 import { docLabel, getJurisdiction } from '../lib/jurisdictions.js';
 import { send } from './notify.js';
 import { render } from '../lib/messages.js';
@@ -95,9 +96,11 @@ export async function sendDocExpiryReminders(opts: { force?: boolean; now?: Date
     if (hour < 8 || hour >= 20) return { sent: 0 };
   }
   lastRun = now.getTime();
+  // Drivers on leave (Sorry Business, cultural business, family) get no reminders until they're back (migration 017).
+  const onLeave = (await communityReady()) ? 'AND d.leave IS NULL' : '';
   const drivers = await q<{ user_id: string }>(
     `SELECT d.user_id FROM drivers d JOIN users u ON u.id = d.user_id
-     WHERE d.status = 'approved' AND u.deleted_at IS NULL AND coalesce(u.blocked, false) = false`);
+     WHERE d.status = 'approved' AND u.deleted_at IS NULL AND coalesce(u.blocked, false) = false ${onLeave}`);
   let sent = 0;
   for (const { user_id } of drivers) {
     const items = await expiringDocs(user_id);

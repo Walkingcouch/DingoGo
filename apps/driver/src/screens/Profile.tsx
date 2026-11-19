@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { usePrefs, type Prefs, type Theme } from '../lib/prefs';
 import { NAV_APPS } from '../lib/nav';
 import { ApiError, Icon, date, patch, post } from '@dingogo/shared';
-import { NotifySettings } from '@dingogo/shared';
+import { Acknowledgement, NotifySettings } from '@dingogo/shared';
 import { Link } from 'react-router-dom';
 import { useDriver } from '../state';
 import { CarStatus, FuelChip, carName } from '../vehicle';
@@ -137,6 +137,7 @@ export function Profile({ onSignOut }: { onSignOut: () => void }) {
             <button className="dg-btn dg-btn--ghost dg-btn--block" style={{ marginTop: 16 }} onClick={() => setPapersFor(null)}>Done</button>
         </Sheet>
       )}
+      <Acknowledgement style={{ margin: '24px 16px 8px' }} />
     </div>
   );
 }

@@ -39,7 +39,7 @@ npm install
 npm run db:setup                                   # migrations + demo data (local databases only)
 npm run dev:api                                    # http://localhost:4000
 npm run dev:web    # and/or dev:rider, dev:driver, dev:admin, dev:partner, dev:roof
-npm test                                           # 100 API tests (needs a throwaway DB: they reset it, and create/drop scratch databases)
+npm test                                           # 105 API tests (needs a throwaway DB: they reset it, and create/drop scratch databases)
 node scripts/a11y-check.mjs                        # WCAG 2.2 AA check (axe-core + Playwright) of the website and rider app; needs api, web and rider running
 ```
 
@@ -61,13 +61,13 @@ All partner businesses, advertisers and people in the demo data are fictional.
 
 ## What the platform does
 
-**Riders:** book rides, pet-friendly rides, parcels (S/M/L, weight checked, prohibited-items checklist, safe place with photo, pickup windows, recipient ETA texts, failed deliveries returned to the sender with one-tap re-booking), business deliveries (multi-drop runs for one driver, CSV import, dashboard and CSV export for business accounts), fixed-price tours and event hire; upfront itemised prices with GST and the NT passenger levy; schedule ahead; assistance-animal, women-preferred driver and NDIS options; accessibility profile shared with the driver (Deaf/hard of hearing, low vision, mobility aid), assistance-animal refusal reports; live tracking with spoken status updates, in-trip messages with the driver (quick replies; masked calls through a DingoGo number when set up), notification settings with separate offers consent and STOP by text; a "no signal" mode that keeps the last trip on screen; trip PIN; share-trip link; SOS (000 + alert to DingoGo and emergency contact); tips, ratings, tax invoices; Dingo Points, café rewards with QR codes, referrals, DingoGo Pass subscription; DingoGo credit and prepaid vouchers; data export and account deletion.
+**Riders:** book rides, pet-friendly rides, parcels (S/M/L, weight checked, prohibited-items checklist, safe place with photo, pickup windows, recipient ETA texts, failed deliveries returned to the sender with one-tap re-booking), business deliveries (multi-drop runs for one driver, CSV import, dashboard and CSV export for business accounts), fixed-price tours and event hire; upfront itemised prices with GST and the NT passenger levy; schedule ahead; assistance-animal, women-preferred driver and NDIS options; accessibility profile shared with the driver (Deaf/hard of hearing, low vision, mobility aid), assistance-animal refusal reports; live tracking with spoken status updates, in-trip messages with the driver (quick replies; masked calls through a DingoGo number when set up), notification settings with separate offers consent and STOP by text; a "no signal" mode that keeps the last trip on screen; trip PIN; share-trip link; SOS (000 + alert to DingoGo and emergency contact); tips, ratings, tax invoices; Dingo Points, café rewards with QR codes, referrals, DingoGo Pass subscription; DingoGo credit and prepaid vouchers; data export and account deletion; simple mode (big pictures, short words, spoken status); concession fares (when switched on); Arrernte place names in search; app words in Arrernte and Kriol (community drafts); organisations that book rides for them, which they can stop.
 
-**Drivers:** onboarding against NT accreditation requirements with document upload; can't go online until licence, H endorsement, ABN, GST, vehicle CVL, rego and insurance are current; offers with countdown, their pay and total km (incl. the drive to the pickup); PIN-verified pickups; courier proof of delivery (recipient PIN, signature or photo); SOS; earnings with fee, pickup pay, tips, lease, charging, hours on trips and earnings-floor progress; GST-on-fares figure for the BAS; charging and battery logs.
+**Drivers:** onboarding against NT accreditation requirements with document upload; can't go online until licence, H endorsement, ABN, GST, vehicle CVL, rego and insurance are current; offers with countdown, their pay and total km (incl. the drive to the pickup); PIN-verified pickups; courier proof of delivery (recipient PIN, signature or photo); SOS; earnings with fee, pickup pay, tips, lease, charging, hours on trips and earnings-floor progress; GST-on-fares figure for the BAS; charging and battery logs; leave for Sorry Business, cultural business or family that never counts against them.
 
 **Dispatch:** nearest eligible driver, 20-second offers, automatic re-offer; if a driver pulls out before pickup the trip goes to the next driver (repeat cancellers flagged), and ops are alerted when a driver on a trip goes silent. EV-aware: skips cars whose battery (rated range × charge × 0.7 heat derate) can't cover pickup + trip + 40 km reserve. Scheduled trips released 15 minutes ahead. Route-deviation safety alerts.
 
-**Admin:** live map, dashboard, trips with timeline/refunds, phone bookings for customers without smartphones, drivers & document review, fleet & expiries, charging reimbursement, payouts & weekly lease deductions, pricing/zones/promos/plans/holidays/tours, loyalty partners & settlement, vouchers, roof ad campaigns & billing, business/NDIS accounts with monthly statements, SOS & compliance flags, support, inbound enquiries, NT levy and GST reports, broadcast (opt-in only), settings, audit log.
+**Admin:** live map, dashboard, trips with timeline/refunds, phone bookings for customers without smartphones, drivers & document review, fleet & expiries, charging reimbursement, payouts & weekly lease deductions, pricing/zones/promos/plans/holidays/tours, loyalty partners & settlement, vouchers, roof ad campaigns & billing, business/NDIS/community accounts with monthly statements (community, health and NDIS organisations book rides for clients with recorded consent), concession fares and the card queue, SOS & compliance flags, support, inbound enquiries, NT levy and GST reports, broadcast (opt-in only), settings, audit log.
 
 ## Business rules (all editable in admin → Pricing / Settings)
 
@@ -110,7 +110,7 @@ They also install from the browser as web apps (PWA) — useful for testing befo
    card (test payments); everyone else is shown "card payments coming soon". Register push tokens.
 5. Legal review of the website's draft privacy policy, terms, cancellation policy and prohibited items.
 6. NT approvals: dispatch network, operator accreditation, CVLs, driver H endorsements; written answers on roof screens, cash and tours (see the gap analysis).
-7. Arrernte translations with community input; app store listings.
+7. Arrernte and Kriol words: the drafts in `packages/shared/src/i18n/strings.json` need review by community speakers (`npm run i18n:review` makes a sheet); app store listings.
 
 ## Docs
 

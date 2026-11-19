@@ -170,7 +170,11 @@ export function ActiveTrip() {
 
       {cancelOpen && <CancelSheet onClose={() => setCancelOpen(false)} onCancel={async (reason) => {
         const r = await act('cancel', { reason });
-        if (r) { setCancelOpen(false); showToast(r.trip?.released ? 'Trip passed to another driver' : 'Trip cancelled'); }
+        if (r) {
+          setCancelOpen(false);
+          showToast(reason === 'sorry_business' ? 'Trip passed on. You are paused. Look after yourself and your family.' : r.trip?.released ? 'Trip passed to another driver' : 'Trip cancelled');
+          if (reason === 'sorry_business') void reloadMe();
+        }
       }} busy={busy} isCourier={isCourier} />}
       {sosOpen && <SosSheet onClose={() => setSosOpen(false)} />}
       {failOpen && <FailSheet parcel={parcel} busy={busy} onClose={() => setFailOpen(false)} onSubmit={async (b) => {
@@ -317,6 +321,9 @@ function CancelSheet({ onClose, onCancel, busy, isCourier }: { onClose: () => vo
         <h3 className="dg-note" style={{ margin: '14px 0 6px' }}>You can’t do it: we offer it to another driver</h3>
         <div style={{ display: 'grid', gap: 8 }}>{DRIVER_SIDE.map(([k, l]) => btn(k, l))}</div>
         <p className="dg-note">These count as a cancellation on your record{n > 0 ? ` (${n} in the last 7 days)` : ''}. DingoGo reviews drivers who cancel {review} or more trips in a week.</p>
+        <h3 className="dg-note" style={{ margin: '14px 0 6px' }}>Sorry Business or a family emergency</h3>
+        <div style={{ display: 'grid', gap: 8 }}>{btn('sorry_business', 'I have to go: Sorry Business or family')}</div>
+        <p className="dg-muted" style={{ fontSize: 'var(--fs-sm)' }}>We offer the trip to another driver and pause you. This never counts against you, and we don't ask why.</p>
         <button className="dg-btn dg-btn--dark dg-btn--block" style={{ marginTop: 12 }} onClick={onClose}>Keep the trip</button>
     </Sheet>
   );

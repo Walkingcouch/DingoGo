@@ -2680,3 +2680,231 @@ test('before migration 016: single parcels, tracking, dispatch and earnings stil
     resetCourierReady();
   }
 });
+
+// ───────────────────────── Round 12: community and cultural fit ─────────────────────────
+import { readFileSync as readFile12 } from 'node:fs';
+import { resetCommunityReady } from '../src/lib/community.js';
+
+const TOMORROW = () => new Date(Date.now() + 24 * 3600_000).toISOString();
+const nextYear = () => `${new Date().getFullYear() + 1}-06-30`;
+
+test('languages: English default, Arrernte (aer) and Kriol drafts only, old "arr" means Arrernte; translation file is reviewable; dual place names', async () => {
+  const strings = JSON.parse(readFile12(new URL('../../../packages/shared/src/i18n/strings.json', import.meta.url), 'utf8'));
+  assert.deepEqual(Object.keys(strings.languages), ['en', 'aer', 'rop']);
+  for (const [key, e] of Object.entries<any>(strings.strings)) {
+    assert.ok(typeof e.en === 'string' && e.en.length > 0, `${key}: English is the source`);
+    for (const l of ['aer', 'rop']) {
+      if (!e[l]) continue;
+      assert.ok(e[l].text, `${key}.${l} has text`);
+      // Nothing is "reviewed" unless someone from the community is named as the reviewer.
+      if (e[l].status === 'reviewed') assert.ok(e[l].reviewed_by && e[l].reviewed_on, `${key}.${l}: reviewed needs a reviewer and date`);
+      else assert.equal(e[l].status, 'draft', `${key}.${l} is marked draft`);
+    }
+  }
+  const cfg = await call('GET', '/public/config');
+  assert.deepEqual(Object.fromEntries(Object.entries<any>(cfg.languages).map(([k, v]) => [k, v.status])), { en: 'source', aer: 'draft', rop: 'draft' });
+
+  assert.equal((await call('PATCH', '/me', 'rider', { language: 'arr' })).user.language, 'aer');
+  assert.equal((await call('PATCH', '/me', 'rider', { language: 'rop' })).user.language, 'rop');
+  assert.equal((await call('PATCH', '/me', 'rider', { language: 'xx' })).status, 400);
+  assert.equal((await call('PATCH', '/me', 'rider', { language: 'en' })).user.language, 'en');
+
+  const hit = (await call('GET', '/places/search?q=rungutjirba', 'rider')).places[0];
+  assert.equal(hit.name, 'Rungutjirba (Simpsons Gap)');
+  assert.equal(hit.english_name, 'Simpsons Gap');
+  assert.equal(hit.sacred, true);
+  assert.match(hit.note, /Sacred site/);
+  assert.equal((await call('GET', '/places/search?q=simpsons', 'rider')).places[0].arrernte_name, 'Rungutjirba', 'the English name finds it too');
+  assert.equal((await call('GET', '/public/places?q=Ntaripe')).places[0].english_name, 'Heavitree Gap');
+  assert.ok((await call('GET', '/public/places?q=mparntwe')).places.some((p: any) => p.english_name === 'Todd Mall'));
+  assert.equal((await call('GET', '/public/places?q=todd mall')).places[0].note, undefined, 'only sacred sites carry the note');
+});
+
+test('concession fares: off by default; rider applies with the last 4 digits; admin approves; DingoGo-funded line with a cap; validation', async () => {
+  const cfg = await call('GET', '/public/config');
+  assert.equal(cfg.community_pricing.concession, false);
+  assert.equal((await call('PUT', '/me/concession', 'rider', { type: 'pensioner', last4: '1234', expires: nextYear() })).error, 'concession_off');
+  const before = await call('POST', '/quotes', 'rider', { service: 'ride', pickup: TODD_MALL, dropoff: AIRPORT });
+
+  if (!tokens.dispatcher) await login('dispatcher', '+61400000002', 'admin');
+  assert.equal((await call('PUT', '/admin/community-pricing', 'dispatcher', { enabled: true, concession_pct: 50 })).status, 403, 'admin only');
+  assert.equal((await call('PUT', '/admin/community-pricing', 'admin', { enabled: true, concession_pct: 0 })).status, 400);
+  assert.equal((await call('PUT', '/admin/community-pricing', 'admin', { enabled: true, concession_pct: 90 })).status, 400);
+  assert.equal((await call('PUT', '/admin/community-pricing', 'admin', { enabled: true, concession_pct: 50, types: ['library_card'] })).status, 400);
+  const saved = await call('PUT', '/admin/community-pricing', 'admin', { enabled: true, concession_pct: 50, concession_max_cents: 1000, services: ['ride'], types: ['pensioner', 'health_care'] });
+  assert.equal(saved.settings.concession_pct, 50);
+  assert.ok(await one(`SELECT 1 FROM audit_log WHERE action = 'setting' AND entity_id = 'community_pricing'`));
+  assert.equal((await call('GET', '/public/config')).community_pricing.pct, 50);
+
+  assert.equal((await call('PUT', '/me/concession', 'rider', { type: 'seniors', last4: '1234', expires: nextYear() })).error, 'concession_type');
+  assert.equal((await call('PUT', '/me/concession', 'rider', { type: 'pensioner', last4: '123456789', expires: nextYear() })).status, 400, 'never the whole number');
+  assert.equal((await call('PUT', '/me/concession', 'rider', { type: 'pensioner', last4: '1234', expires: '2020-01-01' })).error, 'concession_expired');
+  const applied = await call('PUT', '/me/concession', 'rider', { type: 'pensioner', last4: '1234', expires: nextYear() });
+  assert.equal(applied.user.concession.status, 'pending');
+  const pending = await call('POST', '/quotes', 'rider', { service: 'ride', pickup: TODD_MALL, dropoff: AIRPORT });
+  assert.ok(!pending.quote.lines.some((l: any) => l.label.startsWith('Concession')), 'nothing until checked');
+
+  const riderId = (await one(`SELECT id FROM users WHERE phone = '+61400000100'`)).id;
+  const queue = await call('GET', '/admin/concessions', 'dispatcher');
+  assert.ok(queue.items.some((u: any) => u.id === riderId && u.concession.last4 === '1234'));
+  assert.equal((await call('POST', `/admin/concessions/${riderId}/review`, 'admin', { status: 'rejected' })).error, 'note_required');
+  assert.equal((await call('POST', `/admin/concessions/${riderId}/review`, 'dispatcher', { status: 'approved' })).concession.status, 'approved');
+  const q2 = await call('POST', '/quotes', 'rider', { service: 'ride', pickup: TODD_MALL, dropoff: AIRPORT });
+  const line = q2.quote.lines.find((l: any) => l.label === 'Concession (−50%)');
+  assert.ok(line, JSON.stringify(q2.quote.lines));
+  assert.equal(line.cents, -1000, 'capped at $10 a trip');
+  assert.equal(q2.quote.trip_cents, before.quote.trip_cents, 'the driver earns on the same fare (DingoGo funds the concession)');
+  assert.ok(q2.quote.lines.some((l: any) => l.label === 'NT passenger levy' && l.cents === 100), 'levy is never discounted');
+  const parcel = await call('POST', '/quotes', 'rider', { service: 'courier_s', pickup: TODD_MALL, dropoff: AIRPORT });
+  assert.ok(!parcel.quote.lines.some((l: any) => l.label.startsWith('Concession')), 'only the services chosen');
+  // An expired card stops the concession.
+  await q(`UPDATE users SET concession = jsonb_set(concession, '{expires}', '"2020-01-01"') WHERE id = $1`, [riderId]);
+  assert.ok(!(await call('POST', '/quotes', 'rider', { service: 'ride', pickup: TODD_MALL, dropoff: AIRPORT })).quote.lines.some((l: any) => l.label.startsWith('Concession')));
+  // Pure engine: percent of the discountable amount, no cap → full percent.
+  const rule = { service: 'ride', label: 'Ride', base_cents: 300, per_km_cents: 160, per_min_cents: 25, booking_fee_cents: 100, min_fare_cents: 1000, night_pct: 0, holiday_pct: 0, levy_cents: 100 };
+  const fq = quoteFare(rule, { distance_m: 10_000, duration_s: 900, at: new Date('2026-11-02T02:00:00Z'), concession: { pct: 25, max_cents: null, label: 'Concession (−25%)' } });
+  assert.equal(fq.lines.find((l) => l.label === 'Concession (−25%)')!.cents, -Math.round((fq.trip_cents + 100) * 0.25));
+
+  await call('DELETE', '/me/concession', 'rider');
+  await call('PUT', '/admin/community-pricing', 'admin', { enabled: false, concession_pct: 50 });
+});
+
+test('organisation books rides for a client with consent; client is told and can withdraw; organisation sees only its bookings', async () => {
+  const acct = (await one(`INSERT INTO corporate_accounts (name, kind, billing_email) VALUES ('Mparntwe Health Transport (test)', 'health_service', 'ht@example.com') RETURNING id`)).id;
+  const mk = async (phone: string, name: string) => (await one(`INSERT INTO users (phone, name, referral_code) VALUES ($1,$2,$3) RETURNING id`, [phone, name, 'R12' + phone.slice(-5)])).id;
+  const lead = await mk('+61400000931', 'Health Lead'), worker = await mk('+61400000932', 'Health Worker'), other = await mk('+61400000933', 'Other Worker');
+  await q(`INSERT INTO corporate_members (account_id, user_id, role) VALUES ($1,$2,'manager'), ($1,$3,'member'), ($1,$4,'member')`, [acct, lead, worker, other]);
+  tokens.hlead = signToken({ id: lead, role: 'rider' }); tokens.hwork = signToken({ id: worker, role: 'rider' }); tokens.hother = signToken({ id: other, role: 'rider' });
+  const biz = (await call('GET', '/me', 'rider')).corporate_accounts[0];
+  const consent = { account_id: acct, name: 'Mary Kngwarreye', phone: '0400 000 934', method: 'verbal', confirm: true };
+  assert.equal((await call('POST', '/business/clients', 'rider', { ...consent, account_id: biz.id })).status, 403, 'a plain business account cannot book for clients');
+  assert.equal((await call('POST', '/business/clients', 'rider', consent)).status, 403, 'members only');
+  assert.equal((await call('POST', '/business/clients', 'hwork', { ...consent, confirm: false })).status, 400);
+  assert.equal((await call('POST', '/business/clients', 'hwork', { ...consent, phone: '08 8950 1234' })).error, 'client_phone');
+  const made = await call('POST', '/business/clients', 'hwork', consent);
+  assert.equal(made.status, 201, JSON.stringify(made));
+  assert.deepEqual([made.client.client, made.client.phone_tail, made.client.current], ['Mary K.', '…934', true]);
+  assert.equal((await call('POST', '/business/clients', 'hlead', consent)).error, 'consent_exists');
+  const client = (await one(`SELECT id FROM users WHERE phone = '+61400000934'`)).id;
+  tokens.client12 = signToken({ id: client, role: 'rider' });
+  await flushBackground(3000);
+  assert.ok(await one(`SELECT 1 FROM comms_log WHERE user_id = $1 AND template = 'client_consent_recorded'`, [client]), 'the client is texted');
+  assert.ok(await one(`SELECT 1 FROM audit_log WHERE action = 'client_consent_recorded' AND entity_id = $1`, [acct]));
+
+  const ride = { account_id: acct, consent_id: made.client.id, pickup: TODD_MALL, dropoff: HOSPITAL, scheduled_for: TOMORROW(), notes: 'Appointment 10 am, ward 3' };
+  const qt = await call('POST', '/business/rides/quote', 'hwork', ride);
+  assert.ok(qt.quote.total_cents > 0);
+  const b = await call('POST', '/business/rides', 'hwork', ride);
+  assert.equal(b.status, 201, JSON.stringify(b));
+  assert.equal(b.trip.client, 'Mary K.');
+  assert.equal(b.trip.verify_pin, undefined, 'the PIN is the client’s');
+  assert.ok(!JSON.stringify(b).includes('0400000934') && !JSON.stringify(b).includes('+61400000934'), 'no full client phone');
+  const row = await one(`SELECT rider_id, booked_by, channel, payment_method, corporate_account_id FROM trips WHERE id = $1`, [b.trip.id]);
+  assert.deepEqual(row, { rider_id: client, booked_by: worker, channel: 'org', payment_method: 'corporate', corporate_account_id: acct });
+  await flushBackground(3000);
+  assert.equal(await smsCount(b.trip.id, 'ride_booked_for_you'), 1, 'trip texts go to the client');
+  // The client sees the trip and the consent; the organisation sees only what it booked.
+  assert.ok((await call('GET', '/trips', 'client12')).trips.some((t: any) => t.id === b.trip.id));
+  const mine = await call('GET', '/me/consents', 'client12');
+  assert.equal(mine.consents[0].organisation, 'Mparntwe Health Transport (test)');
+  assert.equal(mine.consents[0].current, true);
+  assert.equal((await call('GET', `/business/rides?account_id=${acct}`, 'hother')).rides.length, 0, 'other members see only their own bookings');
+  assert.equal((await call('GET', `/business/rides?account_id=${acct}`, 'hlead')).rides[0].id, b.trip.id, 'managers see the account');
+  assert.equal((await call('GET', `/business/rides?account_id=${acct}`, 'rider')).status, 403);
+  assert.equal((await call('POST', `/business/rides/${b.trip.id}/cancel`, 'hother')).status, 403);
+  // The client's own trips (not booked by the organisation) never show.
+  const own = await call('GET', `/business/clients?account_id=${acct}`, 'hother');
+  assert.equal(own.clients[0].client_full_name, 'Mary Kngwarreye');
+  const cancelled = await call('POST', `/business/rides/${b.trip.id}/cancel`, 'hwork');
+  assert.equal(cancelled.trip.status, 'cancelled_rider');
+
+  // Client says stop.
+  assert.equal((await call('POST', `/me/consents/${mine.consents[0].id}/withdraw`, 'client12')).ok, true);
+  const refused = await call('POST', '/business/rides', 'hwork', ride);
+  assert.deepEqual([refused.status, refused.error], [403, 'consent_required']);
+  assert.equal((await call('GET', `/business/clients?account_id=${acct}`, 'hwork')).clients[0].current, false);
+  assert.equal((await call('GET', '/me/export', 'client12')).booking_consents[0].withdrawn_at != null, true, 'in the data export');
+  // New consent with an expiry that has passed → refused.
+  const again = await call('POST', '/business/clients', 'hlead', { ...consent, method: 'written', expires_at: nextYear() });
+  assert.equal(again.status, 201);
+  await q(`UPDATE client_consents SET expires_at = now() - interval '1 day' WHERE id = $1`, [again.client.id]);
+  assert.equal((await call('POST', '/business/rides', 'hwork', { ...ride, consent_id: again.client.id })).error, 'consent_required');
+});
+
+test('Sorry Business: cancelling for it passes the trip on and never counts; leave pauses offers and reminders; going online ends it', async () => {
+  await onlyD1Online();
+  const d1 = (await one(`SELECT id FROM users WHERE phone = '+61400000011'`)).id;
+  const flagsBefore = (await one<{ n: number }>(`SELECT count(*)::int n FROM compliance_flags WHERE driver_id = $1`, [d1]))!.n;
+  const cancelsBefore = (await call('GET', '/driver/me', 'd1')).acceptance.cancelled_7d;
+  const t = await call('POST', '/trips', 'rider', { kind: 'ride', service: 'ride', pickup: TODD_MALL, dropoff: HOSPITAL, payment_method: 'wallet', assistance_animal: true });
+  assert.equal(t.status, 201, JSON.stringify(t));
+  const offer = await waitForOffer('d1');
+  assert.equal(offer.trip_id, t.trip.id);
+  await call('POST', `/driver/offers/${t.trip.id}/accept`, 'd1');
+  assert.equal((await call('POST', '/driver/leave', 'd1', { kind: 'sorry_business' })).error, 'on_trip', 'leave needs the trip passed on first');
+  const c = await call('POST', `/driver/trips/${t.trip.id}/cancel`, 'd1', { reason: 'sorry_business', note: 'private family matter' });
+  assert.equal(c.status, 200, JSON.stringify(c));
+  assert.equal(c.trip.released, true, 'the rider keeps the booking');
+  assert.equal(c.leave.kind, 'sorry_business');
+  assert.equal((await one(`SELECT status FROM trip_offers WHERE trip_id = $1 AND driver_id = $2`, [t.trip.id, d1])).status, 'released');
+  assert.equal((await one<{ n: number }>(`SELECT count(*)::int n FROM compliance_flags WHERE driver_id = $1`, [d1]))!.n, flagsBefore, 'no repeat-cancel or assistance-animal flag');
+  const ev = await one(`SELECT data FROM trip_events WHERE trip_id = $1 AND type = 'driver_released'`, [t.trip.id]);
+  assert.equal(ev.data.reason, 'sorry_business', 'nothing else written down');
+  const me = await call('GET', '/driver/me', 'd1');
+  assert.equal(me.acceptance.cancelled_7d, cancelsBefore, 'not counted as a cancellation');
+  assert.deepEqual([me.driver.online, me.driver.leave.kind], [false, 'sorry_business']);
+  assert.equal((await call('GET', '/admin/drivers/on-leave', 'admin')).items.find((x: any) => x.user_id === d1).label, 'Sorry Business');
+  // No paper reminders while on leave.
+  const { sendDocExpiryReminders } = await import('../src/services/docExpiry.js');
+  await q(`UPDATE drivers SET licence_expiry = (now() AT TIME ZONE 'Australia/Darwin')::date + 14 WHERE user_id = $1`, [d1]);
+  const n0 = (await one<{ n: number }>(`SELECT count(*)::int n FROM notifications WHERE user_id = $1 AND category = 'documents'`, [d1]))!.n;
+  await sendDocExpiryReminders({ force: true });
+  await flushBackground(3000);
+  assert.equal((await one<{ n: number }>(`SELECT count(*)::int n FROM notifications WHERE user_id = $1 AND category = 'documents'`, [d1]))!.n, n0);
+  await call('POST', `/trips/${t.trip.id}/cancel`, 'rider', {});
+  // Back: going online ends the leave.
+  assert.equal((await call('POST', '/driver/online', 'd1', { online: true, lat: TODD_MALL.lat, lng: TODD_MALL.lng, battery_pct: 90 })).status, 200);
+  assert.equal((await call('GET', '/driver/me', 'd1')).driver.leave, null);
+  // Leave taken from the app (no trip): offline at once; "I'm back" ends it.
+  const l = await call('POST', '/driver/leave', 'd1', { kind: 'cultural', until: nextYear() });
+  assert.equal(l.leave.kind, 'cultural');
+  assert.equal((await one(`SELECT online FROM drivers WHERE user_id = $1`, [d1])).online, false);
+  assert.equal((await call('DELETE', '/driver/leave', 'd1')).leave, null);
+  assert.equal((await call('POST', '/driver/leave', 'd1', { kind: 'holiday' })).status, 400);
+  await q(`UPDATE drivers SET licence_expiry = (now() AT TIME ZONE 'Australia/Darwin')::date + 400 WHERE user_id = $1`, [d1]);
+});
+
+test('before migration 017: everything else works; concession, client bookings and leave are off or say migration_pending', async () => {
+  await q(`ALTER TABLE client_consents RENAME TO client_consents_off`);
+  await q(`ALTER TABLE users RENAME COLUMN concession TO concession_off`);
+  await q(`ALTER TABLE drivers RENAME COLUMN leave TO leave_off`);
+  resetCommunityReady();
+  try {
+    const cfg = await call('GET', '/public/config');
+    assert.deepEqual([cfg.client_bookings, cfg.community_pricing.concession], [false, false]);
+    assert.equal((await call('GET', '/me', 'rider')).user.concession, null);
+    assert.equal((await call('POST', '/quotes', 'rider', { service: 'ride', pickup: TODD_MALL, dropoff: AIRPORT })).status, 200);
+    assert.equal((await call('PUT', '/me/concession', 'rider', { type: 'pensioner', last4: '1234', expires: nextYear() })).status, 503);
+    assert.deepEqual((await call('GET', '/me/consents', 'rider')).consents, []);
+    assert.equal((await call('GET', '/me/export', 'rider')).status, 200);
+    assert.equal((await call('GET', `/business/clients?account_id=${crypto.randomUUID()}`, 'rider')).error, 'migration_pending');
+    assert.equal((await call('POST', '/driver/leave', 'd1', { kind: 'sorry_business' })).error, 'migration_pending');
+    assert.equal((await call('GET', '/admin/concessions', 'admin')).ready, false);
+    // Sorry Business cancel still passes the trip on and isn't counted (just no leave saved).
+    await onlyD1Online();
+    const t = await call('POST', '/trips', 'rider', { kind: 'ride', service: 'ride', pickup: TODD_MALL, dropoff: HOSPITAL, payment_method: 'wallet' });
+    await waitForOffer('d1');
+    await call('POST', `/driver/offers/${t.trip.id}/accept`, 'd1');
+    const c = await call('POST', `/driver/trips/${t.trip.id}/cancel`, 'd1', { reason: 'sorry_business' });
+    assert.deepEqual([c.status, c.trip.released, c.leave], [200, true, undefined]);
+    await call('POST', `/trips/${t.trip.id}/cancel`, 'rider', {});
+    assert.equal((await call('POST', '/driver/online', 'd1', { online: true, lat: TODD_MALL.lat, lng: TODD_MALL.lng, battery_pct: 90 })).status, 200);
+    const { sendDocExpiryReminders } = await import('../src/services/docExpiry.js');
+    await sendDocExpiryReminders({ force: true });
+  } finally {
+    await q(`ALTER TABLE client_consents_off RENAME TO client_consents`);
+    await q(`ALTER TABLE users RENAME COLUMN concession_off TO concession`);
+    await q(`ALTER TABLE drivers RENAME COLUMN leave_off TO leave`);
+    resetCommunityReady();
+  }
+});

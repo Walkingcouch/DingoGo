@@ -29,6 +29,9 @@ const sample: Record<string, any> = {
   payout_sent: { cents: 12000 }, earnings_floor_topup: { cents: 1500, week: '2026-11-09', rate_cents: 3200 }, document_expiring: { label: 'Driver licence', days_left: 14 },
   chat_message: { from: 'driver', name: 'Sam Driver', text: "I'm here" }, chat_relay_sms: { from: 'driver', name: 'Sam Driver', text: "I'm outside. Look for my rego." },
   relay_no_trip_sms: { support: '08 8950 0000' }, sms_stop_ack: {}, sms_start_ack: {}, sms_help: { support: '08 8950 0000' },
+  concession_reviewed: { approved: false, note: 'Card has expired' },
+  client_consent_recorded: { org: 'Tangentyere Health Transport Service' },
+  ride_booked_for_you: { org: 'Tangentyere Health Transport Service', ref: 'DG-ABC123', when: 'Thu 2:00 pm', pickup: 'Alice Springs Hospital' },
   promo: { title: 'Cheap Tuesdays', body: '20% off rides to the Todd Mall markets this Sunday.' },
 };
 const EMOJI = /\p{Extended_Pictographic}/u;

@@ -130,3 +130,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
   font-size: var(--fs-sm); line-height: 1.4; text-align: left; }
 .service-notice svg { color: var(--ochre); flex: none; margin-top: 2px; }
 .service-notice strong { font-weight: 700; }
+
+/* Acknowledgement of Country and draft-translation marks (Round 12) */
+.dg-ack { font-size: var(--fs-sm); color: var(--muted); line-height: 1.5; margin: 0; }
+.dg-draft { font-size: .85em; color: var(--muted); font-style: italic; }

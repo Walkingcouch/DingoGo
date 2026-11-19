@@ -3,7 +3,7 @@ import { get, post, money, dateTime, useLoad } from '@dingogo/shared';
 import { Page } from '../ctx';
 import { Chip, CrudSection, Drawer, ErrorMsg, Table, exportCsv, useRun } from '../ui';
 
-const KIND: Record<string, string> = { business: 'Business', ndis_plan_manager: 'NDIS plan manager', community_org: 'Community organisation', government: 'Government' };
+const KIND: Record<string, string> = { business: 'Business', ndis_plan_manager: 'NDIS plan manager', community_org: 'Community organisation', aboriginal_corporation: 'Aboriginal corporation', health_service: 'Health service', government: 'Government' };
 
 export default function Business() {
   const [open, setOpen] = useState<any>(null);

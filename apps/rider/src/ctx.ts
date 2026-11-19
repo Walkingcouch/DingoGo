@@ -2,9 +2,9 @@ import { createContext, useContext } from 'react';
 
 export interface Me {
   user: { id: string; name: string; phone: string; email: string | null; loyalty_points: number; wallet_cents: number; referral_code: string;
-    marketing_opt_in: boolean; language: string; accessibility: Record<string, any>; emergency_contact: { name: string; phone: string } | null; rating_avg: number | null };
+    marketing_opt_in: boolean; language: string; accessibility: Record<string, any>; emergency_contact: { name: string; phone: string } | null; rating_avg: number | null; concession?: any };
   subscription: any | null;
-  corporate_accounts: { id: string; name: string; role: string }[];
+  corporate_accounts: { id: string; name: string; role: string; kind?: string }[];
 }
 export const MeCtx = createContext<{ me: Me | null; reload: () => Promise<void>; signOut: () => void }>({ me: null, reload: async () => {}, signOut: () => {} });
 export const useMe = () => useContext(MeCtx);

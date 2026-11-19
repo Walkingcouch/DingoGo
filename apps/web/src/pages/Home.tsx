@@ -90,7 +90,7 @@ export default function Home() {
           </div>
           <ul className="why-list">
             <li><Icon k="hand" /><div><h3>Aboriginal-owned</h3><p>Owned by Johnathan Ah Chee and Micah Bartlett. We hire and train local drivers, including speakers of Arrernte and other local languages.</p></div></li>
-            <li><Icon k="leaf" /><div><h3>Going electric</h3><p>Our goal is an all-electric fleet. Until then, electric and hybrid cars get your trip first, and if you ride electric your receipt shows the CO₂ you saved.</p></div></li>
+            <li><Icon k="leaf" /><div><h3>Going electric</h3><p>Our goal is an electric fleet. Until then, electric and hybrid cars get your trip first, and if you ride electric your receipt shows the CO₂ you saved.</p></div></li>
             <li><Icon k="tag" /><div><h3>The price is the price</h3><p>Fixed before you book, GST included, no waiting meter and no card surcharge.</p></div></li>
             <li><Icon k="paw" /><div><h3>Assistance animals always ride</h3><p>On every service, at no cost. Drivers are trained, and refusals are investigated.</p></div></li>
             <li><Icon k="shield" /><div><h3>Safety built in</h3><p>Accredited drivers, a trip PIN, live trip sharing, an SOS button and a women-preferred driver option.</p></div></li>

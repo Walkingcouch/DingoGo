@@ -3,7 +3,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom';
 import {
   Icon,
   ApiError, ChatThread, REALTIME, COURIER_STATUS_LABEL, useTripChat, STATUS_LABEL, ago, connectRealtime, date, dateTime, get, km, money, onNetworkChange, post, statusTone, time, useInterval, Ranges,
-  isTemporary, DELIVERY_FAIL_REASONS, PARCEL_OUTCOME_LABEL,
+  isTemporary, DELIVERY_FAIL_REASONS, PARCEL_OUTCOME_LABEL, speak, t as tr,
 } from '@dingogo/shared';
 import { DgMap, type MapMarker } from '@dingogo/shared/map';
 import { ACTIVE, shareUrl, useMe } from '../ctx';
@@ -131,6 +131,8 @@ export function tripAnnouncement(t: any): { text: string; urgent: boolean } | nu
 /** Speak each change of trip status once (not on first load, when the screen itself is read), update the page title so the status
  *  shows in the app switcher, and buzz the phone when the driver arrives (helps riders who are Deaf or hard of hearing). */
 function useTripAnnouncements(trip: any | null) {
+  const { me } = useMe();
+  const simple = !!me?.user.accessibility?.simple;
   const key = trip ? `${trip.status}:${trip.driver_releases ?? 0}:${trip.driver_id ?? ''}` : null;
   const last = useRef<string | null>(null);
   useEffect(() => {
@@ -140,6 +142,8 @@ function useTripAnnouncements(trip: any | null) {
     if (last.current !== null && last.current !== key) {
       const a = tripAnnouncement(trip);
       if (a) announce(a.text, a.urgent);
+      // Simple mode: say it out loud too (riders who don't read much, or don't use a screen reader).
+      if (a && simple) speak(a.text);
       if (trip.status === 'arrived') { try { navigator.vibrate?.([300, 150, 300]); } catch { /* not supported */ } }
     }
     last.current = key;
@@ -147,7 +151,26 @@ function useTripAnnouncements(trip: any | null) {
   useEffect(() => () => { document.title = 'DingoGo'; }, []);
 }
 
+/** Simple mode: one big picture and a few words for where the trip is up to, with a button to hear it. */
+const BIG: Record<string, { icon: string; key: Parameters<typeof tr>[0] }> = {
+  requested: { icon: 'clock', key: 'status_finding' }, accepted: { icon: 'car', key: 'status_coming' }, arrived: { icon: 'pin', key: 'status_here' },
+  in_progress: { icon: 'route', key: 'status_riding' }, completed: { icon: 'check', key: 'status_done' },
+};
+function BigStatus({ trip, lang }: { trip: any; lang?: string | null }) {
+  const b = BIG[trip.status] ?? { icon: 'alert', key: 'status_cancelled' as const };
+  const a = tripAnnouncement(trip);
+  return (
+    <div className="bigstatus">
+      <span className="bigstatus__i" aria-hidden="true"><Icon name={b.icon} size={36} /></span>
+      <span style={{ display: 'grid', gap: 6 }}><strong>{tr(b.key, lang)}</strong>
+        {a && <button type="button" className="linkbtn" onClick={() => speak(a.text)}><Icon name="volume" size={18} /> {tr('simple_hear', lang)}</button>}</span>
+    </div>
+  );
+}
+
 function LiveTrip({ trip, carPos, reload, onClose, net }: { trip: any; carPos: any; reload: () => Promise<void>; onClose: () => void; net: ReactNode }) {
+  const { me } = useMe();
+  const simple = !!me?.user.accessibility?.simple;
   const labels = trip.kind === 'courier' ? COURIER_STATUS_LABEL : STATUS_LABEL;
   const [sosOpen, setSosOpen] = useState(false);
   const [cancelOpen, setCancelOpen] = useState(false);
@@ -197,6 +220,7 @@ function LiveTrip({ trip, carPos, reload, onClose, net }: { trip: any; carPos: a
         <div className="sheet__grab" aria-hidden="true" />
         {net}
         <p className="live__ref dg-muted">{trip.ref}</p>
+        {simple && <BigStatus trip={trip} lang={me?.user.language} />}
         <h1 className="live__status">{again ? 'Finding you another driver' : labels[trip.status]}</h1>
         <p className="live__sub">{sub}</p>
 

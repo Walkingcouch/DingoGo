@@ -675,3 +675,94 @@ Ideas for next rounds:
 - Proof-of-delivery pack: emailed/SMS link to the sender with photo, signature and time; dispute handling for "not received".
 - Return-to-depot option for parcels after hours (DingoGo office holds it) and a second-attempt slot chosen by the recipient from the tracking link.
 - Driver app: native photo capture with compression and an offline queue for POD photos and failed-delivery reports.
+
+### Round 12 — community and cultural fit, inclusion
+Scan: read the rider booking/trip/account screens, the driver Drive/Profile screens and cancel reasons, `PATCH /me`, place search, business accounts and
+phone bookings, the fare engine, the website footer/About page and the seed. Found: the language picker offers "Arrernte" as `arr` (that ISO 639-3 code
+is Karo, a Brazilian language; Mparntwe Arrernte is `aer`) and the API accepts any 8-character language; no translation mechanism at all; the
+Acknowledgement of Country is only on the website footer; place search knows "Simpsons Gap (Rungutjirba)" as one string and can't find Ntaripe,
+Untyeyetweleye or Tjoritja; nothing in the apps for low-literacy riders; community organisations, health services and NDIS providers can only book
+parcels on their account — a ride for a client means ops phone bookings with no record of the client's consent and no way for the client to withdraw
+it; no concession pricing; a driver called away to Sorry Business who cancels an accepted trip is counted as a repeat canceller and keeps getting paper
+reminders; the About page calls an all-electric fleet "our goal" in words the ground rules avoid.
+
+Suggested:
+1. [add] Languages: one community-reviewable translation file (`packages/shared/src/i18n/strings.json`) with English as the default and the source,
+   Eastern/Central Arrernte (`aer`) and Kriol (`rop`) entries kept minimal and every one marked `draft` ("needs community review") — anything missing
+   falls back to English; a `t()` helper; rider language picker with a visible "draft, needs community review" note; `npm run i18n:review` writes a
+   CSV for reviewers; test checks English covers every key and no non-English entry is marked reviewed without a reviewer.
+2. [fix] `users.language` only takes `en`, `aer`, `rop` (legacy `arr` → `aer`); `/public/config` lists languages with their review status.
+3. [add] Simple mode for riders (plain words + icons + audio): Account switch (kept in the profile), Ride screen with two big picture buttons (Ride /
+   Parcel), short words, extra options tucked away, a "Hear it" button that reads the booking out (en-AU voice); live trip reads every status change
+   aloud and shows a big picture status card.
+4. [add] Community/organisation accounts book rides for clients with consent: new account kinds (Aboriginal corporation, health service); client consent
+   records (who gave it, how — verbal/written/standing — when, expiry, withdrawn); `POST /business/rides` books for a client only with current consent,
+   texts go to the client, the organisation sees only trips it booked (client shown by first name, phone last 3); clients see and withdraw consent in
+   the rider app; audited; in the data export.
+5. [add] Concession / community pricing, admin-configurable and off by default: rider applies with card type, last 4 digits and expiry (no full numbers);
+   admin approves; approved riders get a "Concession" fare line (percent, cap per trip, chosen services), funded by DingoGo (driver pay unchanged).
+6. [add] Sorry Business and cultural leave for drivers: "Take leave" (Sorry Business, cultural business, family) pauses the driver without penalty —
+   offline, no offers, paper reminders paused, "I'm back" ends it; cancelling an accepted trip for Sorry Business passes it to the next driver and is
+   never counted as a cancellation or flagged; ops see "On leave" (kind kept private to ops).
+7. [add] Acknowledgement of Country in the rider, driver, admin and partner apps (shared component, wording from the strings file).
+8. [add] Dual place names: places carry their Arrernte name (Mparntwe, Ntaripe, Untyeyetweleye, Rungutjirba, Anthwerrke, Atherrke, Alhekulyele,
+   Tjoritja…), search finds either name, results show both, sacred sites carry a respect note.
+9. [fix] About page wording (electric fleet is the goal, not "all-electric"); README/API.md.
+
+Done (all 9). Migration: `services/api/migrations/017_community.sql` (new table `client_consents`; columns `users.concession`, `drivers.leave`;
+additive, IF NOT EXISTS). Before it is applied (`lib/community.ts` `communityReady()` checks once a minute): languages, place names, simple mode,
+acknowledgement and the Sorry Business cancel reason all work (the trip is passed on and not counted, just no leave saved); concession fares stay
+off, client bookings, concession cards and leave answer 503 `migration_pending`, `/me/consents` is empty. Tests: 100 → 105 (languages: strings file
+has English for every key and every Arrernte/Kriol entry is `draft` unless a reviewer and date are named, `/public/config` statuses, `arr` → `aer`,
+bad language 400, dual-name search both ways with the sacred-site note; concession fares off by default → admin-only validated settings, audited →
+rider sends last 4 only, pending gives nothing → approved gives a capped "Concession (−50%)" line with `trip_cents` and levy unchanged, parcel
+services excluded, expired card stops it, engine maths; organisation bookings: plain business account and non-members refused, confirm and mobile
+required, client texted and audited, duplicate consent 409, quote and booking as the client with `channel: org`, no PIN or full phone in the response,
+client trip texts, client sees the trip and consent, members see only their own bookings and managers the account's, cancel by booker, client
+withdraws → `consent_required`, expired consent refused, export lists consents; Sorry Business: leave refused mid-trip, cancel passes the trip on with
+the offer `released`, no flags (even with an assistance animal), not counted in `cancelled_7d`, driver offline and on leave, no note stored, ops list,
+no paper reminders on leave, going online ends it, app leave and "I'm back"; everything with the 017 table and columns renamed away).
+`messages.test.ts` covers the three new templates (GSM-7, ≤ 2 texts).
+- API: new `src/lib/community.ts` (languages, concession rules/`concessionFor`, account kinds, consent methods, leave kinds, `NO_FAULT_CANCEL_REASONS`,
+  `communityReady`), `src/routes/clients.ts` (client consents and rides), `src/routes/community.ts` (admin community pricing, concession queue, drivers
+  on leave, languages); `lib/fares.ts` (`concession` line), `lib/places.ts` (Arrernte names, sacred-site note, accent-free search), `lib/messages.ts`
+  (`client_consent_recorded`, `ride_booked_for_you`, `concession_reviewed`); `services/trips.ts` (concession in `buildQuote`, Sorry Business not a
+  fault in `releaseTrip`/`cancelTrip`, `channel: org`), `services/notify.ts` + `services/chat.ts` (org bookings get trip texts and relay texts like
+  phone bookings), `services/docExpiry.ts` (no reminders on leave); `routes/driver.ts` (`/driver/leave`, `sorry_business` reason, online ends leave),
+  `routes/auth.ts` (language enum, `concession`, `/me/concession`, `/me/consents`, export, account `kind` on `/me`), `routes/public.ts` (config),
+  `routes/admin.ts` (`community_pricing` setting validated).
+- Shared: new `i18n/strings.json` + `i18n.ts` (`t`, `isDraft`, `langIsDraft`, `normaliseLang`), `Acknowledgement.tsx` (`Acknowledgement`,
+  `Words`, `DraftNotice`), `speak.ts`; Acknowledgement on the shared sign-in screen (every app); icons `volume`, `heart`.
+- Rider: Profile — Simple mode switch, language picker (English, Arrernte draft, Kriol draft) with the draft notice, concession card form/status;
+  Account — Organisations (see and stop), Book for clients (community accounts), greeting in the chosen language marked draft, Acknowledgement; Ride —
+  simple mode (two big picture buttons, short words, "Hear it" reads the booking); Trip — simple mode big status card and spoken status changes; place
+  search shows the sacred-site note; new `screens/Clients.tsx` (clients with consent, add client with confirm, book/price/cancel a ride, rides list).
+  Driver: cancel sheet "Sorry Business or family" (never counts, pauses you), Drive "Take leave" sheet and on-leave banner with "I'm back", Profile
+  Acknowledgement. Admin: Pricing → Community (concession rules + card queue with approve / not approved), Drivers "On leave" chip, account kinds
+  Aboriginal corporation and health service, Acknowledgement in the console. Website: "Our goal is an electric fleet" (was "all-electric").
+- Behaviour changes to note: `PATCH /me` language must be `en`/`aer`/`rop` (old `arr` saved as `aer`, other values 400); `/me` returns `language`
+  normalised and `concession`; place search labels for Simpsons Gap / Emily Gap now read "Rungutjirba (Simpsons Gap)" / "Anthwerrke (Emily Gap)"
+  and more places are listed; `channel: org` trips get trip texts; `corporate_accounts` on `/me` include `kind`.
+- Deploy: apply migration 017 (AUTO_MIGRATE does it at cold start). No env vars. Concession fares stay off until admin → Pricing → Community is
+  switched on. To let an organisation book for clients, set its account type (admin → Business) to Community organisation, Aboriginal corporation,
+  Health service, NDIS plan manager or Government and add its staff as members. No data fix.
+
+Deferred:
+- Translating the rest of the app: needs Arrernte and Kriol speakers (paid, credited) and a review session; only the greeting and the town name are
+  drafted, everything else falls back to English. Audio recordings by community speakers (instead of the phone's English voice) belong with it.
+- Warlpiri, Pitjantjatjara, Luritja and other languages of Central Australian riders: add once a speaker is engaged (the file and picker take more
+  languages without code changes in the apps' `t()`).
+- Organisation staff tracking a client's live trip (share link to the carer) and booking parcels/runs for clients: consent wording for location
+  sharing needs legal review first.
+- Concession checks against Centrelink (CCS/PCA online verification needs a Services Australia agreement); the admin check is manual for now.
+- Community/elder "free rides" budgets per organisation (monthly cap paid by a grant) — needs an owner decision on funding and reporting.
+- Map tiles with dual names: OpenStreetMap tiles show what's mapped; a custom label layer would need a commercial tile provider.
+
+Ideas for next rounds:
+- Community review workflow in admin: reviewers sign in, see each draft with English beside it, suggest/approve, and approved words publish to the
+  apps without a release (strings from the API with the bundled file as fallback).
+- Carer view: an organisation or family member follows a client's or Elder's trip live (time-limited link, consent recorded), with arrival texts.
+- SMS booking for riders without smartphones ("RIDE <from> to <to>"), with organisation bookings and simple mode wording (still open from Round 9).
+- Cultural safety for drivers: optional cultural awareness module in onboarding, "men's/women's business" trip preference handled like women-driver
+  matching, and sacred-site drop-off guidance on tours.
+- Community grants reporting: trips, kilometres and spend per community organisation per month (CSV for funders), concession use by card type.

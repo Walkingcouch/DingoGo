@@ -97,7 +97,7 @@ export default function Drive() {
         <div className="wrap split">
           <div><h2>Going electric</h2></div>
           <div className="prose">
-            <p>Our goal is an all-electric fleet. We're starting with local drivers in their own cars, and electric and hybrid cars get trips first.</p>
+            <p>Our goal is an electric fleet. We're starting with local drivers in their own cars, and electric and hybrid cars get trips first.</p>
             <p className="dg-note"><b>EV lease programme coming.</b> We're setting up a way for drivers to lease an electric car through us. Tick the box below and we'll let you know when it opens.</p>
             <p>Already approved? <a href={ANDROID_DRIVER_APK}>Download the DingoGo Driver app for Android</a>. The iPhone app is coming soon.</p>
           </div>

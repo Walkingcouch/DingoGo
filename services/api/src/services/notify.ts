@@ -67,7 +67,7 @@ export function send<K extends TemplateKey>(userId: string, key: K, vars: VarsOf
     const data = opts.data ?? (opts.trip ? { trip_id: opts.trip.id } : undefined);
     const row = m.title ? await deliver(r, m.title, m.body ?? '', data, m.category, opts) : null;
     if (m.sms && r.phone && !r.deleted && m.category === 'trip') {
-      const phoneBooking = opts.trip?.channel === 'phone' || opts.trip?.channel === 'sms';
+      const phoneBooking = opts.trip?.channel === 'phone' || opts.trip?.channel === 'sms' || opts.trip?.channel === 'org';   // org: booked by an organisation for a client
       if (phoneBooking || r.prefs.sms.trip) {
         await sendSmsNow(r.phone, m.sms, { template: key, kind: m.smsKind ?? 'transactional', userId: r.id, tripId: opts.trip?.id ?? null });
       }

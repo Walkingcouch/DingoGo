@@ -2,7 +2,7 @@ import { useEffect, useId, useRef, useState } from 'react';
 import { get } from '@dingogo/shared';
 
 export type Place = { lat: number; lng: number; address: string };
-type Hit = { name: string; address: string; lat: number; lng: number };
+type Hit = { name: string; address: string; lat: number; lng: number; note?: string };
 
 /** Address field with Alice Springs place search. Combobox pattern, keyboard-friendly. */
 export function PlaceField({ label, value, onChange, dot, onFocusField, active, placeholder }: {
@@ -50,7 +50,7 @@ export function PlaceField({ label, value, onChange, dot, onFocusField, active, 
         <ul id={`${id}-list`} role="listbox" className="place__list">
           {hits.map((h, i) => (
             <li key={h.name} role="option" aria-selected={i === hi} className={i === hi ? 'is-hi' : ''} onMouseDown={(e) => { e.preventDefault(); pick(h); }}>
-              <strong>{h.name}</strong><span>{h.address}</span>
+              <strong>{h.name}</strong><span>{h.address}</span>{h.note && <span className="place__note">{h.note}</span>}
             </li>
           ))}
         </ul>

@@ -314,3 +314,19 @@ li.row { padding: .8rem 0; }
 .biz-table th, .biz-table td { text-align: left; padding: .45rem .35rem; border-bottom: 1px solid var(--line, rgba(0,0,0,.12)); vertical-align: top; }
 .biz-drop { border: 1px solid var(--line, rgba(0,0,0,.15)); border-radius: var(--r-md); padding: .6rem; margin-bottom: .6rem; }
 .biz-sum { display: flex; flex-wrap: wrap; gap: .5rem; margin: .5rem 0 1rem; }
+
+.place__list li .place__note { display: block; font-size: var(--fs-xs); color: var(--muted); font-style: italic; }
+
+/* Simple mode (Round 12): two big picture buttons, bigger words */
+.modes--simple { grid-template-columns: 1fr 1fr; gap: 12px; }
+.modes--simple .modes__b { min-height: 120px; }
+.modes--simple .modes__i { width: 64px; height: 64px; }
+.modes--simple .modes__i svg { width: 36px; height: 36px; }
+.modes--simple .modes__l { font-size: var(--fs-lg); }
+.ride--simple .sheet__hello { font-size: var(--fs-2xl); }
+.ride--simple .place__input { font-size: var(--fs-lg); }
+.ride--simple .request { font-size: var(--fs-lg); min-height: 60px; }
+.hearit { display: inline-flex; align-items: center; gap: 8px; min-height: 48px; margin: 0 0 12px; font-size: var(--fs-md); }
+.bigstatus { display: flex; align-items: center; gap: 16px; padding: 16px; margin: 0 0 12px; border-radius: var(--r-md); background: var(--ochre-soft); }
+.bigstatus__i { width: 64px; height: 64px; flex: none; display: grid; place-items: center; border-radius: 50%; background: var(--ochre); color: var(--night); }
+.bigstatus strong { font-size: var(--fs-xl); line-height: 1.2; }

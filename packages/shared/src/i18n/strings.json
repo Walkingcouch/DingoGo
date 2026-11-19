@@ -1,0 +1,45 @@
+{
+  "_about": "DingoGo app words. English (en) is the default and the source. Arrernte (aer, Eastern/Central Arrernte as spoken in Mparntwe) and Kriol (rop) entries are DRAFTS: they must be checked and approved by Arrernte and Kriol speakers before they are treated as correct. Anything left empty falls back to English. To review: run `npm run i18n:review` for a spreadsheet, fill in reviewed_by / reviewed_on and change status to reviewed. Do not machine-translate.",
+  "languages": {
+    "en": { "name": "English", "english_name": "English", "status": "source" },
+    "aer": { "name": "Arrernte", "english_name": "Arrernte (Eastern/Central, Mparntwe)", "status": "draft" },
+    "rop": { "name": "Kriol", "english_name": "Kriol", "status": "draft" }
+  },
+  "strings": {
+    "greeting": {
+      "en": "Hello",
+      "aer": { "text": "Werte", "status": "draft", "note": "Common greeting in Mparntwe Arrernte. Check spelling and use with Arrernte speakers." },
+      "rop": { "text": "Gudei", "status": "draft", "note": "Unconfirmed. Needs a Kriol speaker to check, or replace." }
+    },
+    "town": {
+      "en": "Mparntwe (Alice Springs)",
+      "aer": { "text": "Mparntwe", "status": "draft", "note": "Arrernte name of Alice Springs, in wide public use. Confirm preferred form." }
+    },
+    "acknowledgement": {
+      "en": "DingoGo operates on Arrernte Country. We acknowledge the Arrernte people, the Traditional Owners of Mparntwe (Alice Springs), and pay our respects to Elders past and present."
+    },
+    "acknowledgement_short": {
+      "en": "On Arrernte Country. We pay our respects to Elders past and present."
+    },
+    "draft_notice": {
+      "en": "Words in this language are a draft and still need checking by the community. Most of the app stays in English for now."
+    },
+    "simple_where": { "en": "Where to?" },
+    "simple_ride": { "en": "Ride" },
+    "simple_parcel": { "en": "Parcel" },
+    "simple_from": { "en": "From" },
+    "simple_to": { "en": "To" },
+    "simple_book": { "en": "Book" },
+    "simple_hear": { "en": "Hear it" },
+    "simple_price": { "en": "Price" },
+    "simple_more": { "en": "More choices" },
+    "status_finding": { "en": "Finding a driver" },
+    "status_coming": { "en": "Driver coming" },
+    "status_here": { "en": "Driver is here" },
+    "status_riding": { "en": "On the way" },
+    "status_done": { "en": "You are there" },
+    "status_cancelled": { "en": "Trip stopped" },
+    "leave_title": { "en": "Take leave" },
+    "leave_back": { "en": "I'm back" }
+  }
+}

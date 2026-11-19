@@ -47,7 +47,7 @@ export const TICKET_STATUS: Map = { open: 'Open', pending: 'Waiting on customer'
 export const APPLICATION_STATUS: Map = { new: 'New', contacted: 'Contacted', onboarding: 'Onboarding', declined: 'Declined' };
 export const CAMPAIGN_STATUS: Map = { pending: 'Waiting for approval', approved: 'Approved', paused: 'Paused', ended: 'Ended', rejected: 'Rejected' };
 export const REDEMPTION_STATUS: Map = { issued: 'Issued', redeemed: 'Redeemed', expired: 'Expired', cancelled: 'Cancelled' };
-export const CORPORATE_KIND: Map = { business: 'Business', ndis_plan_manager: 'NDIS plan manager', community_org: 'Community organisation', government: 'Government' };
+export const CORPORATE_KIND: Map = { business: 'Business', ndis_plan_manager: 'NDIS plan manager', community_org: 'Community organisation', aboriginal_corporation: 'Aboriginal corporation', health_service: 'Health service', government: 'Government' };
 export const OFFER_STATUS: Map = { offered: 'Offered', accepted: 'Accepted', declined: 'Declined', expired: 'Timed out', cancelled: 'Driver cancelled after accepting', released: 'Given to another driver' };
 export const LEDGER_KIND: Map = {
   fare: 'Fare', commission: 'DingoGo fee', fee: 'DingoGo fee', pickup_pay: 'Pickup pay', fuel_surcharge: 'Fuel surcharge', cancel_fee: 'Cancellation fee share',

@@ -16,6 +16,7 @@ import { autoEarningsFloor } from './earningsFloor.js';
 import { checkParcel, type ParcelIn } from '../lib/courier.js';
 import { courierReady } from '../lib/courierSchema.js';
 import { loadCourierPolicy, onParcelsCollected, returnFeeFor } from './courier.js';
+import { NO_FAULT_CANCEL_REASONS, concessionFor, loadCommunityPricing } from '../lib/community.js';
 
 export const ACTIVE = ['requested', 'accepted', 'arrived', 'in_progress'] as const;
 
@@ -108,7 +109,9 @@ export async function buildQuote(userId: string | null, input: QuoteInput, c: Q 
     if (!acct) throw forbidden('You are not a member of that business account');
     corporateDiscountPct = acct.discount_pct;
   }
-  const user = userId ? await one('SELECT loyalty_points FROM users WHERE id = $1', [userId], c) : null;
+  // SELECT *: users.concession only exists once migration 017 is in (then it's simply missing here).
+  const user = userId ? await one('SELECT * FROM users WHERE id = $1', [userId], c) : null;
+  const concession = user?.concession ? concessionFor(user.concession, input.service, await loadCommunityPricing(c), at) : null;
 
   // Driver pay rules: long-pickup charge (nearest free car far away; on-demand only) and fuel surcharge (not tours).
   const pay = await loadDriverPay(c);
@@ -139,6 +142,7 @@ export async function buildQuote(userId: string | null, input: QuoteInput, c: Q 
     levy: zone.state_levy_cents != null ? { cents: Number(zone.state_levy_cents), label: zone.state_levy_label } : null,
     longPickup,
     fuelSurchargeCents,
+    concession,
   });
   if (opts.extraStop) quote.lines.unshift({ label: 'Extra stop on a multi-drop run (no base fare or booking fee)', cents: 0 });
   return { quote, route: r, zone, rule, promo };
@@ -185,7 +189,7 @@ export interface CreateTripInput extends QuoteInput {
   payment_method: 'card' | 'cash' | 'corporate' | 'wallet';
   women_driver_pref?: boolean;
   ndis_number?: string;
-  channel?: 'app' | 'phone' | 'web' | 'sms';
+  channel?: 'app' | 'phone' | 'web' | 'sms' | 'org';
   booked_by?: string;
   parcel?: ParcelIn;
   /** Courier: collect any time between scheduled_for and this (30 min to 4 h). */
@@ -929,8 +933,9 @@ async function releaseTrip(c: pg.PoolClient, t: any, r: ReleaseBy) {
   const prior = (await one<{ n: number }>(
     `SELECT count(*)::int n FROM trip_offers WHERE trip_id = $1 AND status IN ('cancelled','released')`, [t.id], c))!.n;
   if (r.by !== 'ops' && prior >= config.dispatch.maxReoffers) return false;
-  // The driver's own cancellation counts against them; ops taking a trip off a driver (e.g. lost signal) does not.
-  const fault = r.by === 'driver';
+  // The driver's own cancellation counts against them; ops taking a trip off a driver (e.g. lost signal) does not, and nor does
+  // a driver called away to Sorry Business.
+  const fault = r.by === 'driver' && !(NO_FAULT_CANCEL_REASONS as readonly string[]).includes(r.reason);
   await c.query(`UPDATE trip_offers SET status = $3 WHERE trip_id = $1 AND driver_id = $2`, [t.id, driverId, fault ? 'cancelled' : 'released']);
   await c.query(
     `UPDATE trips SET status = 'requested', driver_id = NULL, vehicle_id = NULL, accepted_at = NULL, arrived_at = NULL,
@@ -1375,10 +1380,12 @@ export async function cancelTrip(actor: { id: string; role: string }, tripId: st
     }
     await event(c, tripId, status, actor.id, { reason, fee, ...(feeWaived ? { fee_waived: feeWaived } : {}) });
     // Re-offer limit reached: the trip ends, but it still counts as the driver's cancellation.
-    if (isDriver && !isRider && opts.reasonCode && !(RIDER_SIDE_CANCEL_REASONS as readonly string[]).includes(opts.reasonCode)) {
+    const noFault = (NO_FAULT_CANCEL_REASONS as readonly string[]).includes(opts.reasonCode ?? '');
+    if (isDriver && !isRider && opts.reasonCode && !noFault && !(RIDER_SIDE_CANCEL_REASONS as readonly string[]).includes(opts.reasonCode)) {
       await recordDriverCancel(c, t, actor.id, opts.reasonCode);
     }
-    if (isDriver && t.assistance_animal) {
+    if (noFault && isDriver) await c.query(`UPDATE trip_offers SET status = 'released' WHERE trip_id = $1 AND driver_id = $2`, [tripId, actor.id]);
+    if (isDriver && t.assistance_animal && !noFault) {
       await c.query(`INSERT INTO compliance_flags (kind, driver_id, trip_id, detail) VALUES ('assistance_animal_refusal', $1, $2, $3)`,
         [actor.id, tripId, `Driver cancelled a trip with an assistance animal. Reason: ${reason ?? 'none given'}`]);
     }

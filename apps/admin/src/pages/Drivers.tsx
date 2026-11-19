@@ -5,6 +5,9 @@ import { Page } from '../ctx';
 import { Chip, Drawer, ErrorMsg, Table, Tabs, useAsk, useRun, type Col } from '../ui';
 import { APPLICATION_STATUS, DOC_STATUS, DOC_TYPE, DRIVER_STATUS, DRIVER_STATUS_TONE, FLAG_KIND, FLAG_STATUS, FUEL, LEDGER_KIND, VEHICLE_STATUS, complianceText, docTone, label } from '../labels';
 
+/** Driver leave (Sorry Business etc.): shown to ops only, never counted against the driver. */
+const LEAVE: Record<string, string> = { sorry_business: 'Sorry Business', cultural: 'Cultural leave', family: 'Family leave' };
+
 /** Second line under a driver's rego: car check status if it isn't approved, else charge (cars with a plug) or fuel. */
 function carSub(d: any) {
   const st = d.vehicle_status;
@@ -25,7 +28,7 @@ export default function Drivers() {
 
   const cols: Col<any>[] = [
     { key: 'name', label: 'Driver', nowrap: true, render: (d) => <><strong>{d.name || 'No name'}</strong><span className="sub">{d.phone}{d.state && d.state !== 'NT' ? `, ${d.state}` : ''}</span></> },
-    { key: 'status', label: 'Status', render: (d) => <Chip tone={DRIVER_STATUS_TONE[d.status]}>{label(DRIVER_STATUS, d.status)}</Chip> },
+    { key: 'status', label: 'Status', render: (d) => <><Chip tone={DRIVER_STATUS_TONE[d.status]}>{label(DRIVER_STATUS, d.status)}</Chip>{d.leave && <> <Chip>{LEAVE[d.leave.kind] ?? 'On leave'}</Chip></>}</> },
     { key: 'compliance', label: 'Can drive?', render: (d) => d.compliance_issues.length
       ? <span className="issue" title={d.compliance_issues.map(complianceText).join('\n')}><Chip tone="red">Not yet</Chip><span className="sub">{complianceText(d.compliance_issues[0])}{d.compliance_issues.length > 1 && `, and ${d.compliance_issues.length - 1} more`}</span></span>
       : <Chip tone="green">Yes, all current</Chip> },

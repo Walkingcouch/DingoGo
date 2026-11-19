@@ -132,7 +132,7 @@ export async function postMessage(t: any, sender: { id: string; role: string; na
   }
   // Riders who booked by phone may not have the app: pass driver and staff messages on by text from the relay number,
   // so their reply comes back into this thread.
-  if (role !== 'rider' && config.twilio.relayNumber && (t.channel === 'phone' || t.channel === 'sms')) {
+  if (role !== 'rider' && config.twilio.relayNumber && (t.channel === 'phone' || t.channel === 'sms' || t.channel === 'org')) {
     const rider = await one<{ phone: string }>('SELECT phone FROM users WHERE id = $1 AND deleted_at IS NULL', [t.rider_id]);
     if (rider?.phone) {
       const s = render('chat_relay_sms', { from: role, name: sender.name, text });

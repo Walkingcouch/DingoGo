@@ -673,3 +673,45 @@ aliases accepted), up to 50 rows; addresses without lat/lng are matched against 
 400 `csv_errors` with `details: [{ row, error }]` and nothing booked; otherwise booked as runs of up to 10 drops.
 
 **Settings:** `courier_policy` `{ return_fee_pct, return_fee_min_cents, extra_stop_min_cents, handover_s }` (admin → Settings, clamped; defaults in code).
+
+## Community and cultural fit (Round 12)
+
+Needs migration `017_community.sql` (`client_consents`, `users.concession`, `drivers.leave`). Before it: `/public/config` says
+`client_bookings: false` and `community_pricing.concession: false`; client bookings, concession cards and leave answer 503 `migration_pending`;
+`GET /me/consents` is empty; everything else (quotes, Sorry Business cancels, reminders) works.
+
+**Languages:** `PATCH /me { language: en | aer | rop }` (`arr` from older apps is stored as `aer`; anything else 400). `/public/config.languages`
+gives each language's status (`source` / `draft`). Words live in `packages/shared/src/i18n/strings.json` (English source; Arrernte and Kriol entries
+are drafts until a named community reviewer approves them; missing words fall back to English). `npm run i18n:review` writes a CSV for reviewers.
+
+**Place names:** `GET /places/search` and `/public/places` match English or Arrernte names; results have `name` ("Rungutjirba (Simpsons Gap)"),
+`english_name`, `arrernte_name`, and for sacred sites `sacred: true` with a respect `note`.
+
+**Simple mode:** `accessibility.simple: true` on the profile (rider app: big pictures, short words, status read aloud). Not sent to drivers.
+
+**Concession fares** (setting `community_pricing`, off by default): `GET/PUT /admin/community-pricing` (PUT admin only) `{ enabled, concession_pct
+(0–75), concession_max_cents (0–$100, 0 = no cap), services[], types[] (pensioner, health_care, seniors, dva, student) }`; `PUT
+/admin/settings/community_pricing` goes through the same checks. Rider: `PUT /me/concession { type, last4, expires }` (400 `concession_off`,
+`concession_type`, `concession_expired`; never the full number) → `pending`; `DELETE /me/concession`. Ops: `GET /admin/concessions?status=pending|
+approved|rejected|all`, `POST /admin/concessions/:userId/review { status, note }` (note required to reject; rider notified). An approved, unexpired
+card gives a `Concession (−N%)` fare line on the discountable amount (fare + booking fee, not the levy or fuel surcharge), capped per trip;
+`trip_cents` (what the driver earns on) is unchanged.
+
+**Organisations booking rides for clients:** account kinds `community_org`, `aboriginal_corporation`, `health_service`, `ndis_plan_manager`,
+`government` (not `business`). Members only:
+- `GET /business/clients?account_id` — consents (current first): `client` ("Mary K."), `client_full_name`, `phone_tail` ("…934"), `method`, dates.
+- `POST /business/clients { account_id, name, phone (Australian mobile), method: verbal|written|standing, note?, expires_at?, confirm: true }` →
+  201; the client is texted (`client_consent_recorded`); 409 `consent_exists`; staff/driver numbers refused.
+- `POST /business/clients/:id/withdraw`.
+- `POST /business/rides/quote` and `POST /business/rides { account_id, consent_id, pickup, dropoff, scheduled_for?, passengers?, assistance_animal?,
+  needs_wheelchair?, women_driver_pref?, notes?, ndis_number? }` — 403 `consent_required` without current consent. The trip's rider is the client
+  (`channel: org`, `booked_by` the staff member, paid on the account); the client gets `ride_booked_for_you` and the usual trip texts. The response
+  has no PIN, share link or full phone.
+- `GET /business/rides?account_id` — managers see the account's client rides, members the ones they booked. `POST /business/rides/:id/cancel`
+  (booker or manager; same rules and fees as the client cancelling).
+- Client side: `GET /me/consents`, `POST /me/consents/:id/withdraw`; `GET /me/export` includes `booking_consents`. All audited.
+
+**Driver leave (Sorry Business):** `POST /driver/leave { kind: sorry_business|cultural|family, until? }` (409 `on_trip` while on a trip) → offline,
+offers withdrawn, no paper reminders; `DELETE /driver/leave` or going online ends it; `GET /driver/me` has `driver.leave`. Driver cancel reason
+`sorry_business`: the trip goes to the next driver, the offer is marked `released` (not a cancellation, no repeat-cancel or assistance-animal flag),
+no note is stored, and the driver is put on leave (`leave` in the response). Ops: `GET /admin/drivers/on-leave`; drivers list has `leave`.

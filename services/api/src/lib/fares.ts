@@ -36,6 +36,8 @@ export interface FareContext {
   longPickup?: { km: number; cents: number } | null;
   /** Fuel surcharge (admin switch): added after discounts, 100% to the driver. Not on fixed-price tours. */
   fuelSurchargeCents?: number;
+  /** Approved concession card (admin community pricing): percent off the discountable amount, optional cap. DingoGo-funded. */
+  concession?: { pct: number; max_cents: number | null; label: string } | null;
 }
 
 export interface FareLine { label: string; cents: number }
@@ -128,6 +130,12 @@ export function quoteFare(rule: FareRule, ctx: FareContext): FareQuote {
     const d = Math.round((trip * ctx.plan.ride_discount_pct) / 100);
     discount += d;
     lines.push({ label: `DingoGo Pass (−${ctx.plan.ride_discount_pct}%)`, cents: -d });
+  }
+  if (ctx.concession && ctx.concession.pct > 0 && ctx.fixedPriceCents == null) {
+    let d = Math.round(((subtotal - discount) * ctx.concession.pct) / 100);
+    if (ctx.concession.max_cents) d = Math.min(d, ctx.concession.max_cents);
+    d = Math.max(0, Math.min(d, subtotal - discount));
+    if (d > 0) { discount += d; lines.push({ label: ctx.concession.label, cents: -d }); }
   }
   if (ctx.corporateDiscountPct) {
     const d = Math.round(((subtotal - discount) * ctx.corporateDiscountPct) / 100);
