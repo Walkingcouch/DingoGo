@@ -137,6 +137,21 @@ export const config = {
     redemptionValidDays: 30,
   },
   timezone: 'Australia/Darwin',
+  /** Round 18: performance on serverless. */
+  perf: {
+    /** Fare rules, zones, holidays and hot settings are kept in memory this long (ms) per instance; 0 = always read the database. */
+    cacheTtlMs: Number(env.CONFIG_CACHE_TTL_MS ?? 15000),
+    /** Database connections per instance. Serverless: each instance is one function, and the Supabase pooler shares server connections. */
+    dbPoolMax: Number(env.DB_POOL_MAX ?? (env.VERCEL || env.SERVERLESS === 'true' ? 3 : 10)),
+    /** Close a connection that has been idle this long (ms). */
+    dbIdleMs: Number(env.DB_IDLE_TIMEOUT_MS ?? (env.VERCEL || env.SERVERLESS === 'true' ? 5000 : 10000)),
+    /** Give up waiting for any one query after this long (ms, measured by the API; 0 = no limit). Above the migration limit. */
+    dbQueryTimeoutMs: Number(env.DB_QUERY_TIMEOUT_MS ?? 25000),
+    /** Postgres cancels a statement inside a transaction after this long (ms; SET LOCAL, so it works through the transaction pooler). 0 = off. */
+    dbStatementTimeoutMs: Number(env.DB_STATEMENT_TIMEOUT_MS ?? 15000),
+    /** Serverless: one instance at a time runs the dispatcher on requests, at most once per this many ms (claimed in the database). */
+    tickEveryMs: Number(env.DISPATCH_TICK_EVERY_MS ?? 3000),
+  },
   /** Operations (Round 10): migrations at cold start, health checks, database roles. */
   ops: {
     /** Apply pending migrations when the API starts (advisory lock; safe with many instances). A fresh empty database also gets the base data. */

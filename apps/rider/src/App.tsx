@@ -1,16 +1,18 @@
-import { useCallback, useEffect, useState } from 'react';
+import { Suspense, useCallback, useEffect, useState } from 'react';
 import { NavLink, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
-import { Icon, Login, readHandoff, takeHandoff, get, getToken, initAuth, setToken, connectRealtime, useOnline, disablePush, refreshPush, ServiceNotice } from '@dingogo/shared';
+import { Icon, Login, readHandoff, takeHandoff, get, getToken, initAuth, setToken, connectRealtime, useOnline, disablePush, refreshPush, ServiceNotice, lazyWithRetry } from '@dingogo/shared';
 import { MeCtx, type Me, ACTIVE } from './ctx';
 import { RideScreen } from './screens/Ride';
 import { TripScreen, clearCachedTrip, readCachedTrip } from './screens/Trip';
 import { TripsScreen } from './screens/Trips';
-import { BusinessScreen } from './screens/Business';
-import { ClientsScreen } from './screens/Clients';
-import { RewardsScreen } from './screens/Rewards';
 import { AccountScreen } from './screens/Account';
+// Round 18: rewards (QR codes), business and client screens are fetched when first opened.
+const RewardsScreen = lazyWithRetry(() => import('./screens/Rewards').then((m) => ({ default: m.RewardsScreen })));
+const BusinessScreen = lazyWithRetry(() => import('./screens/Business').then((m) => ({ default: m.BusinessScreen })));
+const ClientsScreen = lazyWithRetry(() => import('./screens/Clients').then((m) => ({ default: m.ClientsScreen })));
 import { Toast, toast } from './components/Toast';
 import { Announcer } from './components/Announcer';
+import { Spinner } from './components/ui';
 
 initAuth('rider');
 
@@ -67,6 +69,7 @@ export function App() {
         <div className="shell__main">
           {/* The trip screens say "no signal" themselves, next to the trip details. */}
           {!/^\/trips?\/[^/]+/.test(loc.pathname) && <OfflineBar />}
+          <Suspense fallback={<div className="page"><Spinner /></div>}>
           <Routes>
             <Route path="/" element={<RideScreen />} />
             <Route path="/trip/:id" element={<TripScreen />} />
@@ -78,6 +81,7 @@ export function App() {
             <Route path="/account/*" element={<AccountScreen />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
+          </Suspense>
         </div>
         {!hideTabs && (
           <nav className="tabs" aria-label="Main">

@@ -7,11 +7,15 @@ pg.types.setTypeParser(1700, (v) => Number(v));
 // Keep DATE columns as 'YYYY-MM-DD' strings (avoid timezone shifting).
 pg.types.setTypeParser(1082, (v) => v);
 
+// Round 18: pool size, idle close and a per-query limit from config.perf (DB_POOL_MAX, DB_IDLE_TIMEOUT_MS, DB_QUERY_TIMEOUT_MS).
+// No startup parameters are sent (the Supabase transaction pooler may refuse them); the server-side statement limit is set per
+// transaction in tx() instead.
 const makePool = (url: string) => new pg.Pool({
   connectionString: url,
-  max: process.env.VERCEL ? 3 : 10,
-  idleTimeoutMillis: 10000,
+  max: Math.max(1, config.perf.dbPoolMax),
+  idleTimeoutMillis: config.perf.dbIdleMs,
   connectionTimeoutMillis: 8000,
+  ...(config.perf.dbQueryTimeoutMs > 0 ? { query_timeout: config.perf.dbQueryTimeoutMs } : {}),
   ssl: /sslmode=require|supabase\.(co|com)/.test(url) ? { rejectUnauthorized: false } : undefined,
 });
 
@@ -34,6 +38,9 @@ export function ensureDb() {
   return checked;
 }
 
+/** Pool use right now (health check, load tests). */
+export const poolStats = () => ({ max: Math.max(1, config.perf.dbPoolMax), total: pool.totalCount, idle: pool.idleCount, waiting: pool.waitingCount });
+
 export type Q = Pick<pg.PoolClient, 'query'>;
 
 export async function q<T = any>(sql: string, params: unknown[] = [], client: Q = pool): Promise<T[]> {
@@ -49,7 +56,9 @@ export async function one<T = any>(sql: string, params: unknown[] = [], client: 
 export async function tx<T>(fn: (c: pg.PoolClient) => Promise<T>): Promise<T> {
   const c = await pool.connect();
   try {
-    await c.query('BEGIN');
+    // BEGIN and the statement limit in one round trip (SET LOCAL ends with the transaction, so it is safe with a pooler).
+    const st = Math.floor(config.perf.dbStatementTimeoutMs);
+    await c.query(st > 0 ? `BEGIN; SET LOCAL statement_timeout = ${st}` : 'BEGIN');
     const out = await fn(c);
     await c.query('COMMIT');
     return out;

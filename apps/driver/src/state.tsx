@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
-import { ApiError, connectRealtime, get, onNetworkChange, post, useGeolocation, useOnline } from '@dingogo/shared';
+import { ApiError, connectRealtime, get, onNetworkChange, post, useGeolocation, useOnline, usePoll } from '@dingogo/shared';
 import { flushGps, flushTaps, isNoSignal, onOutboxChange, pendingGps, pendingTaps, queueGps, sendTap, tapsFor, type Step } from './lib/outbox';
 import { applyTheme, resolvedTheme, usePrefs } from './lib/prefs';
 import { hasPlug, minYearFallback } from './vehicle';
@@ -17,6 +17,11 @@ export const PLACES = [
 ];
 
 export type Pos = { lat: number; lng: number; heading: number | null };
+/** Straight-line metres between two points (small distances; good enough to tell "the car moved"). */
+export function metresBetween(a: { lat: number; lng: number }, b: { lat: number; lng: number }) {
+  const k = 111_320, dy = (a.lat - b.lat) * k, dx = (a.lng - b.lng) * k * Math.cos((a.lat * Math.PI) / 180);
+  return Math.hypot(dx, dy);
+}
 /** GET /driver/vehicles: the driver's own cars (plus their fleet car, if any). */
 export type Cars = { vehicles: any[]; current_vehicle_id: string | null; min_year: number; max_age_years: number; jurisdictions?: any[]; rules?: any; state?: string };
 
@@ -119,10 +124,9 @@ export function DriverProvider({ children }: { children: React.ReactNode }) {
     return () => rt.close();
   }, [reloadTrip, showToast]);
 
-  // Fallback polling for offers (weak signal / socket drops)
-  useEffect(() => {
-    if (!online || trip) return;
-    const t = setInterval(async () => {
+  // Fallback polling for offers (weak signal / socket drops). Every 4 s in view (an offer lasts 20 s); every 8 s while the app
+  // is behind Google Maps or the screen is off (Round 18: phones throttle background timers anyway).
+  usePoll(async () => {
       try {
         const r = await get('/driver/offers');
         if (r.offers?.length) {
@@ -138,21 +142,25 @@ export function DriverProvider({ children }: { children: React.ReactNode }) {
           });
         } else setOffer((cur: any) => (cur && cur.expires_at && new Date(cur.expires_at) < new Date() ? null : cur));
       } catch { /* ignore */ }
-    }, 4000);
-    return () => clearInterval(t);
-  }, [online, trip]);
+  }, online && !trip ? 4000 : null, { hiddenMs: 8000 });
 
-  // Location heartbeat every 5 s while online or on a trip. With no signal the points are kept and sent together later,
-  // so the trip's GPS track has no gap.
+  // Location heartbeat: every 5 s on a trip (the rider watches the car); online and waiting, every 15 s and only when the car has
+  // moved 30 m or a minute has passed (dispatch needs a fresh position, not a stream of identical ones — Round 18). With no signal
+  // the points are kept and sent together later, so the trip's GPS track has no gap.
+  const lastSent = useRef<{ lat: number; lng: number; at: number } | null>(null);
   useEffect(() => {
     if (!online && !trip) return;
+    const onTrip = !!trip;
     const send = async () => {
       const p = posRef.current;
       if (!p) return;
+      const prev = lastSent.current;
+      if (!onTrip && prev && Date.now() - prev.at < 60_000 && metresBetween(prev, p) < 30 && !pendingGps()) return;
       const battery_pct = plugRef.current ? batteryRef.current : undefined;
       try {
         if (pendingGps()) await flushGps(battery_pct).catch((e) => { if (isNoSignal(e)) throw e; });
         const r = await post('/driver/location', { lat: p.lat, lng: p.lng, heading: p.heading ?? undefined, battery_pct }, { timeoutMs: 10000 });
+        lastSent.current = { lat: p.lat, lng: p.lng, at: Date.now() };
         // DingoGo sets drivers offline after a long time without signal: keep the switch honest.
         if (r?.online === false && onlineRef.current) { setOnlineState(false); showToast('You are offline. Go online again when you are ready.'); }
       }
@@ -162,7 +170,7 @@ export function DriverProvider({ children }: { children: React.ReactNode }) {
       }
     };
     void send();
-    const t = setInterval(send, 5000);
+    const t = setInterval(send, onTrip ? 5000 : 15000);
     return () => clearInterval(t);
   }, [online, !!trip]);
 

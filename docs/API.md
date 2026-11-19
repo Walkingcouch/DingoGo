@@ -977,3 +977,26 @@ café's rate when it was served (`reward_redemptions.settlement_cents`).
   (30–3650; default 3 years) → `{ codes, expires_at, needs_activation, valid_days }`.
 
 Data export adds `loyalty_profile` and `gift_vouchers_bought`; deleting an account removes the loyalty profile and the unused points.
+
+## Performance on serverless (Round 18)
+- **ETags on every GET.** A `200` JSON answer carries a weak `ETag` (`W/"…"`); a GET with a matching `If-None-Match` (one tag,
+  a list or `*`) answers `304` with no body. Signed-in answers stay `Cache-Control: no-store`: the apps keep the last copy in
+  memory and send `If-None-Match` themselves (`getIfChanged` in `packages/shared/src/api.ts`). CORS exposes `ETag`,
+  `X-Request-Id` and `Retry-After`.
+- **`GET /public/config`** is the same for everyone: built from parallel reads, kept in memory for `CONFIG_CACHE_TTL_MS` and sent
+  with `Cache-Control: public, max-age=60`.
+- **Config cache.** Fare rules, zones (with the state levy), public holidays and the settings `driver_pay`, `community_pricing`,
+  `courier_policy`, `cash_payments`, `cancellation_policy`, `business` and `support` are read from memory (default 15 s per
+  instance). Any write by an admin or dispatcher drops the cache on the instance that made it, so the change shows at once
+  there and within the TTL everywhere else.
+- **`POST /driver/location`** is one database statement (car position, a point on every live trip's track, the live trips for the
+  route check). Concurrent pings raise at most one route-deviation alert.
+- **`GET /driver/offers`** reads run and pickup-window fields in the same query (no per-offer lookups). Response unchanged.
+- **Dispatcher on serverless** runs on requests at most once per `DISPATCH_TICK_EVERY_MS` (3 s) across all instances: the
+  instance that claims the `_dispatch_tick` settings row runs it, the rest skip. `_`-prefixed settings are internal and not
+  listed by `GET /admin/settings`.
+- **Database limits.** `DB_POOL_MAX` (3 on serverless), `DB_IDLE_TIMEOUT_MS`, `DB_QUERY_TIMEOUT_MS` (25 s, measured by the API)
+  and `DB_STATEMENT_TIMEOUT_MS` (15 s, `SET LOCAL` inside every transaction, so it works through the transaction pooler; no
+  startup parameters are sent). `/health/deep` details add `performance` (pool use, limits, cache hits).
+- Migration `022_hot_path_indexes.sql`: partial indexes for live trips by driver, searching trips, bookings waiting for release
+  and offers on screen.

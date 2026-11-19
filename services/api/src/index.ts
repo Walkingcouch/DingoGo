@@ -8,7 +8,9 @@ import { activeUser, verifyToken, type AuthUser } from './auth.js';
 import { subscribe, trackUser, unsubscribe } from './realtime.js';
 import { one } from './db.js';
 import { signUploadUrls } from './lib/uploads.js';
-import { dispatchTick, shareLinkExpired } from './services/trips.js';
+import { claimTick, dispatchTick, shareLinkExpired } from './services/trips.js';
+import { invalidateConfig } from './lib/cache.js';
+import { etagMatches, etagOf } from './lib/etag.js';
 import { flushBackground } from './lib/background.js';
 import authRoutes from './routes/auth.js';
 import riderRoutes from './routes/rider.js';
@@ -54,7 +56,8 @@ export async function buildServer() {
     if (reply.statusCode >= 500) req.log.warn(line, 'request failed');
     else req.log.info(line, 'request');
   });
-  await app.register(cors, { origin: config.corsOrigins.includes('*') ? true : config.corsOrigins, methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE'] });
+  await app.register(cors, { origin: config.corsOrigins.includes('*') ? true : config.corsOrigins, methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE'],
+    exposedHeaders: ['ETag', 'X-Request-Id', 'Retry-After'] });
   await app.register(websocket);
 
   app.setErrorHandler((err: any, req, reply) => {
@@ -95,17 +98,36 @@ export async function buildServer() {
     }
     return payload;
   });
+  // Round 18: a GET answer with the same JSON as the copy the app already holds (If-None-Match) is a bodiless 304. Polls of a
+  // trip that hasn't changed, an empty offers list or the live map cost a few bytes instead of the whole payload.
+  app.addHook('onSend', async (req, reply, payload) => {
+    if (req.method !== 'GET' || reply.statusCode !== 200 || typeof payload !== 'string' || payload.length > 2_000_000) return payload;
+    if (!String(reply.getHeader('content-type') ?? '').startsWith('application/json')) return payload;
+    const tag = etagOf(payload);
+    reply.header('ETag', tag);
+    if (etagMatches(req.headers['if-none-match'], tag)) { reply.code(304); return ''; }
+    return payload;
+  });
+  // Config the team changed (fares, zones, holidays, settings): drop this instance's cached copy straight away.
+  app.addHook('onSend', async (req, reply, payload) => {
+    if (req.method !== 'GET' && req.method !== 'HEAD' && reply.statusCode < 400 && (req.user?.role === 'admin' || req.user?.role === 'dispatcher')) invalidateConfig();
+    return payload;
+  });
   // Private uploads (driver documents, delivery photos) leave the API only as short-lived signed links.
   app.addHook('preSerialization', async (_req, _reply, payload) => signUploadUrls(payload));
 
   // Serverless: no background timer, so run the dispatcher (offer expiry, re-offers, scheduled releases)
   // on the requests that apps poll anyway — throttled to once every 3 s per instance.
+  // Round 18: many instances poll at once, so the tick is claimed in the database first (one cheap conditional write): one
+  // instance runs it per DISPATCH_TICK_EVERY_MS, the others skip it.
   if (config.serverless) {
     let last = 0;
+    const every = config.perf.tickEveryMs;
     app.addHook('preHandler', async (req) => {
       if (!/^\/(driver|trips|admin\/live|public\/track)/.test(req.url)) return;
-      if (Date.now() - last < 3000) return;
+      if (Date.now() - last < every) return;
       last = Date.now();
+      if (!(await claimTick(every).catch(() => true))) return;
       await dispatchTick().catch((e) => logError('dispatch tick', e));
     });
     // The function may be frozen once the response is sent: finish notifications/SMS started by this request first.

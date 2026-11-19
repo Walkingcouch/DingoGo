@@ -5,6 +5,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ApiError, api, post } from './api';
+import { usePoll } from './hooks';
 import { Icon } from './Icon';
 
 export interface ChatMessage { id: number; from: 'rider' | 'driver' | 'dingogo'; mine: boolean; body: string; via: 'app' | 'sms'; created_at: string; read_at: string | null;
@@ -54,10 +55,10 @@ export function useTripChat(tripId: string | null | undefined, open: boolean) {
   useEffect(() => {
     if (!tripId) return;
     if (open) void full(); else void refresh(true);
-    const t = setInterval(() => void (open ? refresh(false) : refresh(true)), open ? 4000 : 15000);
-    const r = open ? setInterval(() => void full(), 20000) : undefined;
-    return () => { clearInterval(t); if (r) clearInterval(r); };
   }, [tripId, open, refresh, full]);
+  // New messages every 4 s with the chat open, 15 s for the unread badge; slower in the background (Round 18).
+  usePoll(() => (open ? refresh(false) : refresh(true)), tripId ? (open ? 4000 : 15000) : null, { hiddenMs: open ? 15000 : 60000 });
+  usePoll(full, tripId && open ? 20000 : null, { hiddenMs: null });
 
   const send = useCallback(async (input: { body?: string; quick?: string; text?: string }, retryId?: string) => {
     if (!tripId) return;

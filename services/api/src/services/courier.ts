@@ -15,6 +15,7 @@ import { limit } from '../lib/rateLimit.js';
 import { toOps, toTrip, toUser } from '../realtime.js';
 import { send, sendSmsT } from './notify.js';
 import * as trips from './trips.js';
+import { settingValue } from '../lib/cache.js';
 
 export interface CourierPolicy {
   /** Fee for bringing an undeliverable parcel back, as a % of the trip fare (0 turns it off), with a minimum. */
@@ -30,8 +31,8 @@ export const COURIER_POLICY_DEFAULTS: CourierPolicy = { return_fee_pct: 50, retu
 const clamp = (v: unknown, lo: number, hi: number, d: number) => (Number.isFinite(Number(v)) ? Math.min(hi, Math.max(lo, Math.round(Number(v)))) : d);
 
 /** Admin → Settings key `courier_policy`; anything missing or out of range falls back to the defaults. */
-export async function loadCourierPolicy(c: Q = pool): Promise<CourierPolicy> {
-  const v = (await one(`SELECT value FROM settings WHERE key = 'courier_policy'`, [], c))?.value ?? {};
+export async function loadCourierPolicy(_c: Q = pool): Promise<CourierPolicy> {
+  const v: any = (await settingValue('courier_policy')) ?? {};
   const d = COURIER_POLICY_DEFAULTS;
   return {
     return_fee_pct: clamp(v.return_fee_pct, 0, 100, d.return_fee_pct),

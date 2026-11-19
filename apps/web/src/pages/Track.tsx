@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import { ApiError, PARCEL_OUTCOME_LABEL, REALTIME, assetUrl, connectRealtime, COURIER_STATUS_LABEL, get, post, STATUS_LABEL, time, useInterval } from '@dingogo/shared';
+import { ApiError, PARCEL_OUTCOME_LABEL, REALTIME, assetUrl, connectRealtime, COURIER_STATUS_LABEL, get, post, STATUS_LABEL, time, usePoll } from '@dingogo/shared';
 import { DgMap, type MapMarker } from '@dingogo/shared/map';
 import { useMeta } from '../meta';
 
@@ -85,7 +85,8 @@ export default function Track() {
     }, { share: token });
     return () => rt.close();
   }, [token, load]);
-  useInterval(() => (live ? void load() : tick((n) => n + 1)), live ? (REALTIME ? 30000 : 6000) : 60000);
+  // Round 18: a hidden tab checks every 30 s (and at once when it comes back into view).
+  usePoll(() => (live ? load() : tick((n) => n + 1)), live ? (REALTIME ? 30000 : 6000) : 60000, { hiddenMs: 30000 });
 
   if (error === 'expired' && !trip) {
     return (

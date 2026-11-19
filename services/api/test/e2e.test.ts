@@ -11,6 +11,7 @@ import { quoteFare } from '../src/lib/fares.js';
 import { dispatchTick, searchOver } from '../src/services/trips.js';
 import { bg, flushBackground, pendingBackground } from '../src/lib/background.js';
 import { config } from '../src/config.js';
+import { invalidateConfig } from '../src/lib/cache.js';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { encodeForm, signWebhook, verifyWebhook } from '../src/services/payments.js';
@@ -1207,7 +1208,7 @@ const ledgerFor = async (tripId: string) => Object.fromEntries((await q(`SELECT 
 
 test('driver pay defaults: offers (pushed and polled) show pay at 25% and the km to the pickup; nothing else changes', async () => {
   await clearOpenTrips();
-  await q(`DELETE FROM settings WHERE key = 'driver_pay'`);
+  await q(`DELETE FROM settings WHERE key = 'driver_pay'`); invalidateConfig();
   await onlyD1Online();
   const t = await book();
   assert.ok(!t.fare_breakdown.lines.some((l: any) => /Long pickup|Fuel surcharge/.test(l.label)));
@@ -1292,12 +1293,12 @@ test('driver pay switched on: EV rate, long-pickup charge funds pickup pay, fuel
   assert.equal(e.summary.trip_pay_cents, e.summary.fares_cents + e.summary.service_fee_cents + e.summary.pickup_pay_cents + e.summary.fuel_surcharge_cents + e.summary.cancel_fees_cents);
   assert.ok(e.activity.pickup_km > 4 && e.activity.total_km > e.activity.trip_km);
   assert.ok(e.activity.engaged_s >= 0);
-  await q(`DELETE FROM settings WHERE key = 'driver_pay'`);
+  await q(`DELETE FROM settings WHERE key = 'driver_pay'`); invalidateConfig();
 });
 
 test('earnings floor: weekly top-up per engaged hour, paid once; off by default; only finished weeks', async () => {
   await clearOpenTrips();
-  await q(`DELETE FROM settings WHERE key = 'driver_pay'`);
+  await q(`DELETE FROM settings WHERE key = 'driver_pay'`); invalidateConfig();
   const lastWeek = weekStartOf(new Date(Date.now() - 7 * 864e5));
   assert.equal((await call('POST', '/admin/driver-pay/floor/run', 'admin', { week: lastWeek })).error, 'floor_off');
 
@@ -1338,7 +1339,7 @@ test('earnings floor: weekly top-up per engaged hour, paid once; off by default;
   assert.equal(e.floor.enabled, true);
   assert.equal(e.floor.cents_per_engaged_hour, 9000);
   assert.equal(e.floor.week_start, weekStartOf(new Date()));
-  await q(`DELETE FROM settings WHERE key = 'driver_pay'`);
+  await q(`DELETE FROM settings WHERE key = 'driver_pay'`); invalidateConfig();
 });
 
 // ───────────── Round 5: accessibility ─────────────
@@ -2675,10 +2676,11 @@ test('before migration 016: single parcels, tracking, dispatch and earnings stil
     assert.equal((await call('GET', '/driver/earnings', 'd1')).status, 200);
     assert.equal((await call('GET', '/business/deliveries', 'rider')).status, 200);
     assert.equal((await call('GET', '/driver/offers', 'd1')).status, 200);
+    invalidateConfig();   // the public config is cached for CONFIG_CACHE_TTL_MS; a migration is applied by a deploy or cold start
     assert.equal((await call('GET', '/public/config')).courier.runs, false);
   } finally {
     for (const [tb, c] of cols) await q(`ALTER TABLE ${tb} RENAME COLUMN ${c}_off TO ${c}`);
-    resetCourierReady();
+    resetCourierReady(); invalidateConfig();
   }
 });
 
@@ -4265,5 +4267,180 @@ test('before migration 021: bookings with promo codes, rewards, café redeem and
     for (const [t, c] of cols) await q(`ALTER TABLE ${t} RENAME COLUMN ${c}_off TO ${c}`);
     for (const t of tables) await q(`ALTER TABLE ${t}_off RENAME TO ${t}`);
     resetLoyaltyReady();
+  }
+});
+
+// ───────────────────────── Round 18: performance on serverless ─────────────────────────
+import pgMod from 'pg';
+import { cacheStats } from '../src/lib/cache.js';
+import { claimTick } from '../src/services/trips.js';
+import { poolStats, tx } from '../src/db.js';
+import { etagMatches, etagOf } from '../src/lib/etag.js';
+
+/** Database round trips made while `fn` runs (every query through any client of the pool). */
+async function countQueries(fn: () => Promise<unknown>) {
+  const proto = pgMod.Client.prototype as any;
+  const orig = proto.query;
+  let n = 0;
+  proto.query = function (...a: unknown[]) { n++; return orig.apply(this, a); };
+  try { await fn(); } finally { proto.query = orig; }
+  return n;
+}
+
+test('round 18: GET answers carry an ETag; If-None-Match gives a bodiless 304; a change gives a new tag; CORS exposes it', async () => {
+  const t = await call('POST', '/trips', 'rider', { kind: 'ride', service: 'ride', pickup: TODD_MALL, dropoff: HOSPITAL, payment_method: 'card' });
+  assert.equal(t.status, 201, JSON.stringify(t));
+  try {
+    const url = `/trips/${t.trip.id}`;
+    const a = await app.inject({ method: 'GET', url, headers: { authorization: `Bearer ${tokens.rider}` } });
+    const tag = String(a.headers.etag);
+    assert.match(tag, /^W\/"[A-Za-z0-9_-]{27}"$/);
+    assert.equal(a.headers['cache-control'], 'no-store', 'personal data still never cached by the browser');
+    const b = await app.inject({ method: 'GET', url, headers: { authorization: `Bearer ${tokens.rider}`, 'if-none-match': tag } });
+    assert.deepEqual([b.statusCode, b.body, b.headers.etag], [304, '', tag]);
+    const c = await app.inject({ method: 'GET', url, headers: { authorization: `Bearer ${tokens.rider}`, 'if-none-match': 'W/"other", ' + tag.slice(2) } });
+    assert.equal(c.statusCode, 304, 'a list and a strong form of the same tag match too');
+    await q(`UPDATE trips SET notes = 'Gate code 1234' WHERE id = $1`, [t.trip.id]);
+    const d = await app.inject({ method: 'GET', url, headers: { authorization: `Bearer ${tokens.rider}`, 'if-none-match': tag } });
+    assert.equal(d.statusCode, 200);
+    assert.notEqual(d.headers.etag, tag);
+    assert.equal(JSON.parse(d.body).trip.notes, 'Gate code 1234');
+    // Writes and errors get no ETag.
+    const e = await app.inject({ method: 'GET', url: '/trips/00000000-0000-0000-0000-000000000000', headers: { authorization: `Bearer ${tokens.rider}` } });
+    assert.deepEqual([e.statusCode, e.headers.etag], [404, undefined]);
+    const pre = await app.inject({ method: 'GET', url: '/health', headers: { origin: 'https://dingogo.example' } });
+    assert.match(String(pre.headers['access-control-expose-headers']), /ETag/);
+    assert.equal(etagMatches('*', etagOf('x')), true);
+    assert.equal(etagMatches(undefined, etagOf('x')), false);
+  } finally {
+    await call('POST', `/trips/${t.trip.id}/cancel`, 'rider', {});
+  }
+});
+
+test('round 18: fare rules, zones and the public config come from memory; an admin edit shows at once; others within the TTL', async () => {
+  invalidateConfig();
+  const body = { service: 'ride', pickup: TODD_MALL, dropoff: HOSPITAL };
+  const q1 = await call('POST', '/quotes', 'rider', body);
+  assert.equal(q1.status, 200);
+  const before = cacheStats();
+  // A warm quote: sign-in check, plan and rider (in parallel); no fare rule, zone, holiday or setting reads.
+  const n = await countQueries(() => call('POST', '/quotes', 'rider', body));
+  assert.ok(n <= 3, `quote used ${n} queries`);
+  assert.ok(cacheStats().hits > before.hits);
+  // The public config: no database at all once warm, cacheable by the browser for a minute.
+  await call('GET', '/public/config');
+  assert.equal(await countQueries(() => call('GET', '/public/config')), 0);
+  const pc = await app.inject({ method: 'GET', url: '/public/config' });
+  assert.equal(pc.headers['cache-control'], 'public, max-age=60');
+  // A change made outside the API (another instance) is not seen until the TTL runs out...
+  const base = (await one(`SELECT base_cents FROM fare_rules WHERE service = 'ride'`)).base_cents;
+  try {
+    await q(`UPDATE fare_rules SET base_cents = $1 WHERE service = 'ride'`, [base + 500]);
+    assert.equal((await call('POST', '/quotes', 'rider', body)).quote.total_cents, q1.quote.total_cents, 'cached until the TTL');
+    // ...but an edit made in admin on this instance drops the cache straight away.
+    const r = await call('PATCH', '/admin/fares/ride', 'admin', { base_cents: base + 1000 });
+    assert.equal(r.status, 200, JSON.stringify(r));
+    const after = await call('POST', '/quotes', 'rider', body);
+    assert.ok(after.quote.total_cents > q1.quote.total_cents, 'admin edit applies at once');
+    const svc = (await call('GET', '/public/config')).services.find((s: any) => s.service === 'ride');
+    assert.equal(svc.base_cents, base + 1000);
+    // A cached copy can't be changed by the code that reads it.
+    const { loadRule } = await import('../src/services/trips.js');
+    (await loadRule('ride')).base_cents = 1;
+    assert.equal((await loadRule('ride')).base_cents, base + 1000);
+  } finally {
+    await q(`UPDATE fare_rules SET base_cents = $1 WHERE service = 'ride'`, [base]);
+    invalidateConfig();
+  }
+  // TTL 0 turns caching off.
+  const ttl = config.perf.cacheTtlMs;
+  config.perf.cacheTtlMs = 0;
+  try { assert.ok((await countQueries(() => call('GET', '/public/config'))) > 5); } finally { config.perf.cacheTtlMs = ttl; }
+});
+
+test('round 18: a location ping is one database round trip (plus sign-in) and still extends the live trip track', async () => {
+  const d3 = await userIdOf('+61400000013');
+  const veh = (await one('SELECT vehicle_id FROM drivers WHERE user_id = $1', [d3])).vehicle_id;
+  const rider = await userIdOf('+61400000100');
+  const t = await one(
+    `INSERT INTO trips (ref, kind, service, status, rider_id, driver_id, vehicle_id, zone_id, pickup_lat, pickup_lng, pickup_address, dropoff_lat, dropoff_lng,
+                        dropoff_address, est_distance_m, est_duration_s, quote_cents, fare_breakdown, payment_method, verify_pin, share_token, accepted_at)
+     VALUES ('R18PING', 'ride', 'ride', 'accepted', $1, $2, $3, 'alice-springs', $4, $5, 'Todd Mall', $6, $7, 'Hospital', 2000, 300, 1500, '{}', 'cash', '1111', 'r18ping', now())
+     RETURNING id`, [rider, d3, veh, TODD_MALL.lat, TODD_MALL.lng, HOSPITAL.lat, HOSPITAL.lng]);
+  assert.equal((await one(`SELECT count(*)::int n FROM trips WHERE driver_id = $1 AND status IN ('accepted','arrived','in_progress')`, [d3])).n, 1, 'only this live trip');
+  try {
+    let r: any;
+    const n = await countQueries(async () => { r = await call('POST', '/driver/location', 'd3', { lat: -23.70, lng: 133.88, heading: 45 }); });
+    assert.equal(r.status, 200, JSON.stringify(r));
+    assert.equal(typeof r.online, 'boolean');
+    assert.ok(n <= 2, `location ping used ${n} queries`);
+    const pts = await q('SELECT lat, lng FROM trip_track WHERE trip_id = $1', [t.id]);
+    assert.deepEqual(pts, [{ lat: -23.70, lng: 133.88 }]);
+    assert.deepEqual(await one('SELECT lat, lng, heading FROM drivers WHERE user_id = $1', [d3]), { lat: -23.70, lng: 133.88, heading: 45 });
+    // Route deviation still checked on the ping (under way, far off the line): alerted once even with two pings at once.
+    await q(`UPDATE trips SET status = 'in_progress', started_at = now() WHERE id = $1`, [t.id]);
+    await Promise.all([call('POST', '/driver/location', 'd3', { lat: -23.50, lng: 133.60 }), call('POST', '/driver/location', 'd3', { lat: -23.50, lng: 133.60 })]);
+    assert.equal((await one(`SELECT count(*)::int n FROM compliance_flags WHERE trip_id = $1 AND kind = 'route_deviation'`, [t.id])).n, 1);
+    // No driver row: still a plain answer.
+    const rr = await call('POST', '/driver/location', 'rider', { lat: -23.7, lng: 133.88 });
+    assert.equal(rr.status, 403);
+  } finally {
+    await q(`DELETE FROM compliance_flags WHERE trip_id = $1`, [t.id]);
+    await q(`DELETE FROM safety_checks WHERE trip_id = $1`, [t.id]).catch(() => {});
+    await q(`DELETE FROM trips WHERE id = $1`, [t.id]);
+  }
+});
+
+test('round 18: serverless dispatcher claimed by one instance per window; internal row hidden from admin settings', async () => {
+  await q(`DELETE FROM settings WHERE key = '_dispatch_tick'`);
+  assert.equal(await claimTick(400), true, 'first instance runs it');
+  assert.equal(await claimTick(400), false, 'another instance in the same window skips it');
+  await wait(400);
+  assert.equal(await claimTick(400), true, 'next window');
+  const s = await call('GET', '/admin/settings', 'admin');
+  assert.equal(s.items.some((i: any) => i.key === '_dispatch_tick'), false);
+  assert.ok(s.items.length > 3);
+});
+
+test('round 18: pool limits and a statement timeout inside transactions (SET LOCAL, safe through a pooler)', async () => {
+  assert.equal(poolStats().max, config.perf.dbPoolMax);
+  const deep = await call('GET', '/health/deep', 'admin');
+  assert.equal(deep.performance.pool.max, config.perf.dbPoolMax);
+  assert.equal(deep.performance.statement_timeout_ms, 15000);
+  assert.ok(deep.performance.config_cache.ttl_ms > 0);
+  assert.equal(await tx(async (c) => (await c.query('SHOW statement_timeout')).rows[0].statement_timeout), '15s');
+  assert.equal((await one('SHOW statement_timeout')).statement_timeout, '0', 'outside a transaction the session is untouched');
+  const st = config.perf.dbStatementTimeoutMs;
+  config.perf.dbStatementTimeoutMs = 100;
+  try {
+    await assert.rejects(tx((c) => c.query('SELECT pg_sleep(0.5)')), (e: any) => e.code === '57014');
+  } finally { config.perf.dbStatementTimeoutMs = st; }
+  config.perf.dbStatementTimeoutMs = 0;
+  try { assert.equal(await tx(async (c) => (await c.query('SHOW statement_timeout')).rows[0].statement_timeout), '0'); }
+  finally { config.perf.dbStatementTimeoutMs = st; }
+});
+
+test('round 18: polled offers keep every field with one query for the trip (no per-offer lookups)', async () => {
+  const on = await call('POST', '/driver/online', 'd1', { online: true, lat: TODD_MALL.lat, lng: TODD_MALL.lng });
+  assert.equal(on.status, 200, JSON.stringify(on));
+  const t = await call('POST', '/trips', 'rider', { kind: 'ride', service: 'ride', pickup: TODD_MALL, dropoff: HOSPITAL, payment_method: 'card' });
+  assert.equal(t.status, 201, JSON.stringify(t));
+  try {
+    await dispatchTick();
+    let seen: any = null;
+    for (const who of ['d1', 'd2', 'd3']) {
+      const o = await call('GET', '/driver/offers', who);
+      const x = o.offers?.find((y: any) => y.trip_id === t.trip.id);
+      if (!x) continue;
+      seen = x;
+      const n = await countQueries(() => call('GET', '/driver/offers', who));
+      assert.ok(n <= 3, `offers poll with an offer used ${n} queries`);
+    }
+    assert.ok(seen, 'someone was offered the trip');
+    assert.equal('batch_id' in seen || 'pickup_window_end' in seen || 'id' in seen, false, 'helper columns are not sent');
+    assert.deepEqual([seen.run, seen.pickup_window], [null, null]);
+    assert.ok(seen.driver_pay?.total_cents > 0 && seen.total_m > 0 && seen.ref);
+  } finally {
+    await call('POST', `/trips/${t.trip.id}/cancel`, 'rider', {});
   }
 });

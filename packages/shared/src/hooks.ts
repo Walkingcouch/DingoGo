@@ -35,6 +35,39 @@ export function useInterval(fn: () => void, ms: number | null) {
   useEffect(() => { if (ms == null) return; const t = setInterval(() => ref.current(), ms); return () => clearInterval(t); }, [ms]);
 }
 
+/**
+ * A poll that adapts (Round 18): every `ms` while the screen is in view; every `hiddenMs` while the app is in the background
+ * (null = pause, catching up as soon as it is back in view); and, when `fn` resolves to `false` ("nothing changed", e.g. a 304
+ * from getIfChanged), slowing step by step up to `maxMs`, back to `ms` on the next change. `ms` null stops it.
+ */
+export function usePoll(fn: () => unknown, ms: number | null, opts: { hiddenMs?: number | null; maxMs?: number } = {}) {
+  const ref = useRef(fn); ref.current = fn;
+  const { hiddenMs = null, maxMs } = opts;
+  useEffect(() => {
+    if (ms == null) return;
+    let cur = ms;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let stopped = false;
+    const hidden = () => typeof document !== 'undefined' && document.visibilityState === 'hidden';
+    const schedule = () => {
+      clearTimeout(timer);
+      if (stopped) return;
+      const wait = hidden() ? hiddenMs : cur;
+      if (wait != null) timer = setTimeout(run, wait);
+    };
+    const run = async () => {
+      let changed: unknown = true;
+      try { changed = await ref.current(); } catch { /* the screen shows its own error */ }
+      cur = changed === false ? Math.min(Math.round(cur * 1.5), maxMs ?? ms) : ms;
+      schedule();
+    };
+    const onVis = () => { if (!hidden()) { clearTimeout(timer); void run(); } else schedule(); };
+    schedule();
+    if (typeof document !== 'undefined') document.addEventListener('visibilitychange', onVis);
+    return () => { stopped = true; clearTimeout(timer); if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', onVis); };
+  }, [ms, hiddenMs, maxMs]);
+}
+
 /** Browser/Capacitor geolocation watch. Falls back to null when denied. */
 export function useGeolocation(enabled = true) {
   const [pos, setPos] = useState<{ lat: number; lng: number; heading: number | null; speed: number | null } | null>(null);

@@ -13,7 +13,8 @@ import { searchPlaces } from '../lib/places.js';
 import { CONCESSION_TYPES, LANGUAGE_INFO, communityReady, loadCommunityPricing } from '../lib/community.js';
 import { latLng, parse, z } from '../lib/validate.js';
 import { toOps } from '../realtime.js';
-import { shareLinkExpired, zoneFor } from '../services/trips.js';
+import { loadRule, shareLinkExpired, zoneFor } from '../services/trips.js';
+import { cached, settingValue } from '../lib/cache.js';
 import { recipientInstructions } from '../services/courier.js';
 import { courierReady } from '../lib/courierSchema.js';
 import { FAIL_REASONS, MAX_DECLARED_CENTS, MAX_DROPS, PROHIBITED_KEYS, PROHIBITED_VERSION, SIZE_MAX_KG } from '../lib/courier.js';
@@ -60,37 +61,50 @@ export default async function publicRoutes(app: FastifyInstance) {
     return { source: r.source, distance_m: r.distance_m, duration_s: r.duration_s, points: r.geometry?.length ?? 0, ...(r.source === 'estimate' ? { last_error: lastRouteError() } : {}) };
   });
 
-  app.get('/public/config', async () => ({
-    services: await q('SELECT service, label, base_cents, per_km_cents, per_min_cents, booking_fee_cents, min_fare_cents, cancel_fee_cents, free_wait_min, night_pct, levy_cents, description FROM fare_rules WHERE active ORDER BY min_fare_cents'),
-    zones: await q('SELECT id, name, state, centre_lat, centre_lng, radius_km, active, launch_note FROM zones ORDER BY active DESC, state, name'),
-    plans: await q('SELECT * FROM plans WHERE active ORDER BY price_cents'),
-    business: (await one(`SELECT value FROM settings WHERE key = 'business'`))?.value ?? {},
-    support: (await one(`SELECT value FROM settings WHERE key = 'support'`))?.value ?? {},
-    cash_payments: (await one(`SELECT value FROM settings WHERE key = 'cash_payments'`))?.value ?? { ride: false, courier: true },
-    cancellation_policy: (await one(`SELECT value FROM settings WHERE key = 'cancellation_policy'`))?.value ?? null,
-    // NT rules (back-compat); per-state rules are in `jurisdictions`.
-    vehicle_rules: { ...(await vehicleAgeRule('NT')), min_doors: 4, seats: { min: 4, max: 7 }, fuel_types: FUEL_TYPES },
-    jurisdictions: await listJurisdictions(),
-    document_types: DOCUMENT_TYPES,
-    // Round 9: which push services the apps can register with, and whether masked calls (relay number) are on.
-    push: { web_push_key: config.push.vapidPublicKey || null, fcm: pushProviders().fcm },
-    comms: { relay: !!(config.twilio.relayNumber && config.twilio.sid && config.twilio.token), chat: true },
-    // Round 11: parcel limits and the prohibited items checklist keys (wording in the apps), and what's switched on.
-    courier: {
-      size_max_kg: SIZE_MAX_KG, max_declared_cents: MAX_DECLARED_CENTS, max_drops: MAX_DROPS,
-      prohibited: { version: PROHIBITED_VERSION, keys: PROHIBITED_KEYS }, fail_reasons: FAIL_REASONS,
-      runs: await courierReady(), windows: await courierReady(),
-    },
-    // Round 12: app languages (Arrernte and Kriol are community drafts) and concession fares (off unless switched on in admin).
-    languages: LANGUAGE_INFO,
-    community_pricing: await (async () => {
-      const r = await loadCommunityPricing();
-      const on = r.enabled && (await communityReady());
-      return { concession: on, pct: on ? r.concession_pct : 0, max_cents: on ? r.concession_max_cents : 0, services: on ? r.services : [],
-        types: on ? Object.fromEntries(r.types.map((t) => [t, CONCESSION_TYPES[t]])) : {} };
-    })(),
-    client_bookings: await communityReady(),
-  }));
+  // Round 18: the same for everyone and read by every app at start-up: built from parallel queries, kept in memory for
+  // CONFIG_CACHE_TTL_MS and cacheable by the browser for a minute (with an ETag, so a reload is a 304).
+  const buildPublicConfig = async () => {
+    const [services, zones, plans, business, support, cash, cancel, ntAge, jurisdictions, runs, community, communityOn] = await Promise.all([
+      q('SELECT service, label, base_cents, per_km_cents, per_min_cents, booking_fee_cents, min_fare_cents, cancel_fee_cents, free_wait_min, night_pct, levy_cents, description FROM fare_rules WHERE active ORDER BY min_fare_cents'),
+      q('SELECT id, name, state, centre_lat, centre_lng, radius_km, active, launch_note FROM zones ORDER BY active DESC, state, name'),
+      q('SELECT * FROM plans WHERE active ORDER BY price_cents'),
+      settingValue('business'), settingValue('support'), settingValue('cash_payments'), settingValue('cancellation_policy'),
+      vehicleAgeRule('NT'), listJurisdictions(), courierReady(), loadCommunityPricing(), communityReady(),
+    ]);
+    return {
+      services, zones, plans,
+      business: business ?? {},
+      support: support ?? {},
+      cash_payments: cash ?? { ride: false, courier: true },
+      cancellation_policy: cancel ?? null,
+      // NT rules (back-compat); per-state rules are in `jurisdictions`.
+      vehicle_rules: { ...ntAge, min_doors: 4, seats: { min: 4, max: 7 }, fuel_types: FUEL_TYPES },
+      jurisdictions,
+      document_types: DOCUMENT_TYPES,
+      // Round 9: which push services the apps can register with, and whether masked calls (relay number) are on.
+      push: { web_push_key: config.push.vapidPublicKey || null, fcm: pushProviders().fcm },
+      comms: { relay: !!(config.twilio.relayNumber && config.twilio.sid && config.twilio.token), chat: true },
+      // Round 11: parcel limits and the prohibited items checklist keys (wording in the apps), and what's switched on.
+      courier: {
+        size_max_kg: SIZE_MAX_KG, max_declared_cents: MAX_DECLARED_CENTS, max_drops: MAX_DROPS,
+        prohibited: { version: PROHIBITED_VERSION, keys: PROHIBITED_KEYS }, fail_reasons: FAIL_REASONS,
+        runs, windows: runs,
+      },
+      // Round 12: app languages (Arrernte and Kriol are community drafts) and concession fares (off unless switched on in admin).
+      languages: LANGUAGE_INFO,
+      community_pricing: (() => {
+        const r = community;
+        const on = r.enabled && communityOn;
+        return { concession: on, pct: on ? r.concession_pct : 0, max_cents: on ? r.concession_max_cents : 0, services: on ? r.services : [],
+          types: on ? Object.fromEntries(r.types.map((t) => [t, CONCESSION_TYPES[t]])) : {} };
+      })(),
+      client_bookings: communityOn,
+    };
+  };
+  app.get('/public/config', async (_req, reply) => {
+    reply.header('Cache-Control', 'public, max-age=60');
+    return cached('public_config', buildPublicConfig);
+  });
 
   app.get('/public/places', async (req) => ({ places: searchPlaces(String((req.query as any).q ?? '').slice(0, 100)) }));
 
@@ -99,7 +113,7 @@ export default async function publicRoutes(app: FastifyInstance) {
     const b = parse(z.object({ service: z.string().max(40).default('ride'), pickup: latLng, dropoff: latLng }), req.body);
     // Each estimate can use a call to the routing provider (free daily quota): cap per IP.
     await limit('estimate_ip', req.ip, config.rateLimits.estimatePerIp10Min, 600, 'Too many price checks. Please wait a few minutes.');
-    const rule = await one('SELECT * FROM fare_rules WHERE service = $1 AND active', [b.service]);
+    const rule = await loadRule(b.service).catch(() => null);
     if (!rule) throw notFound('Service');
     const zone = await zoneFor(b.pickup);
     const r = await route(b.pickup, b.dropoff);

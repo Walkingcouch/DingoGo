@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import {
   Icon,
-  ApiError, ChatThread, REALTIME, COURIER_STATUS_LABEL, useTripChat, STATUS_LABEL, ago, connectRealtime, date, dateTime, get, km, money, onNetworkChange, post, statusTone, time, useInterval, Ranges,
+  ApiError, ChatThread, REALTIME, COURIER_STATUS_LABEL, useTripChat, STATUS_LABEL, ago, connectRealtime, date, dateTime, get, getIfChanged, km, money, onNetworkChange, post, statusTone, time, useInterval, usePoll, Ranges,
   isTemporary, DELIVERY_FAIL_REASONS, PARCEL_OUTCOME_LABEL, speak, t as tr, EmergencyCard,
 } from '@dingogo/shared';
 import { DgMap, type MapMarker } from '@dingogo/shared/map';
@@ -36,11 +36,17 @@ export function TripScreen() {
   const [err, setErr] = useState<string | null>(null);
   const [carPos, setCarPos] = useState<{ lat: number; lng: number; heading?: number | null } | null>(null);
   const tripRef = useRef(trip); tripRef.current = trip;
+  const shown = useRef<string | undefined>(undefined);
 
-  const load = useCallback(async () => {
+  // Returns false when DingoGo answered "no change" (304), so the poll can slow down a little (usePoll).
+  const load = useCallback(async (): Promise<boolean | void> => {
     try {
-      const r = await get(`/trips/${id}`);
-      setTrip(r.trip); setErr(null); setStale(false); setSyncedAt(Date.now());
+      // The first read on this screen always gets the data (a 304 then reuses the copy kept by the API client).
+      const r = shown.current === id ? await getIfChanged(`/trips/${id}`) : await get(`/trips/${id}`);
+      setErr(null); setStale(false); setSyncedAt(Date.now());
+      if (!r) return false;
+      shown.current = id;
+      setTrip(r.trip);
       cacheTrip(r.trip);
       if (r.trip.driver?.lat) setCarPos((p) => p ?? { lat: r.trip.driver.lat, lng: r.trip.driver.lng, heading: r.trip.driver.heading });
     } catch (e) {
@@ -53,6 +59,7 @@ export function TripScreen() {
   }, [id]);
 
   useEffect(() => { void load(); }, [load]);
+  const reloadTrip = useCallback(async () => { await load(); }, [load]);
   const live = trip && ACTIVE.includes(trip.status);
   useEffect(() => {
     if (!id) return;
@@ -64,7 +71,9 @@ export function TripScreen() {
   }, [id, load]);
   // Back in signal: refresh straight away rather than waiting for the next poll.
   useEffect(() => onNetworkChange((on) => { if (on) void load(); }), [load]);
-  useInterval(() => void load(), live || stale ? (REALTIME && !stale ? 10000 : 4000) : null);
+  // Round 18: 4 s while the trip is live (10 s with realtime), easing to 8 s while nothing changes (still searching, car parked),
+  // every 15 s while the app is in the background (texts and push cover the big moments), and at once when it comes back.
+  usePoll(load, live || stale ? (REALTIME && !stale ? 10000 : 4000) : null, { hiddenMs: 15000, maxMs: REALTIME && !stale ? 10000 : 8000 });
   useEffect(() => { if (trip?.status === 'completed') void reloadMe(); }, [trip?.status]); // eslint-disable-line
   useTripAnnouncements(trip);
 
@@ -72,8 +81,8 @@ export function TripScreen() {
   if (!trip) return <div className="page"><Spinner label="Loading trip" /></div>;
 
   const net = stale ? <StaleNote at={syncedAt} kind={stale} /> : null;
-  if (live) return <LiveTrip trip={trip} carPos={carPos} reload={load} onClose={() => nav('/')} net={net} />;
-  return <TripDetail trip={trip} reload={load} net={net} />;
+  if (live) return <LiveTrip trip={trip} carPos={carPos} reload={reloadTrip} onClose={() => nav('/')} net={net} />;
+  return <TripDetail trip={trip} reload={reloadTrip} net={net} />;
 }
 
 /** "Last updated 3 min ago" while the phone has no signal. */

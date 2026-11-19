@@ -2,8 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Link, Route, Routes, useNavigate, useSearchParams } from 'react-router-dom';
 import { Acknowledgement, ApiError, DraftNotice, Icon, downloadFile, MyReports, NotifySettings, SafetyReportForm, TrustedContacts, ago, date, del, get, langInfo, money, normaliseLang, patch, post, put, t, useLoad, Ranges } from '@dingogo/shared';
 import { Dialog, Page, Spinner } from '../components/ui';
-import { useMe } from '../ctx';
-import { CLIENT_KINDS } from './Clients';
+import { CLIENT_KINDS, useMe } from '../ctx';
 
 export function AccountScreen() {
   return (

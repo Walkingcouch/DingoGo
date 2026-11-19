@@ -1175,3 +1175,107 @@ Ideas for next rounds:
 - Pass + points: monthly Pass members earn a bonus each month they ride; Pass renewal with the saved card and a "Pass ends soon" notice.
 - Community champions: referral leaderboard (opt-in, first names only) with a quarterly prize funded from the referral budget.
 - Points as a liability in the BAS/accounts report (outstanding points, expired, used) for the accountant.
+
+### Round 18 — performance and scalability on serverless
+Scan: profiled the hot paths with realistic volume (new `scripts/seed-load.ts`: 54 drivers, 5,080 trips, 130k GPS points, 30k
+events) through the Vercel entry run as one serverless instance (`scripts/serve-vercel.ts`, pool of 3, dispatch on requests)
+with 5 ms added to every query (a database a few ms away). Found: `/public/config` ran 11 sequential queries (62 ms) for an
+answer that is the same for everyone; a quote read the fare rule, every zone, the holiday table and 3 settings rows each time
+(7 queries, 40 ms); a location ping took 3–4 round trips; polled offers looked each trip up again per offer; the live map ran 4
+reads one after the other; the offer-expiry query walked the whole driver/offers index every tick (status is its second column)
+and "is this driver on a trip" combined two indexes; every instance ran the dispatcher every 3 s; polls downloaded the full
+payload even when nothing had changed (live map 25 KB every 5 s); no statement or query time limits; the driver app pinged
+every 5 s while parked; polls ran at full speed in hidden tabs; every admin page, Leaflet and the rider's QR code library were in
+each app's single bundle (admin 190 KB gz).
+
+Suggested:
+1. [add] Load fixture and tooling: `services/api/scripts/seed-load.ts` (local databases only, tokens file), `scripts/serve-vercel.ts`
+   (Vercel entry as one instance, `DB_LATENCY_MS`, `/__stats` with queries and connections), dependency-free
+   `scripts/load-test.mjs` (scenarios quote, trip poll, offers poll, active trip, location ping, live map, public config and a
+   weighted mix; p50/p95/p99, 304s, bytes, queries per request; refuses live hosts).
+2. [add] Migration 022: partial indexes for live trips by driver, searching trips, bookings waiting for release and offers on
+   screen; checked with EXPLAIN on the volume database (index scans of a handful of rows instead of index-wide scans).
+3. [add] In-memory config cache (`lib/cache.ts`, `CONFIG_CACHE_TTL_MS` 15 s, single flight, a copy per caller): fare rules,
+   zones with levy, holidays and hot settings; dropped on the instance that saves any admin/dispatcher write; `/public/config`
+   built from parallel reads, cached and `Cache-Control: public, max-age=60`.
+4. [fix] N+1s and serial reads: location ping as one statement (`pingLocation`: car, track point on every live trip, live trips
+   for the route check), polled offers without per-offer lookups, quote reads in parallel, live map reads in parallel, parcel and
+   run in parallel in `getTrip`; route-deviation alert claimed once under concurrent pings.
+5. [add] ETag / If-None-Match on every GET JSON answer (bodiless 304), CORS exposes `ETag`; shared API client keeps the last
+   signed-in answer per path in memory (cleared on sign-in/out), `getIfChanged` for polls.
+6. [fix] Serverless dispatcher claimed across instances (`claimTick`, one conditional write on the `_dispatch_tick` row per
+   `DISPATCH_TICK_EVERY_MS`); internal `_` settings hidden from admin.
+7. [add] Database limits: `DB_POOL_MAX`, `DB_IDLE_TIMEOUT_MS` (5 s serverless), `DB_QUERY_TIMEOUT_MS` (25 s, client side),
+   `DB_STATEMENT_TIMEOUT_MS` (15 s, `SET LOCAL` in the same round trip as `BEGIN`, pooler-safe, no startup parameters);
+   `/health/deep` details show pool use, limits and cache hits.
+8. [add] Adaptive polling (`usePoll` in shared): rider live trip 4 s easing to 8 s while unchanged, 15 s in the background, at
+   once on return; driver offers 4 s / 8 s hidden; driver location every 5 s on a trip, every 15 s when waiting and only after
+   moving 30 m or a minute; admin live map 5–10 s and paused while hidden; admin badge counts paused while hidden; chat 4 s/15 s
+   with 15 s/60 s in the background; tracking page 30 s hidden.
+9. [add] Bundle size: Leaflet behind a lazy `DgMap` (`@dingogo/shared/map` → `LazyMap.tsx`, same-size placeholder, "Map
+   unavailable right now" if it can't load); every admin page except the live map code-split; rider Rewards (QR codes),
+   Business and Clients code-split; `lazyWithRetry` retries once and reloads once when a release replaced the file.
+
+Done (all 9). Migration: `services/api/migrations/022_hot_path_indexes.sql` (indexes only, additive, re-runnable; the API works
+without it). Tests: 168 → 174 (ETag/304/list/strong form/new tag on change/no tag on 404/CORS expose; config cache — warm quote
+≤ 3 queries, warm `/public/config` 0 queries and `public, max-age=60`, outside change hidden until TTL, admin PATCH visible at
+once, cached copies can't be mutated, TTL 0 off; location ping ≤ 2 queries with the track point and car position, one deviation
+alert under two concurrent pings, 403 for riders; tick claim once per window and hidden from admin settings; pool max, 15 s
+`SET LOCAL` statement timeout inside transactions (57014 on overrun), session untouched outside, 0 = off, `/health/deep`
+performance block; polled offers keep every field with ≤ 3 queries). Browser smoke run (7 steps) passes on the new build. The
+existing e2e tests that change settings or rename columns with direct SQL now drop the cache (`invalidateConfig()`), as a
+deploy or cold start would.
+
+Before → after (one instance, pool 3, +5 ms per query; p50 with one client / queries per request):
+| path | before | after |
+|---|---|---|
+| `GET /public/config` | 62.5 ms, 11 q, 11.5 KB | 0.9 ms, 0 q (304 with ETag: 4 B) |
+| `POST /quotes` | 40.4 ms, 7 q | 12.7 ms, 3 q |
+| `POST /driver/location` | 19.1 ms, 3.2 q | 12.9 ms, 2 q |
+| `GET /admin/live` | 30.3 ms, 25 KB | 18.0 ms (304: ~300 B) |
+| `GET /trips/:id` (poll) | 13.0 ms, 1.6 KB | 13.3 ms (304: 9 B) |
+| `GET /driver/offers` with an offer | 5 q | ≤ 3 q |
+| mixed traffic, 10 clients | 157 req/s, p95 138 ms, 1.4 KB/resp | 242 req/s, p95 50 ms, 0.7 KB/resp |
+Bundles (entry JS, gzip): admin 189.7 → 77.6 KB, rider 166.0 → 100.8 KB, driver 151.4 → 105.3 KB (Leaflet 159 KB raw now its
+own file), partner 56.4 KB unchanged. Driver pings while parked: 12/min → 1–4/min. Dispatcher on N instances: N ticks per 3 s
+→ 1 (plus one cheap claim per instance).
+- API: new `src/lib/cache.ts`, `src/lib/etag.ts`; `db.ts` (pool from `config.perf`, `query_timeout`, `SET LOCAL statement_timeout`
+  in `tx`, `poolStats`); `index.ts` (ETag hook, cache drop on staff writes, tick claim, CORS exposed headers); `services/trips.ts`
+  (cached `loadRule`/`zoneFor`/`isPublicHoliday`, parallel quote reads, `pingLocation`, `afterLocation`, `claimTick`, parallel
+  `getTrip`); `routes/driver.ts` (ping, offers), `routes/public.ts` (`/public/config`, estimate), `routes/admin.ts` (live map,
+  settings list, fresh driver pay before merge), `routes/health.ts`; `lib/driverPay.ts`, `lib/community.ts`,
+  `services/courier.ts` (settings through the cache); `config.ts` + `.env.example` (6 optional env vars).
+- Apps: shared `api.ts` (`getIfChanged`, ETag memory), `hooks.ts` (`usePoll`), `lazy.tsx`, `LazyMap.tsx`, `Chat.tsx`; rider
+  `Trip.tsx`, `App.tsx` (lazy screens), `CLIENT_KINDS` moved to `ctx.ts`; driver `state.tsx`; admin `main.tsx`, `Live.tsx`; web
+  `Track.tsx`; every app's vite/tsconfig map alias → `LazyMap.tsx`.
+- Docs: API.md "Performance on serverless (Round 18)", OPERATIONS.md §10 (limits, cache, dispatcher row, load test how-to),
+  README test count.
+- Behaviour changes to note: admin edits to fares/zones/holidays/hot settings reach other serverless instances within 15 s
+  (at once on the instance that saved them), and the website's public config can be a minute old in a browser; statements in a
+  transaction longer than 15 s are cancelled (57014 → 500); a driver waiting online sends its position every 15–60 s instead of
+  every 5 s (dispatch still sees it within 3 minutes); polls slow down when nothing changes and in hidden tabs; GET answers carry
+  ETags; a new `_dispatch_tick` row appears in `settings` (hidden in admin).
+- Deploy: apply migration 022 (AUTO_MIGRATE does it; indexes only). No required env vars (defaults suit Vercel + the Supabase
+  transaction pooler). Optional: `ALTER ROLE <api role> SET statement_timeout = '20s'` for single statements outside
+  transactions. No data fix.
+
+Deferred:
+- Caching the sign-in check (one `users` read per request, the biggest remaining share of a poll): a block or role change must
+  still bite at once on every instance; needs a token version or a short cache with a cross-instance signal.
+- Server-side `statement_timeout` for single statements via startup parameters: the transaction pooler may refuse them; the
+  per-role `ALTER ROLE` above is the safe route and is the coordinator's call on the live database.
+- Vercel Fluid compute's `attachDatabasePool` (closes idle connections before an instance is suspended): needs the
+  `@vercel/functions` dependency and Fluid switched on; measure live connection counts first.
+- Batching location points during a trip (e.g. two points every 10 s): the rider's map would lag; kept 5 s.
+- A `since` cursor on `/trips/:id/track` and keyset pagination for admin trip lists: not on a polling path today (ETags cover
+  the polls); worth it when tracks get long.
+- Pinning the lazy map chunk for offline cold starts of the PWA (service worker precache): today the placeholder shows; the
+  Capacitor apps bundle every file locally.
+
+Ideas for next rounds:
+- Supabase Realtime (broadcast channels) for trip and offer updates on Vercel, so the apps can drop most polling.
+- Token versions on users: instant revocation and a safe per-instance cache of the sign-in check.
+- `pg_stat_statements` top queries in admin → System health, and a weekly slow-query note to ops.
+- Real-user monitoring (web vitals and API timings by route) through the analytics hook, with a budget alert in CI.
+- Uploads to Supabase Storage (still open): removes bytea from the database, its backups and its cache.
+- A nightly load run in CI against the volume fixture with a p95 budget per hot path.

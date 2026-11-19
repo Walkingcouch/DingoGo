@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 import { Link } from 'react-router-dom';
-import { get, post, time, ago, STATUS_LABEL, statusTone, useInterval, useLoad } from '@dingogo/shared';
+import { get, getIfChanged, post, time, ago, STATUS_LABEL, statusTone, usePoll, useLoad } from '@dingogo/shared';
 import { DgMap, type MapMarker } from '@dingogo/shared/map';
 import { Page, useOps } from '../ctx';
 import { Chip, useRun } from '../ui';
@@ -26,10 +26,11 @@ const EVENT_TEXT: Record<string, (d: any) => string> = {
 };
 
 export default function Live() {
-  const { data, reload } = useLoad(() => get('/admin/live'));
+  const { data, setData, reload } = useLoad(() => get('/admin/live'));
   const { events } = useOps();
   const run = useRun();
-  useInterval(() => void reload(), 5000);
+  // Round 18: every 5 s in view, easing to 10 s while nothing moves (304s), paused while the tab is hidden and refreshed on return.
+  usePoll(async () => { const r = await getIfChanged('/admin/live'); if (r) setData(r); return !!r; }, 5000, { hiddenMs: null, maxMs: 10000 });
 
   // Apply driver.location events on top of the last poll for smooth movement.
   const drivers = useMemo(() => {

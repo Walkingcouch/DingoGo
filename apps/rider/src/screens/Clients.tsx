@@ -2,10 +2,9 @@ import { useState } from 'react';
 import { ApiError, date, dateTime, get, money, post, STATUS_LABEL, useLoad } from '@dingogo/shared';
 import { Page, Spinner } from '../components/ui';
 import { PlaceField, type Place } from '../components/PlaceField';
-import { useMe } from '../ctx';
+import { CLIENT_KINDS, useMe } from '../ctx';
 
 /** Account kinds that can book rides for clients (community organisations, Aboriginal corporations, health services, NDIS). */
-export const CLIENT_KINDS = ['ndis_plan_manager', 'community_org', 'aboriginal_corporation', 'health_service', 'government'];
 const METHOD: Record<string, string> = { verbal: 'Told us in person or by phone', written: 'Signed a form', standing: 'Care or support plan' };
 
 /** Staff of a community organisation book rides for their clients, with each client's consent on record. */

@@ -1,28 +1,29 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { Suspense, useEffect, useRef, useState } from 'react';
 import ReactDOM from 'react-dom/client';
 import { BrowserRouter, NavLink, Navigate, Route, Routes, useLocation, useNavigate, Link } from 'react-router-dom';
 import '@dingogo/shared/brand.css';
 import './admin.css';
-import { Login, connectRealtime, get, getToken, initAuth, setToken, Icon, ServiceNotice, Acknowledgement, type Msg } from '@dingogo/shared';
+import { Login, connectRealtime, get, getToken, initAuth, setToken, Icon, ServiceNotice, Acknowledgement, lazyWithRetry, type Msg } from '@dingogo/shared';
 import { ROLE, label } from './labels';
 import mascot from '@dingogo/shared/assets/mascot.png';
 import { AskProvider, Modal, ToastProvider } from './ui';
 import { GlobalSearch } from './Search';
 import { Ops } from './ctx';
 import Live from './pages/Live';
-import Dashboard from './pages/Dashboard';
-import Trips from './pages/Trips';
-import Drivers from './pages/Drivers';
-import Fleet from './pages/Fleet';
-import Pricing from './pages/Pricing';
-import Loyalty from './pages/Loyalty';
-import Ads from './pages/Ads';
-import Business from './pages/Business';
-import Safety from './pages/Safety';
-import Support from './pages/Support';
-import Reports from './pages/Reports';
-import Tax from './pages/Tax';
-import Settings from './pages/Settings';
+// Round 18: every page but the live map (the landing page) is its own file, fetched when first opened.
+const Dashboard = lazyWithRetry(() => import('./pages/Dashboard'));
+const Trips = lazyWithRetry(() => import('./pages/Trips'));
+const Drivers = lazyWithRetry(() => import('./pages/Drivers'));
+const Fleet = lazyWithRetry(() => import('./pages/Fleet'));
+const Pricing = lazyWithRetry(() => import('./pages/Pricing'));
+const Loyalty = lazyWithRetry(() => import('./pages/Loyalty'));
+const Ads = lazyWithRetry(() => import('./pages/Ads'));
+const Business = lazyWithRetry(() => import('./pages/Business'));
+const Safety = lazyWithRetry(() => import('./pages/Safety'));
+const Support = lazyWithRetry(() => import('./pages/Support'));
+const Reports = lazyWithRetry(() => import('./pages/Reports'));
+const Tax = lazyWithRetry(() => import('./pages/Tax'));
+const Settings = lazyWithRetry(() => import('./pages/Settings'));
 
 initAuth('admin');
 
@@ -69,8 +70,11 @@ function Shell({ me, onSignOut }: { me: any; onSignOut: () => void }) {
       setEvents((e) => [m, ...e].slice(0, 200));
       if (/^(sos|support|compliance|application|hire|driver\.document|vehicle)/.test(m.type)) void refreshRef.current();
     });
-    const t = setInterval(() => void refreshRef.current(), 30000);
-    return () => { rt.close(); clearInterval(t); };
+    // Badge counts every 30 s while the console is in view; a hidden tab waits and catches up when it comes back (Round 18).
+    const t = setInterval(() => { if (document.visibilityState === 'visible') void refreshRef.current(); }, 30000);
+    const vis = () => { if (document.visibilityState === 'visible') void refreshRef.current(); };
+    document.addEventListener('visibilitychange', vis);
+    return () => { rt.close(); clearInterval(t); document.removeEventListener('visibilitychange', vis); };
   }, []);
   useEffect(() => setMenu(false), [loc.pathname]);
 
@@ -134,6 +138,7 @@ function Shell({ me, onSignOut }: { me: any; onSignOut: () => void }) {
               <Link to="/safety">Respond now</Link>
             </div>
           )}
+          <Suspense fallback={<p className="muted" role="status" style={{ padding: 24 }}>Loading…</p>}>
           <Routes>
             <Route path="/live" element={<Live />} />
             <Route path="/dashboard" element={<Dashboard />} />
@@ -151,6 +156,7 @@ function Shell({ me, onSignOut }: { me: any; onSignOut: () => void }) {
             <Route path="/settings" element={<Settings />} />
             <Route path="*" element={<Navigate to="/live" replace />} />
           </Routes>
+          </Suspense>
           <Acknowledgement short style={{ margin: '32px 0 8px' }} />
         </main>
       </div>

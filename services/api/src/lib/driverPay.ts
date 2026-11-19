@@ -5,6 +5,7 @@
  */
 import { one, pool, type Q } from '../db.js';
 import { isGreen } from './vehicles.js';
+import { settingValue } from './cache.js';
 
 export interface DriverPaySettings {
   /** DingoGo service fee by car. The driver's own rate (drivers.commission_pct) is a ceiling: these never raise a fee. */
@@ -39,9 +40,9 @@ export function mergeDriverPay(v: any): DriverPaySettings {
   };
 }
 
-export async function loadDriverPay(c: Q = pool): Promise<DriverPaySettings> {
-  const row = await one(`SELECT value FROM settings WHERE key = 'driver_pay'`, [], c);
-  return mergeDriverPay(row?.value);
+export async function loadDriverPay(_c: Q = pool): Promise<DriverPaySettings> {
+  // Round 18: cached (CONFIG_CACHE_TTL_MS); admin changes drop the cache on the instance that made them.
+  return mergeDriverPay(await settingValue('driver_pay'));
 }
 
 export type FeeBasis = 'green' | 'own_car' | 'driver';

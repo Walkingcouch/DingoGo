@@ -4,6 +4,7 @@
  */
 import { one, pool, type Q } from '../db.js';
 import { bad } from './errors.js';
+import { settingValue } from './cache.js';
 
 // ── Languages ── English is the default and the source. Arrernte (aer) and Kriol (rop) wording is a community draft
 // (packages/shared/src/i18n/strings.json). "arr" was used for Arrernte before, but that ISO 639-3 code is another language.
@@ -60,8 +61,8 @@ export const COMMUNITY_PRICING_DEFAULTS: CommunityPricing = {
   enabled: false, concession_pct: 0, concession_max_cents: 0, services: ['ride', 'pet'], types: ['pensioner', 'health_care', 'seniors', 'dva'],
 };
 
-export async function loadCommunityPricing(c: Q = pool): Promise<CommunityPricing> {
-  const v = (await one(`SELECT value FROM settings WHERE key = 'community_pricing'`, [], c))?.value ?? {};
+export async function loadCommunityPricing(_c: Q = pool): Promise<CommunityPricing> {
+  const v = (await settingValue('community_pricing')) ?? {};
   return { ...COMMUNITY_PRICING_DEFAULTS, ...v };
 }
 

@@ -349,11 +349,9 @@ export default async function driverRoutes(app: FastifyInstance) {
   app.post('/driver/location', async (req) => {
     const me = await requireUser(req, 'driver');
     const b = parse(latLng.extend({ heading: z.number().optional(), battery_pct: z.number().int().min(0).max(100).optional(), speed_kmh: z.number().optional() }), req.body);
-    const d = await one(
-      `UPDATE drivers SET lat = $2, lng = $3, heading = $4, last_seen_at = now() WHERE user_id = $1 RETURNING vehicle_id, online`,
-      [me.id, b.lat, b.lng, b.heading ?? null]);
+    // One round trip moves the car, extends the live trip's track and reads what the checks need (Round 18).
+    const d = await trips.pingLocation(me.id, b);
     if (b.battery_pct != null && d?.vehicle_id) await q(`UPDATE vehicles SET battery_pct = $2 WHERE id = $1 AND fuel_type IN ('electric','plug_in_hybrid')`, [d.vehicle_id, b.battery_pct]);
-    await trips.onDriverLocation(me.id, b);
     toOps('driver.location', { driver_id: me.id, lat: b.lat, lng: b.lng, heading: b.heading, battery_pct: b.battery_pct, online: d?.online });
     // The app keeps its online switch in step (e.g. DingoGo set the driver offline after a long time without signal).
     return { ok: true, online: !!d?.online };
@@ -386,8 +384,10 @@ export default async function driverRoutes(app: FastifyInstance) {
 
   app.get('/driver/offers', async (req) => {
     const me = await requireUser(req, 'driver');
+    // Run and window columns come with migration 016 (cached check); read in the same query instead of once per offer.
+    const runs = await courierReady();
     const offers = await q(
-      `SELECT o.trip_id, o.expires_at, o.pickup_eta_s, t.ref, t.kind, t.service, t.pickup_address, t.pickup_lat, t.pickup_lng,
+      `SELECT o.trip_id, o.expires_at,${runs ? ' t.id, t.batch_id, t.batch_seq, t.scheduled_for, t.pickup_window_end,' : ''} o.pickup_eta_s, t.ref, t.kind, t.service, t.pickup_address, t.pickup_lat, t.pickup_lng,
               t.dropoff_address, t.dropoff_lat, t.dropoff_lng, t.est_distance_m, t.est_duration_s, t.quote_cents, (t.fare_breakdown->>'trip_cents')::int AS trip_cents, t.has_pet,
               t.assistance_animal, t.needs_wheelchair, t.passengers, t.payment_method, t.notes, t.fare_breakdown,
               (SELECT u.accessibility FROM users u WHERE u.id = t.rider_id) AS rider_accessibility,
@@ -397,14 +397,13 @@ export default async function driverRoutes(app: FastifyInstance) {
        WHERE o.driver_id = $1 AND o.status = 'offered' AND o.expires_at > now()`, [me.id]);
     // Same pay and distances as the realtime offer (the live site polls: realtime is off on serverless).
     const rules = offers.length ? await loadDriverPay() : undefined;
-    const runs = offers.length && await courierReady();
     for (const o of offers) {
       o.driver_pay = await trips.offerPay(pool, o, me.id, o.pickup_m, rules);
       // Multi-drop run and pickup window (migration 016), same as the realtime offer.
       if (runs) {
-        const x = await one('SELECT id, batch_id, batch_seq, est_distance_m, dropoff_address, scheduled_for, pickup_window_end FROM trips WHERE id = $1', [o.trip_id]);
-        o.run = x?.batch_id ? await trips.offerRun(pool, x, me.id, o.driver_pay) : null;
-        o.pickup_window = x?.pickup_window_end ? { from: x.scheduled_for, to: x.pickup_window_end } : null;
+        o.run = o.batch_id ? await trips.offerRun(pool, o, me.id, o.driver_pay) : null;
+        o.pickup_window = o.pickup_window_end ? { from: o.scheduled_for, to: o.pickup_window_end } : null;
+        delete o.id; delete o.batch_id; delete o.batch_seq; delete o.scheduled_for; delete o.pickup_window_end;
       }
       o.total_m = (o.pickup_m ?? 0) + o.est_distance_m;
       o.rider_needs = trips.riderNeeds(o.rider_accessibility, o.kind);

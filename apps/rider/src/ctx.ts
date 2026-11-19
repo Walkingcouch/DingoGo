@@ -13,3 +13,6 @@ const env = (import.meta as any).env ?? {};
 export const WEB_URL: string = (env.VITE_WEB_URL || (typeof location !== 'undefined' ? location.origin : 'http://localhost:5173')).replace(/\/$/, '');
 export const shareUrl = (token: string) => `${WEB_URL}/track/${token}`;
 export const ACTIVE = ['requested', 'accepted', 'arrived', 'in_progress'];
+
+/** Business account kinds whose staff book rides for clients (Clients screen). */
+export const CLIENT_KINDS = ['ndis_plan_manager', 'community_org', 'aboriginal_corporation', 'health_service', 'government'];

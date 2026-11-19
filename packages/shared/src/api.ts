@@ -10,6 +10,17 @@ export const apiBase = () => BASE;
 export const assetUrl = (path?: string | null) => (!path ? '' : path.startsWith('http') || path.startsWith('data:') ? path : BASE + path);
 
 const TOKEN_KEY = (app: string) => `dingogo.${app}.token`;
+
+/** Round 18: the last answer to each signed-in GET with its ETag (in memory, newest 40). The next read of the same path sends
+ *  If-None-Match; a 304 reuses the copy, so a poll of something that hasn't changed downloads a few bytes. */
+const etags = new Map<string, { tag: string; text: string }>();
+const ETAG_MAX = 40, ETAG_TEXT_MAX = 300_000;
+function rememberEtag(path: string, tag: string | null, text: string) {
+  etags.delete(path);
+  if (!tag || text.length > ETAG_TEXT_MAX) return;
+  etags.set(path, { tag, text });
+  if (etags.size > ETAG_MAX) etags.delete(etags.keys().next().value as string);
+}
 let appName = 'rider';
 let token: string | null = null;
 export function initAuth(app: string) {
@@ -19,6 +30,7 @@ export function initAuth(app: string) {
 }
 export function setToken(t: string | null) {
   token = t;
+  etags.clear();   // another account's answers must never be replayed
   try { t ? localStorage.setItem(TOKEN_KEY(appName), t) : localStorage.removeItem(TOKEN_KEY(appName)); } catch { /* storage unavailable */ }
 }
 export const getToken = () => token;
@@ -52,12 +64,14 @@ const READ_TIMEOUT_MS = 15000;
 const READ_RETRIES = [800, 2500];
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-async function send(method: string, path: string, body: unknown, timeoutMs: number | null, extra?: Record<string, string>): Promise<Response> {
+async function send(method: string, path: string, body: unknown, timeoutMs: number | null, extra?: Record<string, string>, conditional = false): Promise<Response> {
   const ctl = timeoutMs && typeof AbortController !== 'undefined' ? new AbortController() : null;
   const timer = ctl ? setTimeout(() => ctl.abort(), timeoutMs!) : null;
   try {
     return await fetch(BASE + path, {
       method, signal: ctl?.signal,
+      // Our own If-None-Match: the browser must pass the 304 through rather than answer from (or fill) its own cache.
+      ...(conditional ? { cache: 'no-store' as RequestCache } : {}),
       headers: { ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}), ...(token ? { Authorization: `Bearer ${token}` } : {}), ...extra },
       body: body !== undefined ? JSON.stringify(body) : undefined,
     });
@@ -69,14 +83,20 @@ export interface ApiOpts {
   headers?: Record<string, string>;
   /** Give up after this long (writes default to no timeout). */
   timeoutMs?: number;
+  /** GET only: resolve to null when the answer is the same as last time (304), instead of the same data again. */
+  ifChanged?: boolean;
 }
 export async function api<T = any>(method: string, path: string, body?: unknown, opts: ApiOpts = {}): Promise<T> {
   const read = method === 'GET';
   let res: Response | null = null;
   let text = '';
   let json: any = {};
+  let notModified = false;
   for (let attempt = 0; ; attempt++) {
-    try { res = await send(method, path, body, opts.timeoutMs ?? (read ? READ_TIMEOUT_MS : null), opts.headers); }
+    // Signed-in reads only: those already need a CORS preflight, so the extra header costs nothing.
+    const prior = read && token ? etags.get(path) : undefined;
+    const headers = prior ? { ...opts.headers, 'If-None-Match': prior.tag } : opts.headers;
+    try { res = await send(method, path, body, opts.timeoutMs ?? (read ? READ_TIMEOUT_MS : null), headers, !!prior); }
     catch {
       if (read && attempt < READ_RETRIES.length) { await sleep(READ_RETRIES[attempt]); continue; }
       setOnline(false);
@@ -84,6 +104,8 @@ export async function api<T = any>(method: string, path: string, body?: unknown,
     }
     setOnline(true);
     text = await res.text();
+    if (res.status === 304 && prior) { notModified = true; text = prior.text; }
+    else if (read) rememberEtag(path, res.ok ? res.headers.get('etag') : null, text);
     try { json = text ? JSON.parse(text) : {}; } catch { json = {}; }
     // Database briefly unreachable: reads try again (nothing was changed); writes come back to the app to decide.
     if (res.status === 503 && json.error === 'db_unavailable' && read && attempt < READ_RETRIES.length) { await sleep(READ_RETRIES[attempt]); continue; }
@@ -94,6 +116,7 @@ export async function api<T = any>(method: string, path: string, body?: unknown,
     throw new ApiError(503, 'db_unavailable', 'DingoGo is having a problem on our side. Please try again in a few minutes.', json.request_id);
   }
   setServiceUp(true);
+  if (notModified) return (opts.ifChanged ? null : json) as T;
   if (!res.ok) {
     if (res.status === 401) setToken(null);
     // Gateways in front of the API answer 502-504 when the connection drops mid-request: treat like no signal.
@@ -105,6 +128,8 @@ export async function api<T = any>(method: string, path: string, body?: unknown,
   return json as T;
 }
 export const get = <T = any>(p: string) => api<T>('GET', p);
+/** A poll: the data, or null when it is the same as the last answer for this path (nothing to re-render). */
+export const getIfChanged = <T = any>(p: string, o: ApiOpts = {}) => api<T | null>('GET', p, undefined, { ...o, ifChanged: true });
 export const post = <T = any>(p: string, b?: unknown, o?: ApiOpts) => api<T>('POST', p, b ?? {}, o);
 export const patch = <T = any>(p: string, b?: unknown) => api<T>('PATCH', p, b ?? {});
 export const put = <T = any>(p: string, b?: unknown) => api<T>('PUT', p, b ?? {});

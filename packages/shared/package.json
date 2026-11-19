@@ -7,7 +7,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./brand.css": "./src/brand.css",
-    "./map": "./src/Map.tsx",
+    "./map": "./src/LazyMap.tsx",
     "./assets/*": "./assets/*"
   },
   "devDependencies": {

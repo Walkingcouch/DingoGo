@@ -20,7 +20,8 @@ import { SIZE_SERVICE, checkParcel, type ParcelIn, type ParcelSize } from '../li
 import { courierReady } from '../lib/courierSchema.js';
 import type { TripMoney } from '../lib/tripTypes.js';
 import { loadCourierPolicy, onParcelsCollected, returnFeeFor } from './courier.js';
-import { NO_FAULT_CANCEL_REASONS, concessionFor, loadCommunityPricing } from '../lib/community.js';
+import { NO_FAULT_CANCEL_REASONS, concessionFor, loadCommunityPricing, localDate } from '../lib/community.js';
+import { cached, settingValue } from '../lib/cache.js';
 
 export const ACTIVE = ['requested', 'accepted', 'arrived', 'in_progress'] as const;
 
@@ -35,18 +36,25 @@ export interface QuoteInput {
   tour_package_id?: string | null;
 }
 
-export async function loadRule(service: string, c: Q = pool): Promise<FareRule> {
-  const r = await one<FareRule & { active: boolean }>('SELECT * FROM fare_rules WHERE service = $1', [service], c);
+/** Fare rules, zones (with their state levy) and public holidays: read on every quote, changed only in admin (cached, Round 18). */
+const fareRules = () => cached('fare_rules', () => q<FareRule & { active: boolean }>('SELECT * FROM fare_rules'));
+const activeZones = () => cached('zones', () => q(
+  `SELECT z.*, j.levy_cents AS state_levy_cents, j.levy_label AS state_levy_label, j.active AS state_active
+   FROM zones z LEFT JOIN jurisdictions j ON j.code = z.state WHERE z.active AND coalesce(j.active, true) ORDER BY z.radius_km`));
+export const isPublicHoliday = async (at: Date) =>
+  (await cached('holidays', async () => (await q<{ day: string }>('SELECT day::text AS day FROM public_holidays')).map((h) => h.day)))
+    .includes(localDate(at, config.timezone));
+
+export async function loadRule(service: string, _c: Q = pool): Promise<FareRule> {
+  const r = (await fareRules()).find((x) => x.service === service);
   if (!r || !r.active) throw bad('invalid_service', `Service "${service}" is not available`);
   return r;
 }
 
 /** Active zone containing the point, in a state DingoGo operates in (an active zone in a hidden state stays unavailable).
  *  Includes the zone's state levy (jurisdiction). */
-export async function zoneFor(p: LatLng, c: Q = pool) {
-  const zones = await q(
-    `SELECT z.*, j.levy_cents AS state_levy_cents, j.levy_label AS state_levy_label, j.active AS state_active
-     FROM zones z LEFT JOIN jurisdictions j ON j.code = z.state WHERE z.active AND coalesce(j.active, true) ORDER BY z.radius_km`, [], c);
+export async function zoneFor(p: LatLng, _c: Q = pool) {
+  const zones = await activeZones();
   return zones.find((z) => withinZone(p, z)) ?? null;
 }
 
@@ -112,9 +120,14 @@ export async function buildQuote(userId: string | null, input: QuoteInput, c: Q 
   }
 
   const at = input.scheduled_for ? new Date(input.scheduled_for) : new Date();
-  const holiday = await one('SELECT 1 FROM public_holidays WHERE day = ($1::timestamptz AT TIME ZONE $2)::date', [at, config.timezone], c);
-  const plan = await activePlan(userId, c);
-  const promo = input.promo_code ? await validatePromo(input.promo_code, userId, c, { service: input.service, at, pickup: input.pickup, dropoff: input.dropoff }) : null;
+  // Independent reads at once (Round 18): on serverless each is a network round trip to the database.
+  const [holiday, plan, promo, user] = await Promise.all([
+    isPublicHoliday(at),
+    activePlan(userId, c),
+    input.promo_code ? validatePromo(input.promo_code, userId, c, { service: input.service, at, pickup: input.pickup, dropoff: input.dropoff }) : null,
+    // SELECT *: users.concession only exists once migration 017 is in (then it's simply missing here).
+    userId ? one('SELECT * FROM users WHERE id = $1', [userId], c) : null,
+  ]);
   // A budget caps the discount at what's left of it.
   const promoLeft = promo?.budget_cents != null ? Math.max(0, Number(promo.budget_cents) - Number(promo.spent_cents ?? 0)) : null;
   const promoCap = promoLeft == null ? promo?.max_discount_cents ?? null : Math.min(promoLeft, promo?.max_discount_cents ?? promoLeft);
@@ -129,8 +142,6 @@ export async function buildQuote(userId: string | null, input: QuoteInput, c: Q 
     if (!acct) throw forbidden('You are not a member of that business account');
     corporateDiscountPct = acct.discount_pct;
   }
-  // SELECT *: users.concession only exists once migration 017 is in (then it's simply missing here).
-  const user = userId ? await one('SELECT * FROM users WHERE id = $1', [userId], c) : null;
   const concession = user?.concession ? concessionFor(user.concession, input.service, await loadCommunityPricing(c), at) : null;
 
   // Driver pay rules: long-pickup charge (nearest free car far away; on-demand only) and fuel surcharge (not tours).
@@ -275,7 +286,7 @@ async function precheck(userId: string, input: CreateTripInput) {
   if (input.has_pet && input.service !== 'pet') throw bad('pet_service_required', 'Choose "Pet-friendly" to bring a pet (assistance animals are always welcome on any service)');
   if (input.payment_method === 'corporate' && !input.corporate_account_id) throw bad('corporate_required');
   if (input.payment_method === 'cash') {
-    const cash = (await one(`SELECT value FROM settings WHERE key = 'cash_payments'`))?.value ?? { ride: false, courier: true };
+    const cash = (await settingValue('cash_payments')) ?? { ride: false, courier: true };
     if (!cash[input.kind]) throw bad('cash_not_accepted', input.kind === 'ride'
       ? 'Rides are paid in the app. Use a card, DingoGo credit (prepaid vouchers work too) or a business account.'
       : 'Cash is not accepted for this service.');
@@ -537,8 +548,12 @@ export async function getTrip(id: string, c: Q = pool) {
      WHERE t.id = $1`, [id], c);
   if (!t) throw notFound('Trip');
   if (t.rider) { t.rider.needs = riderNeeds(t.rider.accessibility, t.kind); delete t.rider.accessibility; }
-  if (t.kind === 'courier') t.parcel = await one('SELECT * FROM parcels WHERE trip_id = $1', [id], c);
-  if (t.batch_id) t.batch = await runSummary(t.batch_id, c);
+  const [parcel, batch] = await Promise.all([
+    t.kind === 'courier' ? one('SELECT * FROM parcels WHERE trip_id = $1', [id], c) : undefined,
+    t.batch_id ? runSummary(t.batch_id, c) : undefined,
+  ]);
+  if (t.kind === 'courier') t.parcel = parcel;
+  if (t.batch_id) t.batch = batch;
   return t;
 }
 
@@ -751,6 +766,17 @@ async function releaseHoldsAndPoints(c: Q, t: TripMoney, feeCents = 0) {
     await c.query(`INSERT INTO loyalty_ledger (user_id, points, reason, trip_id) VALUES ($1,$2,'refund_cancelled_trip',$3)`,
       [t.rider_id, t.points_redeemed, t.id]);
   }
+}
+
+/** Serverless: may this instance run the dispatcher now? One conditional write on the `_dispatch_tick` settings row: true for the
+ *  first instance to ask in each `everyMs` window, false for the rest (each step of the tick is safe twice; this saves the work). */
+export async function claimTick(everyMs: number) {
+  const r = await q(
+    `INSERT INTO settings (key, value) VALUES ('_dispatch_tick', to_jsonb(now()))
+     ON CONFLICT (key) DO UPDATE SET value = excluded.value
+       WHERE (settings.value #>> '{}')::timestamptz < now() - make_interval(secs => $1)
+     RETURNING 1`, [Math.max(0, everyMs * 0.8) / 1000]);
+  return r.length > 0;
 }
 
 let ticking = false;
@@ -1407,7 +1433,7 @@ export async function cancelTrip(actor: { id: string; role: string }, tripId: st
       return { t, status: 'released', fee: 0, isDriver: true, released: true };
     }
     let fee = 0;
-    const policy = (await one(`SELECT value FROM settings WHERE key = 'cancellation_policy'`, [], c))?.value
+    const policy = (await settingValue('cancellation_policy'))
       ?? { free_window_s: 120, scheduled_free_hours: { tour: 48, hourly: 24 }, scheduled_late_pct: 50 };
     const freeHours = policy.scheduled_free_hours?.[t.service];
     if (isRider && freeHours && t.scheduled_for) {
@@ -1550,14 +1576,35 @@ export async function storeTrack(driverId: string, pts: { lat: number; lng: numb
   return n;
 }
 
+/** A live location ping in one round trip (Round 18): moves the car, adds the point to every live trip's track and returns the
+ *  driver's car, online switch and live trips (as JSON rows), then pushes the position and checks for a route deviation.
+ *  Null when the account has no driver row. */
+export async function pingLocation(driverId: string, p: LatLng & { heading?: number }) {
+  const r = await one(
+    `WITH d AS (UPDATE drivers SET lat = $2, lng = $3, heading = $4, last_seen_at = now() WHERE user_id = $1 RETURNING vehicle_id, online),
+          live AS (SELECT t.id, to_jsonb(t) AS j FROM trips t WHERE t.driver_id = $1 AND t.status IN ('accepted','arrived','in_progress')),
+          tr AS (INSERT INTO trip_track (trip_id, lat, lng) SELECT id, $2, $3 FROM live RETURNING 1)
+     SELECT d.vehicle_id, d.online, (SELECT coalesce(jsonb_agg(j), '[]'::jsonb) FROM live) AS live, (SELECT count(*)::int FROM tr) AS tracked FROM d`,
+    [driverId, p.lat, p.lng, p.heading ?? null]);
+  if (!r) return null;
+  await afterLocation(driverId, p, r.live);
+  return { vehicle_id: r.vehicle_id as string | null, online: !!r.online };
+}
+
 /** Called on every driver location ping: stores breadcrumb, pushes live position, checks for route deviation. */
 export async function onDriverLocation(driverId: string, p: LatLng & { heading?: number }, opts: { track?: boolean } = {}) {
   // Usually one live trip; a multi-drop run has one per parcel (each recipient's tracking link follows the car).
   const live = await q(`SELECT * FROM trips WHERE driver_id = $1 AND status IN ('accepted','arrived','in_progress')`, [driverId]);
+  if (live.length && opts.track !== false) {
+    await q(`INSERT INTO trip_track (trip_id, lat, lng) SELECT unnest($1::uuid[]), $2, $3`, [live.map((x) => x.id), p.lat, p.lng]);
+  }
+  return afterLocation(driverId, p, live);
+}
+
+async function afterLocation(driverId: string, p: LatLng & { heading?: number }, live: any[]) {
   const t = live[0];
   if (!t) return null;
   for (const x of live) {
-    if (opts.track !== false) await q('INSERT INTO trip_track (trip_id, lat, lng) VALUES ($1,$2,$3)', [x.id, p.lat, p.lng]);
     const payload = { trip_id: x.id, lat: p.lat, lng: p.lng, heading: p.heading ?? null };
     toTrip(x.id, 'driver.location', payload);
     if (x === t) toUser(t.rider_id, 'driver.location', payload);
@@ -1568,7 +1615,8 @@ export async function onDriverLocation(driverId: string, p: LatLng & { heading?:
     const off = distToSegment(p, a, b);
     const allowed = Math.max(2500, haversine(a, b) * 0.5);
     if (off > allowed) {
-      await q('UPDATE trips SET deviation_alerted = true WHERE id = $1', [t.id]);
+      // Claimed first: two pings arriving together raise one alert.
+      if (!(await one('UPDATE trips SET deviation_alerted = true WHERE id = $1 AND NOT deviation_alerted RETURNING 1', [t.id]))) return t;
       await q(`INSERT INTO compliance_flags (kind, driver_id, trip_id, detail) VALUES ('route_deviation', $1, $2, $3)`,
         [driverId, t.id, `Vehicle ${Math.round(off)} m off the expected route`]);
       toOps('safety.deviation', { trip_id: t.id, ref: t.ref, off_m: Math.round(off) });

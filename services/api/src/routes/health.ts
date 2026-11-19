@@ -7,7 +7,8 @@
 import crypto from 'node:crypto';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { config } from '../config.js';
-import { pool } from '../db.js';
+import { pool, poolStats } from '../db.js';
+import { cacheStats } from '../lib/cache.js';
 import { loadUser } from '../auth.js';
 import { schemaStatus } from '../lib/migrator.js';
 import { securityStatus } from '../lib/dbSecurity.js';
@@ -80,6 +81,11 @@ export async function deepHealth(full: boolean) {
     base_data: base?.ok ? base.value : base ? { error: base.error } : null,
     security: sec?.ok ? sec.value : sec ? { error: sec.error } : null,
     integrations: integrationStatus(),
+    // Round 18: connections in use on this instance and the in-memory config cache.
+    performance: {
+      pool: poolStats(), query_timeout_ms: config.perf.dbQueryTimeoutMs, statement_timeout_ms: config.perf.dbStatementTimeoutMs,
+      config_cache: cacheStats(), dispatch_tick_every_ms: config.serverless ? config.perf.tickEveryMs : config.dispatch.tickMs,
+    },
   };
 }
 

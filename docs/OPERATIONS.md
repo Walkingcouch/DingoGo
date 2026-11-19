@@ -188,3 +188,28 @@ Loyalty & vouchers.
   its discount back. Event codes: set the event's latitude/longitude and a radius. Off-peak: Darwin hours and days.
 - **Win-back:** Loyalty → Win-back. Only riders who said yes to offers get it, at most once every 90 days (setting). For a code just for them, make a
   targeted promo code first and put it in the form.
+
+## 10. Performance and load testing (Round 18)
+- **Migration 022** (indexes only, safe any time; AUTO_MIGRATE applies it). Until it is in, `/health/deep` reports it pending and
+  the API runs as before, just with slower dispatch queries as trips grow.
+- **Connections.** Each Vercel instance opens at most `DB_POOL_MAX` (3) connections to the Supabase **transaction pooler** (port
+  6543) and closes idle ones after `DB_IDLE_TIMEOUT_MS` (5 s). No startup parameters are sent, so the pooler never refuses a
+  connection. Statements inside a transaction stop after `DB_STATEMENT_TIMEOUT_MS` (15 s, `SET LOCAL`); the API stops waiting
+  for any query after `DB_QUERY_TIMEOUT_MS` (25 s). For a cap on single statements too, set it on the API's database role
+  (Supabase SQL editor): `ALTER ROLE <api role> SET statement_timeout = '20s';` (not on the role migrations run as).
+- **Config cache.** Fare, zone, holiday and hot settings changes made in admin show at once on the instance that saved them and
+  within `CONFIG_CACHE_TTL_MS` (15 s) on the others; the website's `/public/config` can be a minute old in a browser. Set
+  `CONFIG_CACHE_TTL_MS=0` to turn the cache off while debugging.
+- **Dispatcher.** On Vercel one instance per 3 s runs it (claimed on the `_dispatch_tick` settings row). If trips seem slow to
+  be offered, check the row's value is recent: `SELECT value FROM settings WHERE key = '_dispatch_tick';`.
+- **Load test (local only, never against the live site):**
+  ```
+  createdb -O dingogo dingogo_load
+  export DATABASE_URL=postgres://dingogo:dingogo@localhost:5432/dingogo_load
+  npm run db:reset -w services/api
+  (cd services/api && npx tsx scripts/seed-load.ts --out /tmp/load-tokens.json)      # 50 drivers, 500 riders, 5,000 trips
+  (cd services/api && PORT=4100 DB_LATENCY_MS=5 LOG_LEVEL=warn npx tsx scripts/serve-vercel.ts) &   # one serverless instance
+  node scripts/load-test.mjs --tokens /tmp/load-tokens.json --concurrency 10 --seconds 8 [--etag]
+  ```
+  `DB_LATENCY_MS` adds a round trip to every query, like a database a few milliseconds away; the report shows requests/s,
+  p50/p95/p99, 304s, bytes and queries per request. Round 18's numbers are in `docs/improvement-rounds.md`.

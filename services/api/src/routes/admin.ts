@@ -22,6 +22,7 @@ import * as pay from '../services/payments.js';
 import * as trips from '../services/trips.js';
 import { complianceIssues } from './driver.js';
 import { DRIVER_PAY_DEFAULTS, loadDriverPay, mergeDriverPay } from '../lib/driverPay.js';
+import { invalidateConfig } from '../lib/cache.js';
 import { floorReport, runEarningsFloor } from '../services/earningsFloor.js';
 import { gstReport, levyReport, tripFilters } from '../services/reports.js';
 import { audit as writeAudit } from '../lib/audit.js';
@@ -43,6 +44,7 @@ const driverPayBody = z.object({
 
 async function saveDriverPay(actorId: string, body: unknown) {
   const b = parse(driverPayBody, body);
+  invalidateConfig('setting:driver_pay');   // merge onto what is saved now, not this instance's cached copy
   const cur = await loadDriverPay();
   const next = mergeDriverPay({
     service_fee: { ...cur.service_fee, ...b.service_fee }, pickup: { ...cur.pickup, ...b.pickup },
@@ -243,22 +245,23 @@ export default async function adminRoutes(app: FastifyInstance) {
 
   app.get('/admin/live', async (req) => {
     await ops(req);
-    const drivers = await q(
+    // Four independent reads at once (Round 18): the live map polls this every few seconds.
+    const [drivers, active, sos, zones] = await Promise.all([q(
       `SELECT d.user_id AS id, u.name, d.online, d.lat, d.lng, d.heading, d.last_seen_at, d.status,
               v.rego, v.battery_pct, v.range_km, v.pet_friendly, v.has_roof_display, v.fuel_type,
               (v.fuel_type IN ('electric','plug_in_hybrid','hybrid')) AS green, (v.fuel_type = 'electric') AS is_ev,
               (SELECT t.status FROM trips t WHERE t.driver_id = d.user_id AND t.status IN ('accepted','arrived','in_progress') LIMIT 1) AS trip_status
        FROM drivers d JOIN users u ON u.id = d.user_id LEFT JOIN vehicles v ON v.id = d.vehicle_id
-       WHERE d.status = 'approved'`);
-    const active = await q(
+       WHERE d.status = 'approved'`),
+    q(
       `SELECT t.id, t.ref, t.kind, t.service, t.status, t.pickup_lat, t.pickup_lng, t.pickup_address, t.dropoff_lat, t.dropoff_lng, t.dropoff_address,
               t.requested_at, t.scheduled_for, t.driver_id, ru.name AS rider_name, du.name AS driver_name, t.dispatch_attempts, t.channel,
               dd.last_seen_at AS driver_last_seen_at,
               (SELECT count(*)::int FROM trip_offers o WHERE o.trip_id = t.id AND o.status IN ('cancelled','released')) AS driver_releases
        FROM trips t JOIN users ru ON ru.id = t.rider_id LEFT JOIN users du ON du.id = t.driver_id LEFT JOIN drivers dd ON dd.user_id = t.driver_id
-       WHERE t.status IN ('requested','accepted','arrived','in_progress') ORDER BY t.requested_at`);
-    const sos = await q(`SELECT s.*, u.name AS user_name, t.ref AS trip_ref FROM sos_alerts s JOIN users u ON u.id = s.user_id LEFT JOIN trips t ON t.id = s.trip_id WHERE s.status <> 'resolved' ORDER BY s.created_at DESC`);
-    const zones = await q('SELECT * FROM zones ORDER BY active DESC, name');
+       WHERE t.status IN ('requested','accepted','arrived','in_progress') ORDER BY t.requested_at`),
+    q(`SELECT s.*, u.name AS user_name, t.ref AS trip_ref FROM sos_alerts s JOIN users u ON u.id = s.user_id LEFT JOIN trips t ON t.id = s.trip_id WHERE s.status <> 'resolved' ORDER BY s.created_at DESC`),
+    q('SELECT * FROM zones ORDER BY active DESC, name')]);
     return { drivers, trips: active, sos, zones };
   });
 
@@ -1060,7 +1063,7 @@ export default async function adminRoutes(app: FastifyInstance) {
   }
 
   // ───────────── Settings & broadcast ─────────────
-  app.get('/admin/settings', async (req) => { await ops(req); return { items: await q('SELECT * FROM settings ORDER BY key') }; });
+  app.get('/admin/settings', async (req) => { await ops(req); return { items: await q(`SELECT * FROM settings WHERE key NOT LIKE '\\_%' ORDER BY key`) }; });
   app.put('/admin/settings/:key', async (req) => {
     const me = await admin(req);
     const b = parse(z.object({ value: z.any() }), req.body);
