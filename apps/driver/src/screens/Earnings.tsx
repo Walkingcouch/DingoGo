@@ -4,13 +4,13 @@ import { FEE_BASIS } from '../state';
 import { TaxStatements } from './Tax';
 
 const KIND: Record<string, string> = {
-  fare: 'Fares', commission: 'DingoGo fee', pickup_pay: 'Pickup pay', fuel_surcharge: 'Fuel surcharge', cancel_fee: 'Cancellation fees',
+  fare: 'Fares', commission: 'DingoGo fee', pickup_pay: 'Pickup pay', fuel_surcharge: 'Fuel surcharge', cancel_fee: 'Cancellation fees', shuttle_run: 'Community shuttles',
   tip: 'Tips', earnings_floor: 'Earnings floor top-ups', bonus: 'Bonuses', charging_credit: 'Charging reimbursed', adjustment: 'Adjustments',
   lease: 'Car agreement', cash_collected: 'Cash you collected', payout: 'Paid to your bank',
 };
 /** Breakdown groups: what trips paid, what came on top, what came off. */
 const GROUPS: { title: string; kinds: string[]; total?: string }[] = [
-  { title: 'Trip pay', kinds: ['fare', 'commission', 'pickup_pay', 'fuel_surcharge', 'cancel_fee'], total: 'trip_pay_cents' },
+  { title: 'Trip pay', kinds: ['fare', 'commission', 'pickup_pay', 'fuel_surcharge', 'cancel_fee', 'shuttle_run'], total: 'trip_pay_cents' },
   { title: 'On top', kinds: ['tip', 'earnings_floor', 'bonus', 'charging_credit', 'adjustment'], total: 'extras_cents' },
   { title: 'Costs', kinds: ['lease', 'cash_collected'], total: 'costs_cents' },
 ];

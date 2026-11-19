@@ -1483,3 +1483,56 @@ sessions; the settings live in the `insights_policy` setting (defaults in code, 
 - `GET /admin/dashboard`: `today.completed` and `today.revenue_cents` count trips completed today (as the 14-day `daily` chart does),
   `today.cancelled` trips cancelled today; requests, courier and no-driver counts are by request time.
 - `GET /admin/integrations` and `/health/deep` list `email`.
+
+## Community trips: remote and regional reach (Round 28)
+Routes between Alice Springs and communities ("corridors": Ntaria/Hermannsburg, Ltyentye Apurte/Santa Teresa; Yulara built but off until the
+charging plan) live in the admin-checked setting `regional_policy` (defaults in `src/lib/regional.ts`): community end and match radius, road km and
+minutes, unsealed km, fixed private-car price one way (covers the drive back empty), return discount, shuttle seat and parcel prices, shuttle days and
+times, seats, parcel room, shuttle driver pay per leg (the larger of `run_pay_cents` and `run_share_pct` of what was carried), pickup points (town and
+community side; a community store's `partner_id` lets it hand over parcels), permit note, mobile coverage gaps, fuel note, charging at the community
+end and a `confirmed` flag. **Permits:** the notes say where a permit *may* be needed and point to the Central Land Council; DingoGo doesn't decide permits.
+Needs migration 028 for shuttles, long-trip drivers and store top-ups (`regionalReady()`); before it routes, prices and notes show and bookings answer 503 `migration_pending`.
+
+- **Out-of-town limit (fix):** a metered online quote or booking whose drop-off is more than `max_metered_km` (60) in a straight line from the zone
+  centre is refused with 400 `too_far_for_town_fare` (was: any distance, at the meter, offered to any driver). Tours, hourly hire and phone bookings are exempt.
+- **Long trips:** `POST /quotes` and `POST /trips` between a zone and a route's community end (either way; the pickup may be in the community) are priced at
+  the fixed price (`Fixed price: Alice Springs to Ntaria (Hermannsburg)`, no booking fee or minimum, levy on top), timed by the road, and carry
+  `fare_breakdown.regional` (route, direction, km, empty return km, gaps, permit and fuel notes, check-in plan). Online bookings need `min_notice_hours`
+  (2) notice (400 `long_trip_notice`); pets need a phone booking. `return_scheduled_for` books the trip back as a second trip at the return price, linked
+  both ways by `regional.pair_trip_id` (400 `return_too_soon` / `return_too_far` / `return_not_regional`). No route-change adjustment at completion.
+  Dispatch offers them only to drivers with `long_trips` on (`PATCH /driver/me { long_trips }`, 503 before 028); an EV needs range for the pickup, the trip,
+  the drive home (unless it can charge at the community) and the reserve; a trip back starting in the community is released early enough to drive out
+  (search radius widened) and is offered first to the driver of the trip there. Offers (realtime and polled) carry `regional`.
+- `POST /driver/trips/:id/checkin` `{ lat?, lng?, note? }` — the driver of a live community trip checks in (event `regional_checkin`; 400 `not_long_trip`).
+  The tick (`runRegionalChecks`, once a minute) warns ops once (`regional.checkin_missed`, event `regional_checkin_missed`) when there has been no
+  check-in or GPS point for `checkin_every_min` + the longest no-coverage stretch, and raises one SOS alert ("Long trip overdue") when the trip isn't
+  finished `overdue_after_min` after start + 1.2 × the road time. Shuttles the same, from `departed_at` / `last_checkin_at`.
+- **Shuttles:** `GET /public/regional` (routes without partner ids, bookable runs with seats and parcel room left, cut-off, whether text booking is on).
+  Riders: `GET /regional` (routes, runs, my bookings, credit), `POST /regional/bookings` `{ run_id, kind: seat|parcel, seats?, pickup_point?, dropoff_point?,
+  parcel?: { size, description, recipient_name, recipient_phone, prohibited_ok } }` — paid from DingoGo credit at once (402 `wallet_insufficient`), seats
+  locked against the run (409 `run_full`), open runs only before the cut-off (409 `run_cutoff`), parcels only to a store point (400 `invalid_point`), the
+  prohibited check (400 `prohibited_check`) and an Australian mobile for the collector, who is texted; `POST /regional/bookings/:id/cancel` — credit back
+  in full until the cut-off (409 `too_late`).
+- Drivers: `GET /driver/regional/runs`, `GET /driver/regional/runs/:id/manifest` (their runs only: first names, seats, pickup and drop points, phone last
+  3, parcels, route notes), `POST /driver/regional/runs/:id/:action` with `depart` (within 3 h of leaving; held seats lapse), `checkin`, `complete` (seats
+  not marked count as travelled; driver ledger `shuttle_run`), `POST /driver/regional/bookings/:id/board` `{ status: boarded|no_show }`,
+  `POST /driver/regional/bookings/:id/at-store` (texts the collector a new 6-digit code; only the hash is kept).
+- Community stores (partner kind `community_store`): `GET /partner/topups?month=`, `POST /partner/topups` `{ phone, cents, name?, confirm: true }` —
+  cash for DingoGo credit (a new number needs a name and gets an account), within the policy limits (`topups`: per top-up, per person and per store each
+  Darwin day), texted receipt; `POST /partner/topups/:id/void` within `void_min` minutes if the credit is unspent; `GET /partner/regional/parcels`,
+  `POST /partner/regional/collect` `{ code }` (wrong codes count towards the partner code limit).
+- Ops: `GET /admin/regional` (policy, runs, long trips and shuttles on the road, long-trip drivers), `PUT /admin/regional/policy` (admin, checked, audited),
+  `POST /admin/regional/runs`, `POST /admin/regional/runs/schedule` `{ corridor?, days }` (each route's days, once), `PATCH /admin/regional/runs/:id`
+  (driver who opted in, seats not below booked, status; cancelling refunds and texts everyone), `GET /admin/regional/runs/:id/manifest` (`?format=csv`),
+  `POST /admin/regional/bookings` (seat or parcel for a caller, account made from the phone), `POST /admin/regional/bookings/:id/cancel`,
+  `GET /admin/callers?phone=` (credit, recent trips, shuttle bookings, organisations with consent), `GET /admin/regional/topups?month=` and
+  `POST /admin/regional/topups/settle` `{ partner_id, month, ref }` (admin: cash paid over by a store). BAS worksheet: a "Community shuttles" line
+  (takings less shuttle driver pay) when there were any.
+- **Booking by text** (Twilio webhook `POST /comms/twilio/sms`, any DingoGo number): `BUS NTARIA FRI 2`, `BUS FROM SANTA TERESA`, `BUS TO HERMANNSBURG
+  TOMORROW` hold seats on the next matching run for `pending_hold_min` and ask for `YES` (or `NO`); `MY BUS`, `CANCEL SB-ABC123` (a bare CANCEL is a
+  carrier opt-out word and is handled as STOP), `BAL`. Paid from credit; 30 booking texts an hour per number. A text to the relay number from someone on
+  a live trip stays in the trip chat, except YES/NO to a held seat. Before 028 the reply is the how-to.
+- **Low-data page:** `GET /lite` (also `/lite` on the website) is plain HTML under 12 KB with no scripts, images or fonts: routes, prices, permits,
+  coverage warning, the next two weeks of shuttles with seats left and a form. `POST /lite/book` (form-encoded; 10 an hour per IP, 3 an hour per number)
+  holds the seat and texts the number to reply YES (the same page whether or not the number has an account or credit; the text says what's missing).
+  Needs Twilio; without it the page says to call.

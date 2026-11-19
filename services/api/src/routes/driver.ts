@@ -1,6 +1,7 @@
 import { engagedFromSql, failDelivery, type FailInput } from '../services/courier.js';
 import { FAIL_REASONS } from '../lib/courier.js';
 import { courierReady } from '../lib/courierSchema.js';
+import { regionalPending, regionalReady } from '../services/regional.js';
 import type { FastifyInstance } from 'fastify';
 import { config } from '../config.js';
 import { one, pool, q } from '../db.js';
@@ -134,7 +135,10 @@ export default async function driverRoutes(app: FastifyInstance) {
       languages: z.array(z.string().max(20)).max(6).optional(), bio: z.string().max(300).optional(),
       accepts_courier: z.boolean().optional(), accepts_pets: z.boolean().optional(), female_driver: z.boolean().optional(),
       state: z.enum(STATES).optional(),
+      // Round 28: long trips to communities (needs migration 028).
+      long_trips: z.boolean().optional(),
     }), req.body);
+    if (b.long_trips !== undefined && !(await regionalReady())) throw regionalPending();
     // Women-preferred matching is a safety promise to riders, so DingoGo sets it after checking ID (admin → Drivers).
     if (b.female_driver !== undefined) {
       const cur = await one(`SELECT female_driver FROM drivers WHERE user_id = $1`, [me.id]);
@@ -408,6 +412,7 @@ export default async function driverRoutes(app: FastifyInstance) {
       }
       o.total_m = (o.pickup_m ?? 0) + o.est_distance_m;
       o.rider_needs = trips.riderNeeds(o.rider_accessibility, o.kind);
+      o.regional = o.fare_breakdown?.regional ?? null;   // Round 28: community route details, as on the realtime offer
       delete o.fare_breakdown; delete o.rider_accessibility;
     }
     return { offers };
@@ -520,7 +525,8 @@ export default async function driverRoutes(app: FastifyInstance) {
        WHERE t.driver_id = $1 AND t.status = 'completed' AND t.completed_at > now() - ($2 || ' days')::interval`, [me.id, String(n)]);
     const totals: Record<string, number> = Object.fromEntries(byKind.map((r) => [r.kind, r.cents]));
     const v = (k: string) => Number(totals[k] ?? 0);
-    const tripPay = TRIP_PAY_KINDS.reduce((s, k) => s + v(k), 0);
+    // Round 28: shuttle legs are paid per run (no trip row), counted with trip pay.
+    const tripPay = TRIP_PAY_KINDS.reduce((s, k) => s + v(k), 0) + v('shuttle_run');
     const extras = v('tip') + v('bonus') + v('earnings_floor') + v('charging_credit') + v('adjustment');
     const costs = v('lease') + v('cash_collected');
     const net = byKind.reduce((s, r) => s + r.cents, 0);             // kept as before (includes payouts)
@@ -535,7 +541,7 @@ export default async function driverRoutes(app: FastifyInstance) {
       days: n, by_kind: totals, net_cents: net, balance_cents: balance!.cents, daily, ledger,
       summary: {
         fares_cents: v('fare'), service_fee_cents: v('commission'), pickup_pay_cents: v('pickup_pay'), fuel_surcharge_cents: v('fuel_surcharge'),
-        cancel_fees_cents: v('cancel_fee'), trip_pay_cents: tripPay,
+        cancel_fees_cents: v('cancel_fee'), shuttle_cents: v('shuttle_run'), trip_pay_cents: tripPay,
         tips_cents: v('tip'), bonus_cents: v('bonus'), earnings_floor_cents: v('earnings_floor'), charging_cents: v('charging_credit'), adjustments_cents: v('adjustment'),
         extras_cents: extras, lease_cents: v('lease'), cash_collected_cents: v('cash_collected'), costs_cents: costs,
         take_home_cents: takeHome, paid_out_cents: -v('payout'),

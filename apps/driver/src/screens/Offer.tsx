@@ -104,6 +104,14 @@ export function Offer() {
             : null}
         </div>
         {run && <p className="offer-sub"><strong>Multi-drop run:</strong> collect {run.stops} parcels at one pickup, then deliver in order. Pay for every drop: {money(run.pay_cents)}. The breakdown below is the first drop.</p>}
+        {offer.regional && (
+          <div className="offer-sub" role="note">
+            <strong>Community trip: {offer.regional.name}.</strong> About {offer.regional.road_km} km each way{offer.regional.unsealed_km ? `, ${offer.regional.unsealed_km} km unsealed` : ''}.
+            {offer.regional.empty_return_km > 0 ? ` You drive ${offer.regional.empty_return_km} km back empty (the fixed price covers it).` : ''}
+            {offer.regional.coverage_gaps?.length > 0 && ' No mobile coverage on parts of the road: check in when you can.'}
+            {offer.regional.permit_note && <> Permits: {offer.regional.permit_note}</>}
+          </div>
+        )}
         {offer.pickup_window && <p className="offer-sub"><strong>Pickup window:</strong> collect by {new Date(offer.pickup_window.to).toLocaleTimeString('en-AU', { hour: 'numeric', minute: '2-digit' })}.</p>}
         {pay && (
           <ul className="offer-pay" aria-label="How your pay adds up">

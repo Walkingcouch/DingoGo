@@ -52,7 +52,7 @@ export const CORPORATE_KIND: Map = { business: 'Business', ndis_plan_manager: 'N
 export const OFFER_STATUS: Map = { offered: 'Offered', accepted: 'Accepted', declined: 'Declined', expired: 'Timed out', cancelled: 'Driver cancelled after accepting', released: 'Given to another driver' };
 export const LEDGER_KIND: Map = {
   fare: 'Fare', commission: 'DingoGo fee', fee: 'DingoGo fee', pickup_pay: 'Pickup pay', fuel_surcharge: 'Fuel surcharge', cancel_fee: 'Cancellation fee share',
-  tip: 'Tip', earnings_floor: 'Earnings floor top-up', bonus: 'Bonus', cash_collected: 'Cash held by driver', lease: 'Lease deduction',
+  tip: 'Tip', shuttle_run: 'Community shuttle leg', earnings_floor: 'Earnings floor top-up', bonus: 'Bonus', cash_collected: 'Cash held by driver', lease: 'Lease deduction',
   charging_credit: 'Charging reimbursement', charging: 'Charging reimbursement', payout: 'Payout', adjustment: 'Adjustment',
 };
 export const PARCEL_SIZE: Map = { s: 'Small', m: 'Medium', l: 'Large', small: 'Small', medium: 'Medium', large: 'Large' };

@@ -68,6 +68,8 @@ fs.writeFileSync(path.join(out, 'config.json'), JSON.stringify({
     { src: '^/api/?(.*)$', dest: '/api?__path=$1' },
     // Round 21: Android App Links statement (the rider app opens share-trip and booking links), answered by the API from ANDROID_APP_LINK_CERTS.
     { src: '^/\\.well-known/assetlinks\\.json$', dest: '/api?__path=.well-known/assetlinks.json' },
+    // Round 28: the low-data community trips page (plain HTML from the API, no app bundle).
+    { src: '^/lite/?$', dest: '/api?__path=lite' },
     { src: '^/(sitemap\\.xml|robots\\.txt)$', headers: { 'Cache-Control': 'public, max-age=3600' }, continue: true },
     { src: '^/assets/(.*)$', headers: { 'Cache-Control': 'public, max-age=31536000, immutable' }, continue: true },
     ...prerendered.map((p) => ({ src: `^${escRe(p)}/?$`, dest: `${p}/index.html` })),

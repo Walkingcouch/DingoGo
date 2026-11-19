@@ -118,6 +118,7 @@ export function ActiveTrip() {
         )}
 
         <TripFlags t={t} />
+        {t.fare_breakdown?.regional && ['accepted', 'arrived', 'in_progress'].includes(t.status) && <LongTrip t={t} pos={pos} />}
 
         {chatLive && chat.available && (
           <div className="contact-row">
@@ -415,4 +416,30 @@ function useStageAnnouncement(text: string | null, title: string) {
     if (el) { el.textContent = ''; setTimeout(() => { el.textContent = text; }, 50); }
   }, [text, title]);
   useEffect(() => () => { document.title = 'DingoGo Driver'; }, []);
+}
+
+/** Round 28: a community trip. The road, where coverage drops out, permits, and a big "Check in" button (ops are warned if you go quiet
+ *  for longer than the no-coverage stretch, and alerted if you're well past the expected arrival). */
+function LongTrip({ t, pos }: { t: any; pos: { lat: number; lng: number } | null }) {
+  const r = t.fare_breakdown.regional;
+  const [last, setLast] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  async function checkIn() {
+    setErr(null);
+    try { const x = await post(`/driver/trips/${t.id}/checkin`, { lat: pos?.lat, lng: pos?.lng }); setLast(x.at); }
+    catch (e) { setErr(e instanceof ApiError ? e.message : 'No signal: try again when you have coverage'); }
+  }
+  return (
+    <section className="panel" aria-labelledby="lt-h">
+      <h2 id="lt-h" style={{ marginTop: 0 }}>Community trip: {r.place}</h2>
+      <p style={{ margin: '0 0 6px' }}>About {r.road_km} km{r.unsealed_km ? `, ${r.unsealed_km} km unsealed` : ''}, {Math.round(r.minutes / 5) * 5} min. Check in about every {r.checkin_every_min} min.</p>
+      {r.coverage_gaps?.map((g: any, i: number) => <p key={i} className="dg-note" style={{ margin: '4px 0' }}><Icon name="nosignal" size={18} /> {g.note}</p>)}
+      <ol className="dg-muted" style={{ fontSize: 'var(--fs-sm)', margin: '6px 0' }}>{r.checkins?.map((c: string) => <li key={c}>{c}</li>)}</ol>
+      {r.fuel_note && <p className="dg-muted" style={{ fontSize: 'var(--fs-sm)' }}>{r.fuel_note}</p>}
+      {r.permit_note && <p className="dg-muted" style={{ fontSize: 'var(--fs-sm)' }}>Permits: {r.permit_note}</p>}
+      <button className="dg-btn dg-btn--dark dg-btn--block btn-xl" onClick={checkIn}><Icon name="check" size={22} />Check in: all OK</button>
+      {last && <p className="dg-muted" role="status">Checked in at {new Date(last).toLocaleTimeString('en-AU', { hour: 'numeric', minute: '2-digit' })}.</p>}
+      {err && <p className="dg-error" role="alert">{err}</p>}
+    </section>
+  );
 }

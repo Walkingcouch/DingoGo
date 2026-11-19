@@ -27,6 +27,8 @@ import { depositCents } from '../lib/tours.js';
 import { checkAccountBooking } from './businessRules.js';
 import { bg } from '../lib/background.js';
 import type { TripDeposit } from '../lib/fares.js';
+import { fixedPriceFor, matchCorridor, priceLabel, rangeNeededM, regionalInfo, tooFarForMeter, type RegionalInfo } from '../lib/regional.js';
+import { regionalPending, regionalPolicy, regionalReady, runRegionalChecks } from './regional.js';
 
 export const ACTIVE = ['requested', 'accepted', 'arrived', 'in_progress'] as const;
 
@@ -41,6 +43,10 @@ export interface QuoteInput {
   tour_package_id?: string | null;
   /** Round 19: hourly hire booked online, priced by the hours booked (not the drive). */
   hire_hours?: number | null;
+  /** Round 28: community route booked with its trip back (a second booking at the return price). */
+  return_scheduled_for?: string | null;
+  /** Internal: this is the trip back of a community route booked together. */
+  return_leg?: boolean;
 }
 
 /** Fare rules, zones (with their state levy) and public holidays: read on every quote, changed only in admin (cached, Round 18). */
@@ -109,15 +115,37 @@ export async function validatePromo(code: string, userId: string | null, c: Q = 
  *  booking fee or long-pickup charge and its own (lower) minimum. */
 export async function buildQuote(userId: string | null, input: QuoteInput, c: Q = pool, opts: { opsBooking?: boolean; legFrom?: LatLng; extraStop?: boolean } = {}) {
   let rule = await loadRule(input.service, c);
-  const zone = await zoneFor(input.pickup, c);
+  const zones = await activeZones();
+  let zone = zones.find((z) => withinZone(input.pickup, z)) ?? null;
+  // Round 28: community routes (town to a community or back) have a fixed price; other trips out of town aren't metered online.
+  let reg: RegionalInfo | null = null; let regPrice: { cents: number; label: string } | null = null;
+  const metered = input.service !== 'tour' && input.service !== 'hourly' && !opts.legFrom;
+  const rp = metered ? await regionalPolicy() : null;
+  if (rp && !input.service.startsWith('courier')) {
+    const m = matchCorridor(rp, input.pickup, input.dropoff, zones, { staff: opts.opsBooking });
+    if (m) {
+      reg = regionalInfo(m, rp, !!input.return_leg);
+      regPrice = { cents: fixedPriceFor(m.corridor, !!input.return_leg), label: priceLabel(m.corridor, m.direction, !!input.return_leg) };
+      zone ??= zones.find((z) => withinZone(input.dropoff, z)) ?? null;
+      // The fixed price is all in (no booking fee or minimum on top; the levy is added as usual).
+      rule = { ...rule, booking_fee_cents: 0, min_fare_cents: 0 };
+    }
+  }
   if (!zone) throw bad('outside_service_area', 'Pickup is outside our current service area (Alice Springs / Mparntwe)');
+  if (rp && !reg && !opts.opsBooking) {
+    const km = tooFarForMeter(rp, zone, input.dropoff);
+    if (km) {
+      throw bad('too_far_for_town_fare', `That drop-off is about ${km} km out of town. For a community, choose it from Community trips (fixed prices${input.service.startsWith('courier') ? ' and parcel runs' : ''}), or call us to book.`);
+    }
+  }
   if (opts.extraStop) {
     const policy = await loadCourierPolicy(c);
     rule = { ...rule, base_cents: 0, booking_fee_cents: 0, min_fare_cents: policy.extra_stop_min_cents };
   }
 
-  let fixedPriceCents: number | undefined;
-  let r = await route(opts.legFrom ?? input.pickup, input.dropoff);
+  let fixedPriceCents: number | undefined = regPrice?.cents;
+  // A community route is priced and timed by the road (not the routing service's guess on dirt roads).
+  let r = reg ? { distance_m: reg.road_km * 1000, duration_s: reg.minutes * 60, source: 'estimate' as const } : await route(opts.legFrom ?? input.pickup, input.dropoff);
   let guideFeeCents = 0;
   if (input.service === 'tour') {
     if (!input.tour_package_id) throw bad('tour_required', 'Choose a tour package');
@@ -188,6 +216,7 @@ export async function buildQuote(userId: string | null, input: QuoteInput, c: Q 
     pointsToRedeem: input.redeem_points,
     availablePoints: user?.loyalty_points ?? 0,
     fixedPriceCents,
+    fixedPriceLabel: regPrice?.label,
     levy: zone.state_levy_cents != null ? { cents: Number(zone.state_levy_cents), label: zone.state_levy_label } : null,
     longPickup,
     fuelSurchargeCents,
@@ -195,7 +224,8 @@ export async function buildQuote(userId: string | null, input: QuoteInput, c: Q 
     concession,
   });
   if (opts.extraStop) quote.lines.unshift({ label: 'Extra stop on a multi-drop run (no base fare or booking fee)', cents: 0 });
-  return { quote, route: r, zone, rule, promo };
+  if (reg) (quote as FareQuote & { regional?: RegionalInfo }).regional = reg;
+  return { quote, route: r, zone, rule, promo, regional: reg };
 }
 
 /** Road-distance estimate (straight line × 1.3, as dispatch ranks drivers) from the pickup to the nearest free, approved,
@@ -330,6 +360,7 @@ async function precheck(userId: string, input: CreateTripInput) {
       throw bad('hire_too_soon', `Book hourly hire at least ${hp.notice_hours} hours ahead, or call us`);
     }
   }
+  await checkRegionalBooking(input);
   if (input.scheduled_for) {
     const mins = (new Date(input.scheduled_for).getTime() - Date.now()) / 60000;
     if (mins < 20) throw bad('schedule_too_soon', 'Scheduled trips must be at least 20 minutes ahead');
@@ -339,10 +370,47 @@ async function precheck(userId: string, input: CreateTripInput) {
   if (input.payment_method === 'card') await pay.requireCardOnFile(userId);
 }
 
+/** Round 28: community routes need migration 028 (driver opt-in), notice online, an active route and a sensible trip back. */
+async function checkRegionalBooking(input: CreateTripInput) {
+  const staff = input.channel === 'phone';
+  const policy = input.kind === 'ride' && input.service !== 'tour' && input.service !== 'hourly' ? await regionalPolicy() : null;
+  const m = policy ? matchCorridor(policy, input.pickup, input.dropoff, await activeZones(), { staff }) : null;
+  if (!m || !policy) {
+    if (input.return_scheduled_for) throw bad('return_not_regional', 'A trip back booked together is for community trips');
+    return;
+  }
+  if (!(await regionalReady())) throw regionalPending();
+  if (input.has_pet) throw bad('pet_long_trip', 'Pets on community trips: call us to book');
+  if (!staff) {
+    const at = input.scheduled_for ? new Date(input.scheduled_for).getTime() : Date.now();
+    if (at < Date.now() + policy.min_notice_hours * 3600_000) {
+      throw bad('long_trip_notice', `Book community trips at least ${policy.min_notice_hours} hours ahead so a driver can plan the drive, or call us.`);
+    }
+  }
+  if (input.return_scheduled_for) {
+    const out = input.scheduled_for ? new Date(input.scheduled_for).getTime() : Date.now();
+    const back = new Date(input.return_scheduled_for).getTime();
+    if (!(back >= out + (m.corridor.minutes + 30) * 60_000)) throw bad('return_too_soon', `The trip back can start ${m.corridor.minutes + 30} minutes after the trip there at the earliest`);
+    if (back > out + 14 * 86400_000) throw bad('return_too_far', 'Book the trip back within 14 days of the trip there');
+  }
+}
+
 export async function createTrip(userId: string, input: CreateTripInput) {
   await precheck(userId, input);
   const held: string[] = [];
-  return tx((c) => insertTrip(c, userId, input, held)).catch(async (e) => {
+  let back: any = null;
+  return tx(async (c) => {
+    const trip = await insertTrip(c, userId, input, held);
+    if (input.return_scheduled_for) {
+      // The trip back: a second booking at the return price, linked both ways. The driver of the trip there is offered it first.
+      back = await insertTrip(c, userId, { ...input, pickup: input.dropoff, dropoff: input.pickup, scheduled_for: input.return_scheduled_for,
+        return_scheduled_for: null, return_leg: true, promo_code: null, redeem_points: 0 }, held);
+      for (const [a, b] of [[trip.id, back.id], [back.id, trip.id]]) {
+        await c.query(`UPDATE trips SET fare_breakdown = jsonb_set(fare_breakdown, '{regional,pair_trip_id}', to_jsonb($2::text)) WHERE id = $1 AND fare_breakdown ? 'regional'`, [a, b]);
+      }
+    }
+    return trip;
+  }).catch(async (e) => {
     // The booking didn't go through: don't leave money held on the card (or a deposit taken).
     for (const ref of held) {
       const dep = /^deposit:(.+):(\d+)$/.exec(ref);
@@ -352,6 +420,7 @@ export async function createTrip(userId: string, input: CreateTripInput) {
     throw e;
   }).then(async (trip) => {
     await afterCreate(trip, input);
+    if (back) await afterCreate(back, input);
     return getTrip(trip.id);
   });
 }
@@ -738,7 +807,8 @@ export async function dispatchTrip(tripId: string): Promise<'offered' | 'waiting
     }
 
     const candidates = await q(
-      `SELECT d.user_id, d.lat, d.lng, v.id AS vehicle_id, v.battery_pct, v.range_km, v.pet_friendly, v.wheelchair_accessible, v.seats, v.fuel_type
+      `SELECT d.user_id, d.lat, d.lng, v.id AS vehicle_id, v.battery_pct, v.range_km, v.pet_friendly, v.wheelchair_accessible, v.seats, v.fuel_type,
+              coalesce((to_jsonb(d)->>'long_trips')::boolean, false) AS long_trips
        FROM drivers d JOIN vehicles v ON v.id = d.vehicle_id AND v.active AND v.status = 'approved'
        JOIN users du ON du.id = d.user_id AND NOT du.blocked AND du.deleted_at IS NULL   -- blocked/deleted accounts get no offers
        WHERE d.status = 'approved' AND d.online AND d.lat IS NOT NULL
@@ -757,7 +827,14 @@ export async function dispatchTrip(tripId: string): Promise<'offered' | 'waiting
       [tripId, t.kind === 'courier', t.has_pet, t.needs_wheelchair, t.passengers, t.women_driver_pref, t.zone_id, config.dispatch.offerGraceS], c);
 
     const pickup = { lat: t.pickup_lat, lng: t.pickup_lng };
+    // Round 28: community routes go only to drivers who said yes to long trips; the trip back is offered first to the driver of the
+    // trip there; an EV needs range for the drive home too (unless it can charge at the community).
+    const reg = (t.fare_breakdown?.regional ?? null) as RegionalInfo | null;
+    const pairDriver = reg?.return_leg && reg.pair_trip_id
+      ? (await one<{ driver_id: string | null }>(`SELECT driver_id FROM trips WHERE id = $1`, [reg.pair_trip_id], c))?.driver_id ?? null : null;
+    const radiusM = (reg?.direction === 'back' ? reg.road_km * 1.3 + config.dispatch.searchRadiusKm : config.dispatch.searchRadiusKm) * 1000;
     const ranked = candidates
+      .filter((d) => !reg || d.long_trips)
       .map((d) => {
         const toPickup = haversine({ lat: d.lat, lng: d.lng }, pickup) * 1.3;
         // EVs only: remaining range = rated range × battery % × heat derate. Need pickup + trip + return-to-base reserve.
@@ -765,14 +842,15 @@ export async function dispatchTrip(tripId: string): Promise<'offered' | 'waiting
         let rangeOk = true;
         if (isEv(d.fuel_type) && d.range_km != null) {
           const rangeM = (d.range_km * 1000 * (d.battery_pct ?? 100) / 100) * config.dispatch.rangeDerate;
-          const needM = toPickup + t.est_distance_m + config.dispatch.reserveKm * 1000;
+          const needM = reg ? rangeNeededM({ toPickupM: toPickup, tripM: t.est_distance_m, info: reg, reserveKm: config.dispatch.reserveKm })
+            : toPickup + t.est_distance_m + config.dispatch.reserveKm * 1000;
           rangeOk = rangeM >= needM;
         }
         // Green cars (electric & hybrids) are offered first: their distance counts as greenBonusM shorter.
-        const score = toPickup - (isGreen(d.fuel_type) ? config.dispatch.greenBonusM : 0);
+        const score = (pairDriver && d.user_id === pairDriver ? -1e9 : 0) + toPickup - (isGreen(d.fuel_type) ? config.dispatch.greenBonusM : 0);
         return { ...d, toPickup, rangeOk, score };
       })
-      .filter((d) => d.toPickup <= config.dispatch.searchRadiusKm * 1000 && d.rangeOk)
+      .filter((d) => d.toPickup <= radiusM && d.rangeOk)
       .sort((a, b) => a.score - b.score);
 
     const pick = ranked[0];
@@ -798,6 +876,7 @@ export async function dispatchTrip(tripId: string): Promise<'offered' | 'waiting
       assistance_animal: t.assistance_animal, needs_wheelchair: t.needs_wheelchair, passengers: t.passengers,
       payment_method: t.payment_method, notes: t.notes, rider_needs: riderNeeds(ru?.accessibility, t.kind),
       run, pickup_window: t.pickup_window_end ? { from: t.scheduled_for, to: t.pickup_window_end } : null,
+      regional: reg,
     };
     setImmediate(() => toUser(pick.user_id, 'offer.new', offer));
     return 'offered';
@@ -920,8 +999,10 @@ export async function dispatchTick() {
       }).catch((e) => logError('missed booking', e));
     }
 
+    // Round 28: a community trip back starts in the community, so it is released early enough for the driver to drive out.
     const due = await q(
-      `SELECT id FROM trips WHERE status = 'scheduled' AND scheduled_for <= now() + make_interval(mins => ${lead})
+      `SELECT id FROM trips WHERE status = 'scheduled' AND scheduled_for <= now() + make_interval(mins => ${lead}
+           + CASE WHEN fare_breakdown->'regional'->>'direction' = 'back' THEN coalesce((fare_breakdown->'regional'->>'minutes')::int, 0) + 30 ELSE 0 END)
          AND ${until} >= now() - make_interval(mins => $2) ORDER BY scheduled_for LIMIT 50`,
       [config.dispatch.scheduledLeadMin, config.dispatch.scheduledMissedMin]);
     for (const d of due) await releaseBooking(d.id).catch((e) => logError('release booking', e));
@@ -939,6 +1020,8 @@ export async function dispatchTick() {
     await biz.runRecurringIfDue().catch((e) => logError('recurring trips', e));
     // Round 27: owner weekly summary by email (off until switched on in Insights → Settings and Resend is set up).
     await (await import('./insights.js')).runOwnerWeeklyIfDue().catch((e) => logError('owner weekly', e));
+    // Round 28: held shuttle seats that expired; long trips and shuttles that missed a check-in or are overdue.
+    await runRegionalChecks().catch((e) => logError('regional checks', e));
 
     const open = await q(`SELECT id FROM trips WHERE status = 'requested' ORDER BY requested_at LIMIT 50`);
     for (const t of open) await dispatchTrip(t.id).catch((e) => logError('dispatch', e));
@@ -1407,7 +1490,8 @@ export async function completeTrip(driverId: string, tripId: string, input: Comp
     if (returned) {
       final = t.quote_cents + await returnFeeFor(c, t);
     } else {
-      const rule = actualM ? await loadRule(t.service, c) : null;
+      // Community routes are a fixed price: no route-change adjustment.
+      const rule = actualM && !t.fare_breakdown?.regional ? await loadRule(t.service, c) : null;
       let extra = rule ? routeChangeExtra({ quoteCents: t.quote_cents, estDistanceM: t.est_distance_m, actualDistanceM: actualM, perKmCents: rule.per_km_cents, service: t.service }) : 0;
       let label = ROUTE_CHANGE_LABEL;
       if (extra > 0 && t.payment_method === 'wallet') {

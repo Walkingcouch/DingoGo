@@ -785,7 +785,7 @@ export default async function adminRoutes(app: FastifyInstance) {
   // Round 19: hotels, visitor centres and tour desks book tours for guests (commission, billed to a linked business account).
   crud(app, 'partners', 'partners', ['name', 'kind', 'address', 'lat', 'lng', 'phone', 'email', 'logo_url', 'aboriginal_owned', 'settlement_cents_per_redemption', 'active',
     'tour_commission_pct', 'corporate_account_id'], { order: 'name', prepare: async (d) => {
-      const v = parse(z.object({ kind: z.enum(['cafe', 'shop', 'community', 'hotel', 'visitor_centre', 'tour_desk', 'other']).optional(),
+      const v = parse(z.object({ kind: z.enum(['cafe', 'shop', 'community', 'community_store', 'hotel', 'visitor_centre', 'tour_desk', 'other']).optional(),
         tour_commission_pct: z.number().min(0).max(50).nullable().optional(), corporate_account_id: z.string().uuid().nullable().optional() }).passthrough(), d);
       if (v.tour_commission_pct === null) delete v.tour_commission_pct;
       if (!(await toursReady())) {

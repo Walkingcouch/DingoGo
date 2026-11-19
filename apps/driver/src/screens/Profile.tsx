@@ -85,6 +85,10 @@ export function Profile({ onSignOut }: { onSignOut: () => void }) {
         <h2 style={{ marginTop: 0 }}>Trip preferences</h2>
         <label className="dg-check"><input type="checkbox" checked={!!d?.accepts_courier} onChange={(e) => pref('accepts_courier', e.target.checked)} /><span>Accept parcel deliveries</span></label>
         <label className="dg-check"><input type="checkbox" checked={!!d?.accepts_pets} onChange={(e) => pref('accepts_pets', e.target.checked)} /><span>Accept pet-friendly rides (needs a pet-ready car)</span></label>
+        {d && 'long_trips' in d && (<>
+          <label className="dg-check"><input type="checkbox" checked={!!d.long_trips} onChange={(e) => pref('long_trips', e.target.checked)} /><span>Long trips to communities (Ntaria, Ltyentye Apurte) and community shuttles</span></label>
+          <p className="dg-muted" style={{ fontSize: 'var(--fs-sm)', margin: '0 0 8px' }}>Fixed prices that cover the drive back. Parts of the road have no mobile coverage: you check in on the way. Electric cars only get these trips with the range to get home.</p>
+        </>)}
         <p className="dg-muted" style={{ fontSize: 'var(--fs-sm)', margin: '8px 0 4px' }}>
           {d?.female_driver
             ? 'Women-driver matching is on. Riders who ask for a woman driver can be matched with you.'

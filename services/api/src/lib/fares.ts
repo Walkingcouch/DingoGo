@@ -29,6 +29,8 @@ export interface FareContext {
   pointsToRedeem?: number;          // 100 points = $1, capped at 50% of fare
   availablePoints?: number;
   fixedPriceCents?: number;         // tours: package price replaces metered fare
+  /** Round 28: the line shown for a fixed price (community routes); tours say "(package price)". */
+  fixedPriceLabel?: string;
   /** Passenger levy of the pickup zone's state (jurisdictions.levy_cents / levy_label). Applies only to services whose
    *  fare rule carries a levy (passenger services); replaces rule.levy_cents. Omit to use rule.levy_cents ("NT passenger levy"). */
   levy?: { cents: number; label: string } | null;
@@ -81,7 +83,7 @@ export function quoteFare(rule: FareRule, ctx: FareContext): FareQuote {
   let trip: number;
   if (ctx.fixedPriceCents != null) {
     trip = ctx.fixedPriceCents;
-    lines.push({ label: `${rule.label} (package price)`, cents: trip });
+    lines.push({ label: ctx.fixedPriceLabel ?? `${rule.label} (package price)`, cents: trip });
   } else {
     lines.push({ label: 'Base fare', cents: rule.base_cents });
     lines.push({ label: `Distance (${km.toFixed(1)} km)`, cents: Math.round(km * rule.per_km_cents) });

@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { DriverLostItems, Icon, STATUS_LABEL, SERVICE_ICON_NAME, SafetyReportForm, TripHelp, dayName, get, money, statusTone, time, useLoad } from '@dingogo/shared';
 import { Sheet } from '../Sheet';
+import { DriverShuttles } from './Shuttles';
 
 export function Trips() {
   const { data, error, loading } = useLoad(() => get('/driver/trips'));
@@ -11,6 +12,7 @@ export function Trips() {
     <div className="screen" tabIndex={0} aria-label="Your trips">
       <h1>Trips</h1>
       <p className="dg-muted" style={{ marginTop: 0 }}>Questions about a trip? Tap Get help. Everything else is in <Link to="/help">Help</Link>.</p>
+      <DriverShuttles />
       <DriverLostItems />
       {error && <p className="dg-error">{error}</p>}
       {loading && !data && <p className="dg-muted">Loading…</p>}

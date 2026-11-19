@@ -6212,3 +6212,307 @@ test('round 27: supply and demand, cohorts, forecast, pricing simulator and the 
   assert.equal(d.today.completed, sql.n);
   assert.equal(d.daily[d.daily.length - 1].trips, sql.n);
 });
+
+// ───────────── Round 28: remote and regional reach ─────────────
+import { runRegionalChecks, resetRegionalReady } from '../src/services/regional.js';
+const NTARIA_PT = { lat: -23.9425, lng: 132.7780, address: 'Ntaria (Hermannsburg)' };
+const ORMISTON = { lat: -23.6326, lng: 132.7270, address: 'Ormiston Gorge' };
+const regionalSms = async (to: string) => { await flushBackground(); return comms.sms.filter((s) => s.params.To === to).map((s) => s.params.Body); };
+async function textIn(from: string, body: string) {
+  const r = await twilioHook('/comms/twilio/sms', { From: from, To: '+61480000111', Body: body, MessageSid: `SM${crypto.randomUUID().replace(/-/g, '')}` });
+  assert.equal(r.status, 200);
+  return (/<Message>([\s\S]*)<\/Message>/.exec(r.body)?.[1] ?? '').replace(/&apos;/g, "'").replace(/&amp;/g, '&');
+}
+
+test('round 28: community trips — fixed price, out-of-town limit, notice, return bundle, long-trip drivers only, EV range home, same driver back, check-ins and overdue alert, no route-change extra', async () => {
+  await clearOpenTrips();
+  const rider = await one('SELECT id, wallet_cents FROM users WHERE phone = $1', ['+61400000100']);
+  await q('UPDATE users SET wallet_cents = 100000 WHERE id = $1', [rider.id]);
+  const d1 = (await one(`SELECT user_id, vehicle_id FROM drivers d JOIN users u ON u.id = d.user_id WHERE u.phone = '+61400000011'`));
+  const d3 = (await one(`SELECT user_id, vehicle_id FROM drivers d JOIN users u ON u.id = d.user_id WHERE u.phone = '+61400000013'`));
+  const ranges = await q('SELECT id, range_km FROM vehicles WHERE id = ANY($1)', [[d1.vehicle_id, d3.vehicle_id]]);
+  try {
+    // A metered fare doesn't go 120 km out of town; a community route has its fixed price (levy on top, no booking fee).
+    assert.equal((await call('POST', '/quotes', 'rider', { service: 'ride', pickup: TODD_MALL, dropoff: ORMISTON })).error, 'too_far_for_town_fare');
+    const qt = await call('POST', '/quotes', 'rider', { service: 'ride', pickup: TODD_MALL, dropoff: NTARIA_PT });
+    assert.equal(qt.status, 200, JSON.stringify(qt));
+    assert.equal(qt.quote.lines[0].label, 'Fixed price: Alice Springs to Ntaria (Hermannsburg)');
+    assert.equal(qt.quote.lines[0].cents, 26000, 'fixed price (a DingoGo Pass discount still applies, as on tours)');
+    assert.ok(!qt.quote.lines.some((l: any) => /Booking fee|Distance|Late-night/.test(l.label)));
+    assert.equal(qt.quote.regional.corridor, 'ntaria');
+    assert.ok(qt.quote.regional.coverage_gaps.length && /permit/i.test(qt.quote.regional.permit_note));
+    const back = await call('POST', '/quotes', 'rider', { service: 'ride', pickup: NTARIA_PT, dropoff: TODD_MALL });
+    assert.equal(back.quote.regional.direction, 'back', 'a pickup in the community is fine on a route');
+    assert.equal((await call('POST', '/quotes', 'rider', { service: 'ride', pickup: NTARIA_PT, dropoff: ORMISTON })).error, 'outside_service_area');
+    // Booked ahead, with the trip back at the return price.
+    const base = { kind: 'ride', service: 'ride', pickup: TODD_MALL, dropoff: NTARIA_PT, payment_method: 'wallet' };
+    assert.equal((await call('POST', '/trips', 'rider', base)).error, 'long_trip_notice');
+    assert.equal((await call('POST', '/trips', 'rider', { ...base, scheduled_for: inHours(1) })).error, 'long_trip_notice');
+    assert.equal((await call('POST', '/trips', 'rider', { ...base, scheduled_for: inHours(3), return_scheduled_for: inHours(4) })).error, 'return_too_soon');
+    assert.equal((await call('POST', '/trips', 'rider', { kind: 'ride', service: 'ride', pickup: TODD_MALL, dropoff: HOSPITAL, payment_method: 'wallet',
+      scheduled_for: inHours(3), return_scheduled_for: inHours(8) })).error, 'return_not_regional');
+    const t = await call('POST', '/trips', 'rider', { ...base, scheduled_for: inHours(3), return_scheduled_for: inHours(8) });
+    assert.equal(t.status, 201, JSON.stringify(t));
+    const out = await one(`SELECT * FROM trips WHERE id = $1`, [t.trip.id]);
+    const ret = await one(`SELECT * FROM trips WHERE id = $1`, [out.fare_breakdown.regional.pair_trip_id]);
+    assert.equal(ret.fare_breakdown.regional.pair_trip_id, out.id);
+    assert.equal(ret.fare_breakdown.regional.return_leg, true);
+    assert.equal(ret.pickup_address, 'Ntaria (Hermannsburg)');
+    assert.deepEqual([out.fare_breakdown.lines[0].cents, ret.fare_breakdown.lines[0].cents], [26000, 18200], 'trip back is 30% off');
+    assert.equal(Number((await one('SELECT wallet_cents FROM users WHERE id = $1', [rider.id])).wallet_cents), 100000 - out.quote_cents - ret.quote_cents);
+    assert.equal(out.est_distance_m, 128000);
+
+    // Released: only drivers who said yes to long trips, and an EV needs the range to get home.
+    await onlyOnline(['d1', 'd3']);
+    await q(`UPDATE trips SET scheduled_for = now() + interval '5 minutes' WHERE id = $1`, [out.id]);
+    await dispatchTick();
+    assert.equal((await one(`SELECT status FROM trips WHERE id = $1`, [out.id])).status, 'requested');
+    assert.equal((await one(`SELECT count(*)::int n FROM trip_offers WHERE trip_id = $1`, [out.id])).n, 0, 'nobody opted in');
+    assert.equal((await call('PATCH', '/driver/me', 'd1', { long_trips: true })).ok, true);
+    await q('UPDATE vehicles SET range_km = 300 WHERE id = $1', [d1.vehicle_id]);
+    await dispatchTick();
+    assert.equal((await one(`SELECT count(*)::int n FROM trip_offers WHERE trip_id = $1`, [out.id])).n, 0, 'not enough range for 128 km there and back');
+    await q('UPDATE vehicles SET range_km = 650 WHERE id = ANY($1)', [[d1.vehicle_id, d3.vehicle_id]]);
+    await dispatchTick();
+    const offer = await waitForOffer('d1');
+    assert.equal(offer.trip_id, out.id);
+    assert.equal(offer.regional.empty_return_km, 128);
+    assert.ok(offer.regional.checkins.length >= 3);
+    assert.equal((await call('GET', '/driver/offers', 'd3')).offers.length, 0, 'd3 has not opted in');
+    assert.equal((await call('POST', `/driver/offers/${out.id}/accept`, 'd1')).trip.status, 'accepted');
+    await call('POST', `/driver/trips/${out.id}/arrive`, 'd1');
+    assert.equal((await call('POST', `/driver/trips/${out.id}/start`, 'd1', { pin: out.verify_pin })).trip.status, 'in_progress');
+
+    // Check-ins on the road; a missed one is a warning for ops, an overdue trip an SOS alert — each once.
+    const ci = await call('POST', `/driver/trips/${out.id}/checkin`, 'd1', { lat: -23.8, lng: 133.3 });
+    assert.equal(ci.ok, true);
+    assert.equal((await call('POST', `/driver/trips/${out.id}/checkin`, 'd3', {})).status, 404);
+    await q(`UPDATE trips SET started_at = now() - interval '5 hours' WHERE id = $1`, [out.id]);
+    await q(`UPDATE trip_events SET at = now() - interval '5 hours' WHERE trip_id = $1 AND type = 'regional_checkin'`, [out.id]);
+    await q(`DELETE FROM trip_track WHERE trip_id = $1`, [out.id]);
+    const c1 = await runRegionalChecks({ force: true });
+    assert.ok(c1!.missed >= 1 && c1!.overdue >= 1, JSON.stringify(c1));
+    const c2 = await runRegionalChecks({ force: true });
+    assert.equal((await one(`SELECT count(*)::int n FROM trip_events WHERE trip_id = $1 AND type = 'regional_overdue'`, [out.id])).n, 1);
+    assert.equal((await one(`SELECT count(*)::int n FROM trip_events WHERE trip_id = $1 AND type = 'regional_checkin_missed'`, [out.id])).n, 1);
+    assert.equal(c2!.overdue, 0);
+    assert.match((await one(`SELECT message FROM sos_alerts WHERE trip_id = $1`, [out.id])).message, /Long trip overdue/);
+    await q(`UPDATE sos_alerts SET status = 'resolved' WHERE trip_id = $1`, [out.id]);
+    // Fixed price: a longer drive than the road distance costs nothing extra.
+    const done = await call('POST', `/driver/trips/${out.id}/complete`, 'd1', { actual_distance_m: 190000 });
+    assert.equal(done.trip.final_cents, out.quote_cents, JSON.stringify(done.trip?.fare_breakdown?.lines));
+
+    // The trip back goes first to the driver who took the rider out, even with another long-trip driver nearer.
+    assert.equal((await call('PATCH', '/driver/me', 'd3', { long_trips: true })).ok, true);
+    await q(`UPDATE drivers SET lat = -23.8067, lng = 133.9022, last_seen_at = now() WHERE user_id = $1`, [d1.user_id]);
+    await q(`UPDATE drivers SET lat = -23.6984, lng = 133.8700, last_seen_at = now() WHERE user_id = $1`, [d3.user_id]);
+    await q(`UPDATE trips SET scheduled_for = now() + interval '90 minutes' WHERE id = $1`, [ret.id]);
+    await dispatchTick();
+    assert.equal((await one(`SELECT status FROM trips WHERE id = $1`, [ret.id])).status, 'requested', 'released early: the driver has to drive out first');
+    assert.equal(await offeredTo(ret.id, ['d1', 'd3']), 'd1');
+    // The check-in route is only for community trips.
+    assert.equal((await call('POST', `/driver/trips/${rideId}/checkin`, 'd1', {})).error, 'not_long_trip');
+  } finally {
+    for (const r of ranges) await q('UPDATE vehicles SET range_km = $2 WHERE id = $1', [r.id, r.range_km]);
+    await q('UPDATE drivers SET long_trips = false');
+    await q('UPDATE users SET wallet_cents = $2 WHERE id = $1', [rider.id, rider.wallet_cents]);
+    await clearOpenTrips();
+    await onlyOnline([]);
+  }
+});
+
+test('round 28: shuttles, store top-ups, booking by text and the low-data page, parcels to a community store, the manifest, check-ins and driver pay', async () => {
+  await withComms(async () => {
+    const rider = await one('SELECT id, name, wallet_cents FROM users WHERE phone = $1', ['+61400000100']);
+    await q('UPDATE users SET wallet_cents = 20000 WHERE id = $1', [rider.id]);
+    const store = await one(`INSERT INTO partners (name, kind, address) VALUES ('Ltyentye Apurte community store', 'community_store', 'Santa Teresa NT') RETURNING id`);
+    await q(`INSERT INTO users (phone, name, role, partner_id, referral_code) VALUES ('+61400002800', 'Store Counter', 'partner', $1, 'STORE2800') ON CONFLICT DO NOTHING`, [store.id]);
+    await login('store', '+61400002800', 'partner');
+    try {
+      // Routes policy: the store looks after parcels at its pickup point.
+      const admin0 = await call('GET', '/admin/regional', 'admin');
+      assert.equal(admin0.ready, true);
+      const policy = admin0.policy;
+      policy.corridors.find((c: any) => c.id === 'ltyentye-apurte').pickup_points.find((p: any) => p.id === 'santa-teresa-store').partner_id = store.id;
+      assert.equal((await call('PUT', '/admin/regional/policy', 'admin', { policy: { ...policy, max_metered_km: 1 } })).error, 'invalid_policy');
+      assert.equal((await call('PUT', '/admin/regional/policy', 'admin', { policy })).status, 200);
+      const pub = await call('GET', '/public/regional');
+      assert.equal(pub.corridors.length, 2);
+      assert.equal(pub.corridors[0].pickup_points[0].partner_id, undefined, 'no partner ids in public');
+
+      // Timetable for two weeks, once.
+      const s1 = await call('POST', '/admin/regional/runs/schedule', 'admin', { days: 14 });
+      assert.ok(s1.created >= 8, JSON.stringify(s1));
+      assert.equal((await call('POST', '/admin/regional/runs/schedule', 'admin', { days: 14 })).created, 0);
+      const runs = (await call('GET', '/admin/regional', 'admin')).runs;
+      const run = runs.find((r: any) => r.corridor === 'ltyentye-apurte' && r.direction === 'out');
+      const backRun = runs.find((r: any) => r.corridor === 'ltyentye-apurte' && r.direction === 'back');
+      assert.equal(run.label, 'Alice Springs to Ltyentye Apurte (Santa Teresa)');
+      assert.equal((await call('PATCH', `/admin/regional/runs/${run.id}`, 'admin', { seats: 2 })).run.seats, 2);
+      assert.equal((await call('PATCH', `/admin/regional/runs/${run.id}`, 'admin', { driver_id: (await one(`SELECT id FROM users WHERE phone = '+61400000012'`)).id })).error, 'driver_not_opted_in');
+
+      // A rider books a seat in the app with credit.
+      const seat = await call('POST', '/regional/bookings', 'rider', { run_id: run.id, kind: 'seat', seats: 1 });
+      assert.equal(seat.status, 201, JSON.stringify(seat));
+      assert.equal(seat.booking.price_cents, 3000);
+      assert.equal(seat.booking.pickup_name, 'Todd Mall (Parsons St end)');
+      assert.equal(Number((await one('SELECT wallet_cents FROM users WHERE id = $1', [rider.id])).wallet_cents), 17000);
+      assert.equal((await call('POST', '/regional/bookings', 'rider', { run_id: run.id, kind: 'seat', seats: 2 })).error, 'run_full');
+
+      // Community store: cash for credit, a receipt by text, undo a mistake, limits; a café can't.
+      assert.equal((await call('POST', '/partner/topups', 'store', { phone: '0400 002 801', cents: 5000, confirm: true })).error, 'name_required');
+      const tu = await call('POST', '/partner/topups', 'store', { phone: '0400 002 801', cents: 5000, name: 'Rosie Kngwarraye', confirm: true });
+      assert.equal(tu.status, 201, JSON.stringify(tu));
+      assert.match((await regionalSms('+61400002801')).at(-1)!, /\$50\.00 credit added at Ltyentye Apurte community store/);
+      assert.equal((await call('POST', `/partner/topups/${tu.topup.id}/void`, 'store')).ok, true);
+      assert.equal((await call('POST', `/partner/topups/${tu.topup.id}/void`, 'store')).error, 'already_voided');
+      assert.equal((await call('POST', '/partner/topups', 'store', { phone: '0400 002 801', cents: 25000, confirm: true })).error, 'topup_amount');
+      assert.equal((await call('POST', '/partner/topups', 'store', { phone: '0400 002 801', cents: 5000, confirm: true })).status, 201);
+      assert.equal((await call('POST', '/partner/topups', 'cafe', { phone: '0400 002 801', cents: 5000, confirm: true })).status, 403);
+      const mine = await call('GET', '/partner/topups', 'store');
+      assert.deepEqual([mine.topups.length, mine.total_cents, mine.owed_cents], [2, 5000, 5000]);
+
+      // Booking by text: hold, YES, list, balance, cancel. The held seat counts against the run.
+      const R = '+61400002801';
+      const hold = await textIn(R, 'BUS SANTA TERESA');
+      assert.match(hold, /1 seat Alice Springs to Ltyentye Apurte \(Santa Teresa\), .* \$30\.00 from your credit\. Reply YES within 30 min/);
+      assert.equal((await call('POST', '/regional/bookings', 'rider', { run_id: run.id, kind: 'seat', seats: 1 })).error, 'run_full', 'held seat is taken');
+      const yes = await textIn(R, 'yes');
+      assert.match(yes, /booked SB-[A-Z0-9]{6}, 1 seat .* Credit left \$20\.00/);
+      const ref = /(SB-[A-Z0-9]{6})/.exec(yes)![1];
+      assert.match(await textIn(R, 'MY BUS'), new RegExp(ref));
+      assert.match(await textIn(R, 'BAL'), /\$20\.00/);
+      assert.match(await textIn(R, `CANCEL ${ref}`), new RegExp(`${ref} cancelled\\. \\$30\\.00 is back`));
+      assert.match(await textIn(R, 'YES'), /nothing is waiting/);
+      assert.match(await textIn('+61400002802', 'BUS NTARIA'), /needs \$40\.00 DingoGo credit and you have \$0\.00/);
+      assert.match(await textIn(R, 'bus nowhere'), /BUS NTARIA FRI 2/);
+      assert.match(await textIn(R, 'BUS SANTA TERESA 9'), /1 to 4 seats/);
+      assert.equal(await textIn(R, 'hello there'), '', 'other texts to a booking number get no reply');
+
+      // Low-data page: a few KB, no scripts; booking there is confirmed by text (same answer whether or not the number has credit).
+      const page = await app.inject({ method: 'GET', url: '/lite' });
+      assert.equal(page.statusCode, 200);
+      assert.match(String(page.headers['content-type']), /text\/html/);
+      assert.ok(page.body.length < 12_000, `${page.body.length} bytes`);
+      assert.doesNotMatch(page.body, /<script/i);
+      assert.match(page.body, /Ltyentye Apurte/);
+      const form = (b: Record<string, string>, ip: string) => app.inject({ method: 'POST', url: '/lite/book', remoteAddress: ip,
+        headers: { 'content-type': 'application/x-www-form-urlencoded' }, payload: new URLSearchParams(b).toString() });
+      const lb = await form({ run_id: run.id, seats: '1', phone: '0400 002 801' }, '10.28.0.1');
+      assert.equal(lb.statusCode, 200, lb.body.slice(0, 300));
+      assert.match(lb.body, /We have sent a text to 0400 xxx x01/);
+      assert.match((await regionalSms(R)).at(-1)!, /Reply YES within 30 min/);
+      assert.match(await textIn(R, 'no'), /not booked/);
+      const lb2 = await form({ run_id: run.id, seats: '1', phone: '0400 002 803' }, '10.28.0.2');
+      assert.match(lb2.body, /We have sent a text to 0400 xxx x03/);
+      assert.match((await regionalSms('+61400002803')).at(-1)!, /needs \$30\.00 DingoGo credit/);
+      assert.equal((await form({ run_id: 'nope', seats: '1', phone: '0400 002 803' }, '10.28.0.3')).statusCode, 400);
+
+      // A parcel for the community store: checked, the person collecting it is told.
+      const pBase = { run_id: run.id, kind: 'parcel', dropoff_point: 'santa-teresa-store',
+        parcel: { size: 'S', description: 'Medicine box', recipient_name: 'Nancy Hayes', recipient_phone: '0400 002 804', prohibited_ok: false } };
+      assert.equal((await call('POST', '/regional/bookings', 'rider', pBase)).error, 'prohibited_check');
+      assert.equal((await call('POST', '/regional/bookings', 'rider', { ...pBase, dropoff_point: 'alice-todd-mall', parcel: { ...pBase.parcel, prohibited_ok: true } })).error, 'invalid_point');
+      const parcel = await call('POST', '/regional/bookings', 'rider', { ...pBase, parcel: { ...pBase.parcel, prohibited_ok: true } });
+      assert.equal(parcel.status, 201, JSON.stringify(parcel));
+      assert.equal(parcel.booking.price_cents, 1200);
+      assert.match((await regionalSms('+61400002804')).at(-1)!, /sending you a parcel .* to Ltyentye Apurte community store/);
+
+      // The driver: opted in, assigned, manifest, leaves, boards, leaves the parcel at the store; the store hands it over with the code.
+      assert.equal((await call('PATCH', '/driver/me', 'd2', { long_trips: true })).ok, true);
+      const d2 = (await one(`SELECT id FROM users WHERE phone = '+61400000012'`)).id;
+      assert.equal((await call('PATCH', `/admin/regional/runs/${run.id}`, 'admin', { driver_id: d2 })).run.driver_id, d2);
+      assert.ok((await call('GET', '/driver/regional/runs', 'd2')).runs.some((r: any) => r.id === run.id));
+      assert.equal((await call('GET', `/driver/regional/runs/${run.id}/manifest`, 'd1')).status, 404, 'only the run driver');
+      const m = await call('GET', `/driver/regional/runs/${run.id}/manifest`, 'd2');
+      assert.equal(m.seats.length, 1);
+      assert.equal(m.seats[0].name, rider.name.split(' ')[0]);
+      assert.equal(m.seats[0].phone, null, 'driver sees no phone numbers');
+      assert.equal(m.parcels[0].recipient, 'Nancy');
+      assert.ok(m.route.coverage_gaps.length && m.route.permit_note);
+      assert.equal((await call('POST', `/driver/regional/runs/${run.id}/depart`, 'd2', {})).error, 'run_too_early');
+      await q(`UPDATE regional_runs SET departs_at = now() + interval '30 minutes' WHERE id = $1`, [run.id]);
+      assert.equal((await call('POST', `/driver/regional/bookings/${m.parcels[0].id}/at-store`, 'd2')).error, 'run_state');
+      assert.equal((await call('POST', `/driver/regional/runs/${run.id}/depart`, 'd2', {})).run.status, 'departed');
+      assert.equal((await call('POST', `/driver/regional/bookings/${m.seats[0].id}/board`, 'd2', { status: 'boarded' })).booking.status, 'boarded');
+      assert.equal((await call('POST', `/driver/regional/bookings/${m.parcels[0].id}/at-store`, 'd2')).booking.status, 'at_store');
+      const code = /Collection code (\d{6})/.exec((await regionalSms('+61400002804')).at(-1)!)![1];
+      assert.equal((await call('POST', '/partner/regional/collect', 'store', { code: code === '000000' ? '111111' : '000000' })).error, 'code_invalid');
+      assert.equal((await call('POST', '/partner/regional/collect', 'cafe', { code })).error, 'code_invalid', 'another partner can’t hand it over');
+      assert.equal((await call('POST', '/partner/regional/collect', 'store', { code })).parcel.recipient, 'Nancy');
+      assert.equal((await call('POST', '/partner/regional/collect', 'store', { code })).error, 'code_invalid', 'once');
+      assert.equal((await call('GET', '/partner/regional/parcels', 'store')).parcels[0].status, 'collected');
+
+      // Out of coverage too long: ops warned once; overdue: an SOS alert once. A check-in clears the warning.
+      await q(`UPDATE regional_runs SET departed_at = now() - interval '6 hours', last_checkin_at = now() - interval '6 hours' WHERE id = $1`, [run.id]);
+      const c1 = await runRegionalChecks({ force: true });
+      assert.ok(c1!.missed >= 1 && c1!.overdue >= 1, JSON.stringify(c1));
+      assert.equal((await runRegionalChecks({ force: true }))!.overdue, 0);
+      assert.equal((await one(`SELECT count(*)::int n FROM sos_alerts WHERE message LIKE $1`, [`Shuttle ${run.ref} overdue%`])).n, 1);
+      await q(`UPDATE sos_alerts SET status = 'resolved' WHERE message LIKE $1`, [`Shuttle ${run.ref} overdue%`]);
+      assert.equal((await call('POST', `/driver/regional/runs/${run.id}/checkin`, 'd2', { lat: -24, lng: 134 })).run.status, 'departed');
+      // Done: the driver is paid the run pay for the leg (more than 75% of $42 carried).
+      assert.equal((await call('POST', `/driver/regional/runs/${run.id}/complete`, 'd2', {})).run.status, 'completed');
+      assert.equal((await one(`SELECT amount_cents FROM driver_ledger WHERE driver_id = $1 AND kind = 'shuttle_run' ORDER BY id DESC LIMIT 1`, [d2])).amount_cents, 11000);
+      assert.equal((await call('GET', '/driver/earnings?days=7', 'd2')).summary.shuttle_cents >= 11000, true);
+      const csv = await rawReq('GET', `/admin/regional/runs/${run.id}/manifest?format=csv`, 'admin');
+      assert.match(csv.type, /text\/csv/);
+      assert.match(csv.body.toString(), /^type,ref,name/);
+
+      // Ops: a run cancelled gives everyone their credit back by text; a caller's details; store cash settled.
+      const b2 = await call('POST', '/regional/bookings', 'rider', { run_id: backRun.id, kind: 'seat', seats: 2, pickup_point: 'santa-teresa-store' });
+      assert.equal(b2.status, 201, JSON.stringify(b2));
+      const before = Number((await one('SELECT wallet_cents FROM users WHERE id = $1', [rider.id])).wallet_cents);
+      assert.equal((await call('PATCH', `/admin/regional/runs/${backRun.id}`, 'admin', { status: 'cancelled' })).run.status, 'cancelled');
+      assert.equal(Number((await one('SELECT wallet_cents FROM users WHERE id = $1', [rider.id])).wallet_cents), before + 6000);
+      assert.match((await regionalSms('+61400000100')).at(-1)!, /shuttle .* is cancelled .* \$60\.00 is back/);
+      assert.equal((await call('POST', '/admin/regional/bookings', 'admin', { phone: '0400 002 805', name: 'Elsie Test', run_id: run.id, kind: 'seat', seats: 1 })).error, 'run_closed');
+      const caller = await call('GET', '/admin/callers?phone=0400%20002%20801', 'admin');
+      assert.equal(caller.user.name, 'Rosie Kngwarraye');
+      assert.equal(caller.user.wallet_cents, 5000);
+      assert.ok(caller.bookings.length >= 1);
+      const month = new Date(Date.now() + 9.5 * 3600e3).toISOString().slice(0, 7);
+      const sum = await call('GET', `/admin/regional/topups?month=${month}`, 'admin');
+      assert.equal(sum.stores.find((x: any) => x.partner_id === store.id).owed_cents, 5000);
+      assert.deepEqual(await call('POST', '/admin/regional/topups/settle', 'admin', { partner_id: store.id, month, ref: 'EFT 1234' }).then((r) => [r.settled, r.cents]), [1, 5000]);
+      assert.equal((await call('GET', '/partner/topups', 'store')).owed_cents, 0);
+      assert.equal((await call('PUT', '/admin/regional/policy', 'admin', { policy })).status, 200);
+    } finally {
+      await q(`DELETE FROM settings WHERE key = 'regional_policy'`); invalidateConfig('setting:regional_policy');
+      await q('UPDATE drivers SET long_trips = false');
+      await q(`UPDATE regional_runs SET status = 'cancelled' WHERE status IN ('open','closed','departed')`);
+      await q('UPDATE users SET wallet_cents = $2 WHERE id = $1', [rider.id, rider.wallet_cents]);
+      await q(`UPDATE partners SET active = false WHERE id = $1`, [store.id]);
+    }
+  });
+});
+
+test('before migration 028: routes, prices and the low-data page still show; long trips, shuttles, store top-ups and opt-in say migration_pending; texts get the how-to', async () => {
+  const tables = ['regional_bookings', 'regional_runs', 'partner_topups'];
+  for (const t of tables) await q(`ALTER TABLE ${t} RENAME TO ${t}_off`);
+  await q(`ALTER TABLE drivers RENAME COLUMN long_trips TO long_trips_off`);
+  resetRegionalReady();
+  try {
+    const pub = await call('GET', '/public/regional');
+    assert.deepEqual([pub.ready, pub.corridors.length, pub.runs.length], [false, 2, 0]);
+    assert.equal((await call('GET', '/regional', 'rider')).ready, false);
+    assert.equal((await app.inject({ method: 'GET', url: '/lite' })).statusCode, 200);
+    assert.equal((await call('POST', '/quotes', 'rider', { service: 'ride', pickup: TODD_MALL, dropoff: NTARIA_PT })).quote.lines[0].cents, 26000);
+    assert.equal((await call('POST', '/trips', 'rider', { kind: 'ride', service: 'ride', pickup: TODD_MALL, dropoff: NTARIA_PT, payment_method: 'wallet', scheduled_for: inHours(3) })).error, 'migration_pending');
+    assert.equal((await call('POST', '/regional/bookings', 'rider', { run_id: crypto.randomUUID(), kind: 'seat', seats: 1 })).error, 'migration_pending');
+    assert.equal((await call('PATCH', '/driver/me', 'd1', { long_trips: true })).error, 'migration_pending');
+    assert.equal((await call('PATCH', '/driver/me', 'd1', { bio: 'Local' })).ok, true, 'the rest of the profile saves');
+    assert.equal((await call('GET', '/admin/regional', 'admin')).ready, false);
+    assert.equal((await call('POST', '/admin/regional/runs/schedule', 'admin', { days: 7 })).error, 'migration_pending');
+    assert.equal((await call('GET', '/admin/callers?phone=0400000100', 'admin')).user.name.length > 0, true);
+    await withComms(async () => { assert.match(await textIn('+61400002801', 'BUS NTARIA'), /BUS NTARIA FRI 2/); });
+    // Town trips, dispatch and the BAS worksheet carry on.
+    assert.equal((await call('POST', '/quotes', 'rider', { service: 'ride', pickup: TODD_MALL, dropoff: AIRPORT })).status, 200);
+    await dispatchTick();
+    assert.equal(await runRegionalChecks({ force: true }), null);
+  } finally {
+    for (const t of tables) await q(`ALTER TABLE ${t}_off RENAME TO ${t}`);
+    await q(`ALTER TABLE drivers RENAME COLUMN long_trips_off TO long_trips`);
+    resetRegionalReady();
+  }
+});

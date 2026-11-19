@@ -64,7 +64,7 @@ function Footer() {
         <div className="foot-cols">
           <div>
             <h2>Get around</h2>
-            <ul><li><Link to="/rides">Rides</Link></li><li><Link to="/fares">Check a fare</Link></li><li><Link to="/airport">Airport transfers</Link></li><li><Link to="/hospital">Hospital and clinic trips</Link></li><li><Link to="/parcels">Send a parcel</Link></li><li><Link to="/tours">Private tours</Link></li><li><Link to="/rewards">Rewards and partner cafés</Link></li><li><Link to="/rewards#refer">Bring a friend</Link></li><li><a href={RIDER_URL}>Open the web app</a></li></ul>
+            <ul><li><Link to="/rides">Rides</Link></li><li><Link to="/fares">Check a fare</Link></li><li><Link to="/airport">Airport transfers</Link></li><li><Link to="/hospital">Hospital and clinic trips</Link></li><li><Link to="/parcels">Send a parcel</Link></li><li><Link to="/tours">Private tours</Link></li><li><a href="/lite">Community trips (low data)</a></li><li><Link to="/rewards">Rewards and partner cafés</Link></li><li><Link to="/rewards#refer">Bring a friend</Link></li><li><a href={RIDER_URL}>Open the web app</a></li></ul>
           </div>
           <div>
             <h2>Work with us</h2>

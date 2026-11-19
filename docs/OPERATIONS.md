@@ -336,6 +336,30 @@ live statement work as before; the application form, set-up, approvals, invoices
   gives 120 days of realistic history (demand by hour, weekday and season, part-time driver shifts, unfilled peaks, promos, points,
   cancellations, repeat riders) to look at the Insights pages.
 
+## 9g. Community trips, shuttles and community stores (Round 28)
+- **Migration 028** (`drivers.long_trips`, `regional_runs`, `regional_bookings`, `partner_topups`; AUTO_MIGRATE applies it). Until it is in, riders
+  see the routes and prices, long-trip and shuttle bookings say "call us", and text bookings get the how-to.
+- **Before opening a route** (admin → Community trips → Routes): confirm the road km, minutes, unsealed km and the no-coverage stretches with the
+  community and a driver who has done the drive (defaults are approximate), check the permit note with the Central Land Council and the community
+  (DingoGo's notes only say where a permit *may* be needed), agree prices and the shuttle driver pay per leg with the owners, then tick "checked".
+  Yulara stays closed until the charging and overnight-rest plan is in place.
+- **Drivers** say yes to long trips in the driver app (Profile → Trip preferences). Only they get community trips and can be put on a shuttle.
+  Electric cars get a community trip only with the range for the drive home (unless the route says they can charge there).
+- **Shuttles:** "Add the timetable" (Shuttles tab) adds each route's shuttle days for four weeks; run it weekly. Assign a driver to each, print or
+  download the manifest. Cancelling a shuttle gives everyone their credit back and texts them. The driver taps "Leaving now", marks who came, taps
+  "Left at store" for each parcel (the collector is texted a code), checks in on the way and taps "Arrived: shuttle done" (their pay goes in the ledger).
+- **Safety:** a long trip or shuttle that goes quiet for longer than the check-in time plus its longest no-coverage stretch shows a warning on the
+  live map; one well past its expected arrival raises an emergency alert in Safety. Follow the SOS runbook (call the driver, then the community
+  clinic or police if there is no answer). Ask drivers to carry water and tell someone their expected arrival.
+- **Community stores:** add the store as a partner with kind "Community store" and a partner login, and put its partner id on the route's store
+  pickup point (Routes, JSON box). The store adds credit for cash (texted receipt; "Undo" for a mistake within 15 minutes) and hands over parcels
+  with the code. The cash is DingoGo's: each month check Store cash, collect it from the store and press "Cash received" with the payment reference.
+  Ask the accountant: credit is a liability until spent, and whether shuttle seats make DingoGo the principal (the BAS worksheet shows a
+  "Community shuttles" line).
+- **Booking by text and the low-data page** need Twilio with a number that takes replies (TWILIO_FROM as a +61 number or a Messaging Service, with the
+  Messaging webhook set as in section 9 of API.md). Put the number and the words (`BUS NTARIA FRI 2`, then `YES`) on posters at community stores and
+  clinics, with the `/lite` address. Twilio treats a bare CANCEL as an opt-out, so texts say `CANCEL SB-…` with the booking ref.
+
 ## 10. Performance and load testing (Round 18)
 - **Migration 022** (indexes only, safe any time; AUTO_MIGRATE applies it). Until it is in, `/health/deep` reports it pending and
   the API runs as before, just with slower dispatch queries as trips grow.

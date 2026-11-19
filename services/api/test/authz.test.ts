@@ -52,7 +52,8 @@ test('every registered route is in the access list, and the list has nothing sta
 });
 
 test('the list follows the path rules: /admin is staff, /driver is drivers, /partner is partners, public routes are known', () => {
-  const PUBLIC_OUTSIDE = ['GET /places/search', 'GET /plans', 'GET /safety/report-categories', 'GET /uploads/:name', 'GET /.well-known/assetlinks.json'];
+  const PUBLIC_OUTSIDE = ['GET /places/search', 'GET /plans', 'GET /safety/report-categories', 'GET /uploads/:name', 'GET /.well-known/assetlinks.json',
+    'GET /lite', 'POST /lite/book'];   // Round 28: the low-data page needs a short address
   const roles = (a: Access) => (Array.isArray(a) ? a : null);
   for (const [k, a] of Object.entries(ROUTE_ACCESS)) {
     const path = k.split(' ')[1];

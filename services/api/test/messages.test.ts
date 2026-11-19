@@ -66,6 +66,20 @@ const sample: Record<string, any> = {
   account_restricted: { kind: 'suspend', reason: 'Abusive or threatening behaviour towards a driver, rider or our team.', until: '30 Nov 2026' },
   account_restored: {}, appeal_decided: { overturned: false, note: null },
   promo: { title: 'Cheap Tuesdays', body: '20% off rides to the Todd Mall markets this Sunday.' },
+  regional_usage: { support: '08 8950 0000' },
+  regional_hold: { seats: 2, what: 'Alice Springs to Ltyentye Apurte (Santa Teresa)', when: 'Thu 27 Nov 8:00am', cents: 6000, minutes: 30, pickup: 'Alice Springs Hospital, main entrance' },
+  regional_booked: { ref: 'SB-ABC123', seats: 2, what: 'Alice Springs to Ltyentye Apurte (Santa Teresa)', when: 'Thu 27 Nov 8:00am', pickup: 'Alice Springs Hospital, main entrance', balance: 123450 },
+  regional_need_credit: { cents: 12000, balance: 1500, support: '08 8950 0000' },
+  regional_no_run: { place: 'Ltyentye Apurte (Santa Teresa)', support: '08 8950 0000' },
+  regional_seats: { max: 4 }, regional_nothing_pending: {}, regional_not_booked: {}, regional_cancel_which: {},
+  regional_list: { lines: ['SB-ABC123 Thu 27 Nov 8:00am Alice Springs to Ltyentye Apurte (Santa Teresa), 2 seats', 'SB-DEF456 Fri 28 Nov 7:30am Alice Springs to Ntaria (Hermannsburg), parcel'] },
+  regional_cancelled: { ref: 'SB-ABC123', refund_cents: 8000 }, regional_cancel_late: { ref: 'SB-ABC123', support: '08 8950 0000' },
+  regional_balance: { cents: 4500 },
+  regional_run_cancelled: { ref: 'SB-ABC123', what: 'Ltyentye Apurte (Santa Teresa) to Alice Springs', when: 'Thu 27 Nov 1:30pm', refund_cents: 9000 },
+  regional_parcel_booked: { sender: 'Margaret', ref: 'SB-ABC123', when: 'Thu 27 Nov 8:00am', store: 'Ltyentye Apurte community store' },
+  regional_parcel_at_store: { sender: 'Margaret', ref: 'SB-ABC123', store: 'Ltyentye Apurte community store', code: '482913' },
+  topup_receipt: { cents: 20000, store: 'Ltyentye Apurte community store', balance: 123450, ref: 'TU-ABC123' },
+  topup_voided: { cents: 20000, store: 'Ltyentye Apurte community store', ref: 'TU-ABC123' },
 };
 const EMOJI = /\p{Extended_Pictographic}/u;
 

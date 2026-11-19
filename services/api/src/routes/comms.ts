@@ -10,6 +10,8 @@ import { CATEGORY_INFO, lastConsent, loadRecipient, mergePrefs, recordConsent, s
 import { pushProviders } from '../services/push.js';
 import { checkTwilioSignature, e164, isOptedOut, keyword, logComms, optIn, optOut, smsConfigured, twiml } from '../services/sms.js';
 import { event } from '../services/trips.js';
+import { bookingReply } from './regional.js';
+import { logError } from '../lib/log.js';
 import { lostContactUntil, supportPolicy, supportReady } from '../services/support.js';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -141,8 +143,13 @@ export default async function commsRoutes(app: FastifyInstance) {
     if (kw === 'help') return twiml.message(render('sms_help', { support: await supportPhone() }).sms!);
 
     const r = relay();
-    if (!r || to !== r) return twiml.empty();
-    const found = await relayTrip(from, { recent: true });
+    const toRelay = !!r && to === r;
+    const found = toRelay ? await relayTrip(from, { recent: true }) : null;
+    // Round 28: booking words (BUS NTARIA FRI, YES, MY BUS, CANCEL, BAL) to any DingoGo number. A text to the relay number from
+    // someone on a live trip stays in the trip chat, except a YES or NO to a seat held for them.
+    const booking = await bookingReply(from, body, { liveTrip: !!found }).catch((e) => { logError('sms booking', e); return null; });
+    if (booking) return twiml.message(booking);
+    if (!toRelay) return twiml.empty();
     if (!found) return twiml.message(render('relay_no_trip_sms', { support: await supportPhone() }).sms!);
     try {
       // Twilio signatures have no timestamp, so a captured request could be sent again: the message id makes a replay a no-op.

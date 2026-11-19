@@ -79,6 +79,8 @@ const tripSchema = quoteSchema.extend({
   cost_centre_id: z.string().uuid().nullable().optional(),
   purpose_code: z.string().trim().max(20).nullable().optional(),
   po_number: z.string().trim().max(40).nullable().optional(),
+  // Round 28: community route booked with the trip back (fixed return price).
+  return_scheduled_for: z.string().datetime().nullable().optional(),
 });
 
 export default async function riderRoutes(app: FastifyInstance) {

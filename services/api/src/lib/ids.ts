@@ -18,3 +18,8 @@ export const displayKey = () => `led_${token()}${token()}`;
 export const sha256 = (s: string) => crypto.createHash('sha256').update(s).digest('hex');
 export const businessApplicationRef = () => `BA-${upper()}`;
 export const recurringRef = () => `REG-${upper()}`;
+// Round 28: shuttle runs, seat/parcel bookings, store top-ups; 6-digit parcel collection codes.
+export const runRef = () => `SR-${upper()}`;
+export const seatRef = () => `SB-${upper()}`;
+export const topupRef = () => `TU-${upper()}`;
+export const collectCode = () => customAlphabet('0123456789', 6)();

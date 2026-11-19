@@ -19,7 +19,7 @@ export const SCREENS = [
   { app: 'rider', path: '/trips/:trip', name: 'rider-trip-detail' },
   { app: 'rider', path: '/business-account', tabs: '.seg[aria-label="Business account"] button' },
   { app: 'rider', path: '/business', tabs: '.seg[aria-label="Business deliveries"] button' },
-  ...['/', '/trips', '/rewards', '/clients', '/account', '/account/profile', '/account/payment',
+  ...['/', '/trips', '/rewards', '/clients', '/community', '/account', '/account/profile', '/account/payment',
     '/account/notifications', '/account/notifications/settings', '/account/help', '/account/safety', '/account/safety/report', '/account/privacy',
     '/account/organisations'].map((path) => ({ app: 'rider', path })),
   // Driver
@@ -30,7 +30,7 @@ export const SCREENS = [
   { app: 'admin', path: '/live' },
   { app: 'admin', path: '/dashboard' },
   { app: 'admin', path: '/trips', open: 'tbody tr.click' },
-  ...['/safety', '/support', '/drivers', '/fleet', '/pricing', '/loyalty', '/tours', '/ads', '/business', '/insights', '/reports', '/tax', '/settings']
+  ...['/safety', '/support', '/drivers', '/fleet', '/pricing', '/loyalty', '/tours', '/regional', '/ads', '/business', '/insights', '/reports', '/tax', '/settings']
     .map((path) => ({ app: 'admin', path, tabs: true })),
   // Partner portal
   { app: 'partner-signed-out', path: '/' },

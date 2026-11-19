@@ -203,14 +203,20 @@ export async function dingogoBas(quarter?: string) {
   const pay = Object.fromEntries((await q(
     `SELECT kind, sum(amount_cents)::int cents, sum(gst_cents)::int gst FROM payments WHERE status IN ('succeeded','pending') AND kind IN ('subscription','refund','tip')
        AND ${inPeriod('created_at')} GROUP BY kind`, args)).map((r) => [r.kind, r]));
-  const lines = [
+  const baseLines = [
     { key: 'service_fees', label: 'Service fees charged to drivers', cents: -v('commission') },
     { key: 'lease', label: 'Car lease charged to drivers', cents: -v('lease') },
     { key: 'booking_fees', label: 'Booking fees paid by riders', cents: trips!.booking },
     { key: 'levy', label: 'Passenger levy collected from riders (part of the price)', cents: trips!.levy },
     { key: 'pass', label: 'DingoGo Pass subscriptions', cents: Number(pay.subscription?.cents ?? 0) },
     { key: 'cancel_share', label: 'DingoGo’s share of cancellation fees', cents: Math.max(0, cancels!.fees - v('cancel_fee')) },
-  ].map((l) => ({ ...l, gst_cents: gstIn(l.cents) }));
+  ];
+  // Round 28: community shuttles (seats and parcels, paid from credit) less what the shuttle drivers were paid. Shown only when there
+  // were any; ask the accountant whether DingoGo is the principal for shuttles.
+  const { regionalBas } = await import('./regional.js');
+  const sh = await regionalBas(new Date(`${p.from}T00:00:00+09:30`), new Date(new Date(`${p.to}T00:00:00+09:30`).getTime() + 86400_000)).catch(() => ({ takings: 0, driver_pay: 0 }));
+  if (sh.takings || sh.driver_pay) baseLines.push({ key: 'shuttles', label: 'Community shuttles: seats and parcels less shuttle driver pay (confirm the treatment with your accountant)', cents: sh.takings - sh.driver_pay });
+  const lines = baseLines.map((l) => ({ ...l, gst_cents: gstIn(l.cents) }));
   const g1 = lines.reduce((s, l) => s + l.cents, 0);
   const a1 = lines.reduce((s, l) => s + l.gst_cents, 0);
   const refunds = -Number(pay.refund?.cents ?? 0), refundsGst = -Number(pay.refund?.gst ?? 0);

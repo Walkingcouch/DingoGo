@@ -220,13 +220,78 @@ function Tours() {
   </>);
 }
 
+/** Round 28: community stores add DingoGo credit for cash at the counter (texted receipt; undo a mistake within minutes). */
+function TopUp() {
+  const [f, setF] = useState({ phone: '', dollars: '', name: '' });
+  const [needName, setNeedName] = useState(false);
+  const [msg, setMsg] = useState<{ ok: boolean; text: string; id?: string } | null>(null);
+  const list = useLoad(() => get('/partner/topups'));
+  async function add(e: React.FormEvent) {
+    e.preventDefault(); setMsg(null);
+    try {
+      const r = await post('/partner/topups', { phone: f.phone, cents: Math.round(Number(f.dollars) * 100), name: f.name || null, confirm: true });
+      setMsg({ ok: true, text: `Added ${money(r.topup.cents)} for ${r.topup.name} (mobile ending ${r.topup.phone_last3}). Ref ${r.topup.ref}. Keep the cash for DingoGo.`, id: r.topup.id });
+      setF({ phone: '', dollars: '', name: '' }); setNeedName(false); void list.reload();
+    } catch (err) {
+      if (err instanceof ApiError && err.code === 'name_required') setNeedName(true);
+      setMsg({ ok: false, text: err instanceof ApiError ? err.message : 'Could not add the credit' });
+    }
+  }
+  async function undo(id: string) {
+    try { await post(`/partner/topups/${id}/void`, {}); setMsg({ ok: true, text: 'Undone. Give the cash back.' }); void list.reload(); }
+    catch (err) { setMsg({ ok: false, text: err instanceof ApiError ? err.message : 'Could not undo' }); }
+  }
+  return (<>
+    <form onSubmit={add} className="p-card">
+      <p style={{ marginTop: 0 }}>Take the cash, then add the same amount as DingoGo credit. The person gets a text with their new credit. They can book shuttle seats by text with it.</p>
+      <label className="dg-field"><span>Their mobile number</span><input className="dg-input" type="tel" inputMode="tel" value={f.phone} onChange={(e) => setF({ ...f, phone: e.target.value })} required /></label>
+      <label className="dg-field"><span>Cash taken ($)</span><input className="dg-input" inputMode="decimal" value={f.dollars} onChange={(e) => setF({ ...f, dollars: e.target.value })} required /></label>
+      {needName && <label className="dg-field"><span>Their name (new to DingoGo)</span><input className="dg-input" value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} required /></label>}
+      <button className="dg-btn dg-btn--block">Add credit</button>
+      <div role="status" aria-live="polite">{msg && <p className={msg.ok ? 'dg-note' : 'dg-error'} style={{ marginTop: 14 }}>{msg.text}
+        {msg.id && <> <button type="button" className="dg-btn dg-btn--sm dg-btn--ghost" onClick={() => undo(msg.id!)}>Undo (mistake)</button></>}</p>}</div>
+    </form>
+    {list.data && <div className="p-card">
+      <h2 style={{ marginTop: 0 }}>This month</h2>
+      <p>Cash taken {money(list.data.total_cents)}. Still to pay DingoGo {money(list.data.owed_cents)}.</p>
+      <ul className="p-list">{list.data.topups.map((t: any) => <li key={t.id}><span>{dateTime(t.created_at)} {t.name} ({t.phone_last3}){t.voided ? ', undone' : ''}</span><strong>{money(t.cents)}</strong></li>)}</ul>
+    </div>}
+  </>);
+}
+
+/** Round 28: parcels the shuttle left at this store, handed over with the code texted to the person collecting. */
+function StoreParcels() {
+  const [code, setCode] = useState('');
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const list = useLoad(() => get('/partner/regional/parcels'));
+  async function collect(e: React.FormEvent) {
+    e.preventDefault(); setMsg(null);
+    try { const r = await post('/partner/regional/collect', { code }); setMsg({ ok: true, text: `Hand over parcel ${r.parcel.ref} to ${r.parcel.recipient}.` }); setCode(''); void list.reload(); }
+    catch (err) { setMsg({ ok: false, text: err instanceof ApiError ? err.message : 'Could not check the code' }); }
+  }
+  return (<>
+    <form onSubmit={collect} className="p-card">
+      <p style={{ marginTop: 0 }}>Ask for the 6-number code from their text.</p>
+      <label className="dg-field"><span>Collection code</span><input className="dg-input p-code" inputMode="numeric" maxLength={6} value={code} onChange={(e) => setCode(e.target.value.replace(/\D/g, ''))} required /></label>
+      <button className="dg-btn dg-btn--block">Check code</button>
+      <div role="status" aria-live="polite">{msg && <p className={msg.ok ? 'dg-note' : 'dg-error'} style={{ marginTop: 14 }}>{msg.text}</p>}</div>
+    </form>
+    {list.data && <div className="p-card">
+      <h2 style={{ marginTop: 0 }}>Parcels here</h2>
+      {!list.data.parcels.length ? <p className="dg-muted">None waiting.</p> : <ul className="p-list">{list.data.parcels.map((p: any) => <li key={p.id}><span>{p.ref}, size {p.size}, for {p.recipient} ({p.phone_last3})</span><strong>{p.status === 'collected' ? 'Collected' : 'Waiting'}</strong></li>)}</ul>}
+    </div>}
+  </>);
+}
+
 function Home({ onSignOut }: { onSignOut: () => void }) {
-  const [tab, setTab] = useState<'redeem' | 'history' | 'statements' | 'vouchers' | 'tours'>('redeem');
+  const [tab, setTab] = useState<'redeem' | 'history' | 'statements' | 'vouchers' | 'tours' | 'topup' | 'parcels'>('redeem');
   const me = useLoad(() => get('/partner/me'));
   const hist = useLoad(() => get('/partner/redemptions'));
   const p = me.data?.partner;
   const tourDesk = TOUR_KINDS.includes(p?.kind);
+  const store = p?.kind === 'community_store';
   useEffect(() => { if (tourDesk) setTab((t) => (t === 'redeem' ? 'tours' : t)); }, [tourDesk]);
+  useEffect(() => { if (store) setTab((t) => (t === 'redeem' ? 'topup' : t)); }, [store]);
   const refresh = () => { void me.reload(); void hist.reload(); };
   return (
     <div className="p-wrap">
@@ -234,12 +299,12 @@ function Home({ onSignOut }: { onSignOut: () => void }) {
         <div className="p-head__row">
           <img src={mascot} alt="" />
           <div className="p-head__id"><h1 title={p?.name}>{(p?.name ?? 'Partner').replace(/\s*\(demo\)$/i, '')}</h1>
-            <small>{tourDesk ? 'Tour desk' : 'Rewards partner'}{/\(demo\)$/i.test(p?.name ?? '') && <span className="p-demo">Demo</span>}</small></div>
+            <small>{store ? 'DingoGo community store' : tourDesk ? 'Tour desk' : 'Rewards partner'}{/\(demo\)$/i.test(p?.name ?? '') && <span className="p-demo">Demo</span>}</small></div>
           <button onClick={onSignOut} aria-label="Sign out"><Icon name="logout" size={18} /><span>Sign out</span></button>
         </div>
         <nav className="p-tabs" aria-label="Sections">
-          {(([['tours', 'Tours', 'compass'], ['redeem', 'Redeem', 'qr'], ['history', 'This month', 'chart'], ['statements', 'Statements', 'receipt'], ['vouchers', 'Sell credit', 'ticket']] as const)
-            .filter(([k]) => k !== 'tours' || tourDesk)).map(([k, l, ic]) => (
+          {(([['topup', 'Top up', 'wallet'], ['parcels', 'Parcels', 'package'], ['tours', 'Tours', 'compass'], ['redeem', 'Redeem', 'qr'], ['history', 'This month', 'chart'], ['statements', 'Statements', 'receipt'], ['vouchers', 'Sell credit', 'ticket']] as const)
+            .filter(([k]) => (k !== 'tours' || tourDesk) && ((k !== 'topup' && k !== 'parcels') || store))).map(([k, l, ic]) => (
             <button key={k} className={tab === k ? 'on' : ''} onClick={() => setTab(k)} aria-current={tab === k ? 'page' : undefined}><Icon name={ic} size={18} />{l}</button>
           ))}
         </nav>
@@ -268,6 +333,8 @@ function Home({ onSignOut }: { onSignOut: () => void }) {
         {tab === 'statements' && <Statements />}
         {tab === 'vouchers' && <Vouchers />}
         {tab === 'tours' && <Tours />}
+        {tab === 'topup' && <TopUp />}
+        {tab === 'parcels' && <StoreParcels />}
       </main>
       <Ranges height={36} fill="var(--night)" />
     </div>

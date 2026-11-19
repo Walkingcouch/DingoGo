@@ -2130,3 +2130,113 @@ Ideas for next rounds:
 - Forecast accuracy panel and automatic tuning of the seasonality factors from last year's actuals once there is a year of data.
 - Rider churn alerts: riders from a good cohort who stopped riding, feeding the Round 17 win-back offers with a cost cap.
 - Partner/tour-desk and business-account contribution in the health report (which channels bring repeat riders and margin).
+
+### Round 28 — remote and regional reach (community routes, long trips, shuttles, parcel runs, booking by text, low-data page, community stores)
+Scan: read the zones, `buildQuote`/`precheck`/`insertTrip`/`dispatchTrip`/`completeTrip` and the release lead, the EV range check, the safety
+check-ins and SOS alerts, the Twilio SMS webhook and keyword handling, the ops phone booking (`POST /admin/bookings`), the wallet, partners and
+the partner portal, the driver Profile/Offer/ActiveTrip screens and the website footer. Found: **a drop-off anywhere was priced at the meter and
+offered to any nearby driver** (Alice to Yulara about $800 metered, no warning about the 900 km round trip; the EV range check counted only the trip,
+not the drive home, so a small EV could be sent 130 km out with no range to get back); a pickup in a community was refused outright, so nobody in
+Ntaria could book a ride into town; no fixed prices, no way to book the trip back with the trip there, no driver opt-in for long trips; nothing for
+the coverage gaps on community roads (a car out of signal for an hour looks the same as one in trouble, and nobody is told if it never arrives);
+no shared shuttles, no consolidated parcels to communities; booking without a smartphone meant phoning ops in office hours (the SMS webhook only
+handled STOP/START/HELP and relay chat); the website is a JavaScript app with maps (heavy on 2G); no way to pay cash in a community (cash is off for
+rides, and voucher cards are sold only at town cafés).
+
+Suggested:
+1. [fix] Out-of-town limit: metered online quotes and bookings only to `max_metered_km` (60 km straight line) from the zone centre; further needs a
+   community route (fixed price) or a phone booking (`too_far_for_town_fare`). Tours, hire and staff bookings unchanged.
+2. [add] Community routes policy (`regional_policy`, admin-checked, defaults in code): Ntaria (Hermannsburg) and Ltyentye Apurte (Santa Teresa) open,
+   Yulara built but off; fixed private price, return discount, seat and parcel prices, shuttle days/times/seats, driver run pay, pickup points
+   (town and community side, store partner), hedged permit notes pointing to the Central Land Council, coverage gaps, fuel/road notes, EV charging
+   at the community end, a "confirmed" flag (distances and gaps marked approximate).
+3. [add] Long trips at fixed prices both ways (pickup in the community allowed), booked ahead (2 h online), with the trip back bundled at the return
+   price (linked trips); offered only to drivers who opted in (`drivers.long_trips`), EV range includes the drive home unless it can charge there,
+   the trip back is released early enough to drive out and offered first to the driver of the trip there; offers show km each way, empty return,
+   gaps, permits and the check-in plan; no route-change adjustment on a fixed price.
+4. [add] Long-trip safety: driver "Check in" (`POST /driver/trips/:id/checkin`), check-in plan before and after each no-coverage stretch, a missed
+   check-in warning for ops after the check-in time plus the longest gap (once per silence), and one SOS alert when a trip or shuttle is overdue;
+   ops "On the road" view.
+5. [add] Scheduled shared shuttles: runs per route (timetable for four weeks, once), seat bookings with pickup points and seat locking, paid with
+   DingoGo credit, refunded until the cut-off, driver assignment (opted-in drivers only), manifest for the driver (first names, phone last 3) and ops
+   (CSV, print), depart / board or no-show / check in / complete with driver pay per leg in the ledger (`shuttle_run`), run cancel refunds and texts.
+6. [add] Remote parcel runs: parcels on a shuttle to a community store pickup point (prohibited check, collector's mobile), collector texted when
+   booked and again with a 6-digit code (hash kept) when the driver leaves it at the store; the store hands it over with the code (partner code limit).
+7. [add] Booking by text: `BUS <place> [day] [seats]`, `BUS FROM <place>`, `YES`/`NO`, `MY BUS`, `CANCEL <ref>`, `BAL` to any DingoGo number, paid from
+   credit, seats held 30 min for the YES, limited per number; relay chat on a live trip is left alone; all wording in `messages.ts` (GSM-7, ≤ 2 parts).
+8. [add] Low-data booking page `/lite` (plain HTML from the API, < 12 KB, no scripts/images/fonts): routes, prices, permit and coverage notes, shuttles
+   with seats left, a form that holds a seat and texts the number to confirm (same answer whatever the number; per-IP and per-number limits).
+9. [add] Community stores as cash top-up points: partner kind `community_store`, top-ups of DingoGo credit at the counter with limits (per top-up, per
+   person and per store per Darwin day), texted receipt, undo within 15 min if unspent, monthly cash owed and "Cash received" settlement in admin;
+   BAS worksheet line for shuttle takings less shuttle driver pay.
+10. [add] Ops phone bookings: caller lookup by phone (credit, recent trips, shuttle bookings, organisations with consent) and booking seats/parcels for
+    a caller; admin Community trips page (Shuttles, Book for a caller, On the road, Store cash, Routes); rider Community trips screen; driver opt-in,
+    offer details, long-trip panel with Check in, shuttle manifest; partner Top up and Parcels tabs; website footer link to the low-data page.
+
+Done (all 10). Migration: `services/api/migrations/028_regional.sql` (column `drivers.long_trips`; tables `regional_runs`, `regional_bookings`,
+`partner_topups`; additive, IF NOT EXISTS). Before it is applied (`services/regional.ts` `regionalReady()`, re-checked once a minute): routes,
+fixed-price quotes, notes and the low-data page show; the out-of-town limit applies; long-trip bookings, shuttles, parcels, store top-ups, the driver
+opt-in and the timetable answer 503 `migration_pending`; booking texts get the how-to; dispatch and the BAS worksheet carry on (dispatch reads the
+opt-in through `to_jsonb(d)`, so a missing column means "nobody opted in"). Tests: 264 → 274 (`regional.test.ts` 7 unit tests — policy defaults and
+checks with hedged permit notes and unconfirmed distances, matching both ways and inactive routes for staff, the metered limit, fixed and return
+prices and the fare line, check-in plan mirrored for the trip back, longest gap, EV range with and without charging, shuttle timetable in Darwin
+time, every text keyword incl. bare CANCEL as opt-out, place names, top-up limits, low-data page size/no scripts/escaping; 3 e2e — long trips: too far
+for the meter, fixed price both ways, notice, return bundle linked at −30% and paid from credit, no offer to drivers who haven't opted in, no offer
+without range for the drive home, offer with the route details (realtime and polled), check-in, missed check-in and overdue SOS once each, no
+route-change extra, the trip back released early and offered first to the first driver over a nearer one; shuttles: policy checked and saved,
+timetable once, seats locked, rider booking from credit, store top-up with name for a new number, receipt text, undo once, limits, café refused,
+text booking hold/YES/MY BUS/BAL/CANCEL ref/no credit/unknown place/too many seats/other texts ignored, low-data page and its form (same answer
+for a number without credit), parcel checks and collector texts, driver opt-in and assignment, manifest without phone numbers, depart window, board,
+at-store code, wrong/other-store/second collection refused, shuttle missed and overdue alerts once, check-in, complete with run pay, earnings,
+manifest CSV, run cancel refunds and texts, caller lookup, store cash settled; before 028 with the tables and column renamed away).
+`messages.test.ts` covers the 18 new templates (GSM-7, ≤ 2 texts); route matrix: 28 new routes; `/lite` and `/lite/book` added to the public routes
+outside `/public` (a short address for posters).
+- API: new `src/lib/regional.ts` (policy schema/defaults/checks, `matchCorridor`, `tooFarForMeter`, `regionalInfo`, prices and labels,
+  `checkinPlan`, `longestGapMin`, `rangeNeededM`, `shuttleTimes`, `runDriverPay`, `parseSms`, `findCorridor`, `checkTopup`, `litePage`),
+  `src/services/regional.ts` (ready check, policy, runs, bookings with seat locking, pending holds and confirm, cancel/refund, manifest/CSV, driver
+  run actions, store parcels and collection, `runRegionalChecks`, on the road, SMS handling, low-data booking, top-ups/void/summary/settle, caller
+  lookup, `regionalBas`), `src/routes/regional.ts` (28 routes and `bookingReply` for the webhook); `services/trips.ts` (corridor pricing in
+  `buildQuote`, out-of-town limit, `checkRegionalBooking`, linked trip back in `createTrip`, dispatch opt-in/range/radius/pair driver and `regional`
+  on offers, early release of trips back, no route-change on fixed prices, `runRegionalChecks` in the tick), `lib/fares.ts` (`fixedPriceLabel`),
+  `lib/messages.ts` (18 templates), `lib/ids.ts`, `routes/comms.ts` (booking texts before the relay chat), `routes/driver.ts` (`long_trips`, polled
+  offers carry `regional`, `shuttle_cents` in earnings), `routes/rider.ts` (`return_scheduled_for`), `routes/admin.ts` (partner kind
+  `community_store`), `services/tax.ts` (BAS "Community shuttles" line), `index.ts`; `scripts/build-vercel.mjs` (`/lite` to the API).
+- Apps: admin `pages/Regional.tsx` (nav Commercial → Community trips: Shuttles with timetable, add, driver, manifest drawer with CSV/print and
+  cancel; Book for a caller with lookup; On the road; Store cash with "Cash received"; Routes editor with prices, days, times, notes, charging,
+  "checked" and a JSON box for pickup points and gaps), ledger label; rider `screens/Community.tsx` (`/community`, linked from the Ride screen: routes,
+  seat and parcel forms, private car with the trip back, my bookings with cancel, credit and text-booking hint); driver Profile opt-in, Offer
+  community-trip note, ActiveTrip long-trip panel with "Check in", `screens/Shuttles.tsx` on Trips (manifest sheet: leaving, on board / didn't come,
+  left at store, check in, done), Earnings "Community shuttles"; partner Top up and Parcels tabs for community stores; website footer "Community
+  trips (low data)"; `scripts/lib/screens.mjs` (`rider:/community`, `admin:/regional`).
+- Behaviour changes to note: metered online quotes/bookings to drop-offs more than 60 km (straight line) from town are refused with
+  `too_far_for_town_fare` (were metered); trips between town and Ntaria or Ltyentye Apurte are priced at the fixed price (no booking fee) and need 2 h
+  notice online, and go only to opted-in drivers — until drivers opt in after 028, such bookings search and end as "no drivers"; pickups in those
+  communities are now accepted on a route; booking words (BUS…, YES/NO, MY BUS, CANCEL <ref>, BAL) to DingoGo numbers get replies; the partner kind
+  list has "community_store"; GET `/driver/offers` and realtime offers have `regional`.
+- Deploy: apply migration 028 (AUTO_MIGRATE does it). No new env vars (text booking and the low-data form need the Twilio settings from Round 9 with a
+  number that takes replies). Before opening routes: confirm distances, unsealed km and coverage gaps with the communities and a driver, check the
+  permit notes with the Central Land Council, agree prices and shuttle driver pay with the owners (defaults are placeholders), set up each community
+  store as a partner (kind "Community store") with a login and put its id on the route's store point; ask the accountant about credit held by stores
+  and the shuttle GST treatment. Tell drivers about the long-trip opt-in. No data fix.
+
+Deferred:
+- Shuttle seats paid by card or business account: card holds are per trip (payments rows need a trip), and account invoices are built from trips;
+  seats and parcels are credit-only for now (community organisations can still book private trips on account). Needs bookings in the payment and
+  invoice paths.
+- Town rides by text ("RIDE <from> to <to>"): needs geocoding of free text and live dispatch status by text; phone bookings and the shuttle words
+  cover the remote need first.
+- Satellite messenger / in-car GPS tracker feed (Garmin inReach, Starlink) for check-ins in no-coverage stretches: needs a device and provider
+  agreement; check-ins are manual and alerts allow for the gap.
+- GST on shuttle driver pay for GST-registered drivers (the driver tax statement doesn't add `shuttle_run` to G1) and whether DingoGo is principal for
+  shuttles: accountant's call first.
+- Return-leg discount for a same-day wait (driver waiting time pay) and an overnight rest flow for Yulara; Yulara stays off.
+- Shuttle reminders the day before by text, and a shuttle seat waiting list.
+
+Ideas for next rounds:
+- Community store dashboard: monthly cash statement PDF for each store, cash float limits, and stores selling voucher cards and booking seats for
+  walk-ins from the partner portal.
+- Satellite or tracker integration for long trips (inReach/Starlink webhook as check-ins) and an "expected arrival" text to a family contact.
+- Card and business-account payment for shuttle seats and parcels, with seats and parcels on the monthly invoice and in the GST report.
+- Regional demand view: unfilled long-trip requests and text-booking attempts per community, to decide shuttle days and new routes (Titjikala,
+  Amoonguna, Ti Tree, Yuendumu) with each community.
+- Community-language versions of the booking texts and the low-data page (Arrernte, Luritja, Warlpiri) once reviewed by speakers.
